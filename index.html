@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Beacon - Real-Time Location & Community Mesh</title>
+    <meta name="description" content="Production real-time location sharing, private rooms, live voice channels, voice notes, community emergency alerts, and interactive mapping." />
+    <meta property="og:title" content="Beacon - Real-Time Location & Community Mesh" />
+    <meta property="og:description" content="Production real-time location sharing, private rooms, live voice channels, voice notes, community emergency alerts, and interactive mapping." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="theme-color" content="#0f172a" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Beacon" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+    <script>
+      // Gracefully suppress Vite HMR / Module runner WebSocket disconnection notices as per environment constraints
+      (function() {
+        var _origConsoleError = console.error;
+        console.error = function() {
+          var args = Array.prototype.slice.call(arguments);
+          var first = args[0];
+          if (
+            typeof first === 'string' &&
+            (first.indexOf('[vite]') !== -1 ||
+              first.indexOf('WebSocket closed without opened') !== -1 ||
+              first.indexOf('createWebSocketModuleRunnerTransport') !== -1)
+          ) {
+            return;
+          }
+          if (first instanceof Error && (first.message.indexOf('WebSocket') !== -1 || first.stack?.indexOf('@vite/client') !== -1)) {
+            return;
+          }
+          _origConsoleError.apply(console, args);
+        };
+
+        window.addEventListener('error', function(event) {
+          if (
+            event.message &&
+            (event.message.includes('WebSocket') ||
+              event.message.includes('vite') ||
+              event.filename?.includes('@vite/client'))
+          ) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+          }
+        }, true);
+
+        window.addEventListener('unhandledrejection', function(event) {
+          var reason = event.reason;
+          if (
+            reason &&
+            ((reason.message &&
+              (reason.message.includes('WebSocket') ||
+                reason.message.includes('vite') ||
+                reason.message.includes('closed without opened'))) ||
+              (reason.stack && reason.stack.includes('@vite/client')))
+          ) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+          }
+        }, true);
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

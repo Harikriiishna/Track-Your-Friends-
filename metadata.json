@@ -1,0 +1,9 @@
+{
+  "name": "Beacon - Real-Time Location & Community Mesh",
+  "description": "Production real-time location sharing, private rooms, live voice channels, voice notes, community emergency alerts, and interactive mapping.",
+  "requestFramePermissions": [
+    "geolocation",
+    "microphone"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
