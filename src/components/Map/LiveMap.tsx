@@ -48,6 +48,7 @@ interface LiveMapProps {
   selectedRoomId?: string | null;
   onSelectUserForChat?: (userId: string) => void;
   onAddPlaceAtCoords?: (lat: number, lng: number) => void;
+  isActive?: boolean;
 }
 
 interface SearchResult {
@@ -63,6 +64,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
   selectedRoomId = null,
   onSelectUserForChat,
   onAddPlaceAtCoords,
+  isActive = true,
 }) => {
   const { user } = useAuth();
   const { themeConfig } = useTheme();
@@ -520,6 +522,16 @@ export const LiveMap: React.FC<LiveMapProps> = ({
       mapInstanceRef.current = null;
     };
   }, []);
+
+  // Handle active visibility transition and smooth canvas resize
+  useEffect(() => {
+    if (isActive && mapInstanceRef.current) {
+      const timer = setTimeout(() => {
+        mapInstanceRef.current?.invalidateSize();
+      }, 50);
+      return () => clearTimeout(timer);
+    }
+  }, [isActive]);
 
   // Pinch-to-zoom and Two-finger Rotate Touch Gesture Handler
   useEffect(() => {
