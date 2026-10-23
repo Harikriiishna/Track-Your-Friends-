@@ -1,0 +1,5 @@
+{
+  "summary":  "Complete Android APK compilation and installation runbook for Beacon, detailing Capacitor sync, Gradle commands, hardware permissions, Keystore generation for production releases, and ADB device sideloading.",
+  "updatedAt":  "2026-10-23T12:56:39.139902918Z",
+  "userFacing":  true
+}
