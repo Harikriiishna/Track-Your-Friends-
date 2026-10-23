@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Beacon - Real-Time Location & Community Mesh</title>
+    <meta name="description" content="Production real-time location sharing, private rooms, live voice channels, voice notes, community emergency alerts, and interactive mapping." />
+    <meta property="og:title" content="Beacon - Real-Time Location & Community Mesh" />
+    <meta property="og:description" content="Production real-time location sharing, private rooms, live voice channels, voice notes, community emergency alerts, and interactive mapping." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="theme-color" content="#0f172a" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Beacon" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+    <script>
+      // Gracefully handle Vite dev runner WebSocket in preview environments
+      (function() {
+        var RealWebSocket = window.WebSocket;
+        if (RealWebSocket) {
+          window.WebSocket = function(url, protocols) {
+            var isViteHmr = false;
+            if (typeof protocols === 'string' && protocols === 'vite-hmr') {
+              isViteHmr = true;
+            } else if (Array.isArray(protocols) && protocols.includes('vite-hmr')) {
+              isViteHmr = true;
+            } else if (typeof url === 'string' && (url.includes('vite-hmr') || url.includes('@vite'))) {
+              isViteHmr = true;
+            }
+
+            if (isViteHmr) {
+              var target = new EventTarget();
+              var dummyWs = {
+                readyState: 1,
+                OPEN: 1,
+                CONNECTING: 0,
+                CLOSING: 2,
+                CLOSED: 3,
+                send: function() {},
+                close: function() {},
+                addEventListener: function(type, listener, opts) {
+                  target.addEventListener(type, listener, opts);
+                },
+                removeEventListener: function(type, listener, opts) {
+                  target.removeEventListener(type, listener, opts);
+                },
+                dispatchEvent: function(e) {
+                  return target.dispatchEvent(e);
+                }
+              };
+              setTimeout(function() {
+                var openEvt = new Event('open');
+                target.dispatchEvent(openEvt);
+                if (typeof dummyWs.onopen === 'function') dummyWs.onopen(openEvt);
+                var msgEvt = new MessageEvent('message', {
+                  data: JSON.stringify({ type: 'connected' })
+                });
+                target.dispatchEvent(msgEvt);
+                if (typeof dummyWs.onmessage === 'function') dummyWs.onmessage(msgEvt);
+              }, 0);
+              return dummyWs;
+            }
+            return new (Function.prototype.bind.apply(RealWebSocket, [null].concat(Array.prototype.slice.call(arguments))))();
+          };
+          window.WebSocket.prototype = RealWebSocket.prototype;
+          window.WebSocket.OPEN = RealWebSocket.OPEN || 1;
+          window.WebSocket.CONNECTING = RealWebSocket.CONNECTING || 0;
+          window.WebSocket.CLOSING = RealWebSocket.CLOSING || 2;
+          window.WebSocket.CLOSED = RealWebSocket.CLOSED || 3;
+        }
+
+        var _origConsoleError = console.error;
+        console.error = function() {
+          var args = Array.prototype.slice.call(arguments);
+          var first = args[0];
+          if (
+            typeof first === 'string' &&
+            (first.indexOf('[vite]') !== -1 ||
+              first.indexOf('WebSocket') !== -1 ||
+              first.indexOf('createWebSocketModuleRunnerTransport') !== -1)
+          ) {
+            return;
+          }
+          if (first instanceof Error && (first.message.indexOf('WebSocket') !== -1 || first.stack?.indexOf('@vite/client') !== -1)) {
+            return;
+          }
+          _origConsoleError.apply(console, args);
+        };
+
+        window.onerror = function(msg, src, lineno, colno, err) {
+          if (
+            (typeof msg === 'string' && (msg.includes('WebSocket') || msg.includes('vite'))) ||
+            (typeof src === 'string' && src.includes('@vite/client')) ||
+            (err && err.stack && err.stack.includes('@vite/client'))
+          ) {
+            return true;
+          }
+        };
+
+        window.addEventListener('error', function(event) {
+          if (
+            event.message &&
+            (event.message.includes('WebSocket') ||
+              event.message.includes('vite') ||
+              event.filename?.includes('@vite/client'))
+          ) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+          }
+        }, true);
+
+        window.addEventListener('unhandledrejection', function(event) {
+          var reason = event.reason;
+          if (
+            reason &&
+            ((reason.message &&
+              (reason.message.includes('WebSocket') ||
+                reason.message.includes('vite') ||
+                reason.message.includes('closed without opened'))) ||
+              (reason.stack && reason.stack.includes('@vite/client')))
+          ) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+          }
+        }, true);
+      })();
+    </script>
+    <script type="module" crossorigin src="/assets/index-cd6aLXM5.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-J8XPiGEo.css">
+  <link rel="manifest" href="/manifest.webmanifest"><script id="vite-plugin-pwa:register-sw" src="/registerSW.js"></script></head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
+

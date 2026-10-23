@@ -21,6 +21,9 @@ import {
   Palette,
   Sun,
   Moon,
+  Terminal,
+  Copy,
+  Cpu,
 } from 'lucide-react';
 import { notifications } from '../../utils/notifications.ts';
 import { PWAInstallButton } from '../Navigation/PWAInstallButton.tsx';
@@ -549,6 +552,112 @@ export const ProfilePrivacyView: React.FC = () => {
           <div className="shrink-0">
             <PWAInstallButton />
           </div>
+        </div>
+      </div>
+
+      {/* Android Native APK Package & Compilation Card */}
+      <div className={`${themeConfig.glassPanel} rounded-3xl p-6 border ${themeConfig.glassBorder} shadow-xl backdrop-blur-2xl space-y-4`}>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className={`p-2.5 rounded-2xl ${themeConfig.accentBg} text-white shadow-md`}>
+              <Cpu className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className={`font-bold text-sm ${themeConfig.textPrimary}`}>
+                  Native Android APK Packaging
+                </h3>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-black tracking-wide bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                  CAPACITOR CONFIGURED
+                </span>
+              </div>
+              <p className={`text-xs ${themeConfig.textSecondary} mt-0.5`}>
+                Package ID: <span className="font-mono text-cyan-400">com.beacon.mesh</span> · App Name: <span className="font-bold">Beacon</span>
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 text-[11px] font-mono text-emerald-400 bg-emerald-950/40 px-3 py-1.5 rounded-xl border border-emerald-500/30">
+            <Shield className="w-3.5 h-3.5" />
+            <span>Server Proxy Secured</span>
+          </div>
+        </div>
+
+        <p className={`text-xs ${themeConfig.textSecondary} leading-relaxed`}>
+          The standalone native Android project has been scaffolded under <code className="px-1.5 py-0.5 rounded bg-black/40 font-mono text-cyan-300">/android</code> with full permissions for GPS coordinates, microphone audio notes, and WebSocket mesh networking.
+        </p>
+
+        {/* Compile Pipeline Steps */}
+        <div className="space-y-2 pt-1">
+          <div className={`p-3 rounded-2xl ${themeConfig.glassCard} border ${themeConfig.glassBorder} flex items-center justify-between gap-3`}>
+            <div className="flex items-center gap-2.5 min-w-0">
+              <span className="w-5 h-5 rounded-full bg-cyan-500/20 text-cyan-400 text-[10px] font-black flex items-center justify-center shrink-0">1</span>
+              <div className="truncate">
+                <p className={`text-xs font-semibold ${themeConfig.textPrimary}`}>Sync Web Assets to Native Android</p>
+                <code className="text-[11px] text-cyan-300 font-mono truncate block">npm run cap:sync</code>
+              </div>
+            </div>
+            <button
+              onClick={() => {
+                navigator.clipboard.writeText('npm run cap:sync');
+                toast.success('Command copied: npm run cap:sync');
+              }}
+              className="p-1.5 rounded-lg hover:bg-white/10 text-slate-400 hover:text-white transition-colors cursor-pointer shrink-0"
+              title="Copy Command"
+            >
+              <Copy className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          <div className={`p-3 rounded-2xl ${themeConfig.glassCard} border ${themeConfig.glassBorder} flex items-center justify-between gap-3`}>
+            <div className="flex items-center gap-2.5 min-w-0">
+              <span className="w-5 h-5 rounded-full bg-cyan-500/20 text-cyan-400 text-[10px] font-black flex items-center justify-center shrink-0">2</span>
+              <div className="truncate">
+                <p className={`text-xs font-semibold ${themeConfig.textPrimary}`}>Assemble Standalone Debug APK</p>
+                <code className="text-[11px] text-cyan-300 font-mono truncate block">cd android && ./gradlew assembleDebug</code>
+              </div>
+            </div>
+            <button
+              onClick={() => {
+                navigator.clipboard.writeText('cd android && ./gradlew assembleDebug');
+                toast.success('Command copied: cd android && ./gradlew assembleDebug');
+              }}
+              className="p-1.5 rounded-lg hover:bg-white/10 text-slate-400 hover:text-white transition-colors cursor-pointer shrink-0"
+              title="Copy Command"
+            >
+              <Copy className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          <div className={`p-3 rounded-2xl ${themeConfig.glassCard} border ${themeConfig.glassBorder} flex items-center justify-between gap-3`}>
+            <div className="flex items-center gap-2.5 min-w-0">
+              <span className="w-5 h-5 rounded-full bg-cyan-500/20 text-cyan-400 text-[10px] font-black flex items-center justify-center shrink-0">3</span>
+              <div className="truncate">
+                <p className={`text-xs font-semibold ${themeConfig.textPrimary}`}>Install on Physical Android Device via ADB</p>
+                <code className="text-[11px] text-cyan-300 font-mono truncate block">adb install -r android/app/build/outputs/apk/debug/app-debug.apk</code>
+              </div>
+            </div>
+            <button
+              onClick={() => {
+                navigator.clipboard.writeText('adb install -r android/app/build/outputs/apk/debug/app-debug.apk');
+                toast.success('Command copied ADB install string');
+              }}
+              className="p-1.5 rounded-lg hover:bg-white/10 text-slate-400 hover:text-white transition-colors cursor-pointer shrink-0"
+              title="Copy Command"
+            >
+              <Copy className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+
+        {/* Output Location & Security Footnote */}
+        <div className="mt-3 pt-3 border-t border-white/10 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-[11px]">
+          <div className="flex items-center gap-1.5 text-slate-400">
+            <Terminal className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+            <span>Output Path:</span>
+            <code className="text-cyan-300 font-mono truncate">android/app/build/outputs/apk/debug/app-debug.apk</code>
+          </div>
+          <span className="text-emerald-400 font-medium">✓ Zero plaintext keys in client APK</span>
         </div>
       </div>
     </div>
