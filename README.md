@@ -1,5 +1,6 @@
 # 🌐 Beacon — Real-Time Location Sharing & Community Mesh
 
+[![Direct APK Download](https://img.shields.io/badge/Download-app--debug.apk-emerald?logo=android&logoColor=white&style=for-the-badge)](https://github.com/Harikrishna8118/Track-Your-Friends-/releases/latest/download/app-debug.apk)
 [![Android APK Ready](https://img.shields.io/badge/Android-APK%20Ready-brightgreen?logo=android&logoColor=white)](#-android-apk-compilation--deployment-runbook)
 [![Capacitor 8](https://img.shields.io/badge/Capacitor-8.0-blue?logo=capacitor&logoColor=white)](https://capacitorjs.com/)
 [![React 19](https://img.shields.io/badge/React-19.0-61DAFB?logo=react&logoColor=black)](https://react.dev/)
@@ -8,6 +9,10 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 > **Beacon** is a real-time location sharing, community coordination, and communication mesh platform. It features sub-50ms coordinate streaming, a Discord-style 4-pane communication interface, hardware-accelerated mapping with geodesic interpolation, 6 physical glassmorphism themes, and native Android compilation support via Capacitor 8.
+
+### 📲 Permanent Direct APK Download Link:
+👉 **[Download Latest Android Debug APK (`app-debug.apk`)](https://github.com/Harikrishna8118/Track-Your-Friends-/releases/latest/download/app-debug.apk)**  
+*(Automatically compiled and published by GitHub Actions on every push to `main`)*
 
 ---
 

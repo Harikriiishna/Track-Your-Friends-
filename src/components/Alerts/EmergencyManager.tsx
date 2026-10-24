@@ -4,6 +4,7 @@ import { useRealtime } from '../../context/RealtimeContext.tsx';
 import { formatAccuracy, formatTimeAgo } from '../../utils/geo.ts';
 import { api } from '../../utils/api.ts';
 import { useToast } from '../../context/ToastContext.tsx';
+import { triggerHaptic } from '../../utils/audio.ts';
 import {
   AlertTriangle,
   Siren,
@@ -46,6 +47,7 @@ export const EmergencyManager: React.FC<EmergencyManagerProps> = ({
 
   const handleSendSos = () => {
     setIsTriggering(true);
+    triggerHaptic('sos');
     triggerEmergencySos(sosMessage);
     setShowConfirmModal(false);
     setIsTriggering(false);

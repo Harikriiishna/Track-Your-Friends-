@@ -49,6 +49,7 @@ interface LiveMapProps {
   onSelectUserForChat?: (userId: string) => void;
   onAddPlaceAtCoords?: (lat: number, lng: number) => void;
   isActive?: boolean;
+  focusCoords?: { lat: number; lng: number } | null;
 }
 
 interface SearchResult {
@@ -65,6 +66,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
   onSelectUserForChat,
   onAddPlaceAtCoords,
   isActive = true,
+  focusCoords = null,
 }) => {
   const { user } = useAuth();
   const { themeConfig } = useTheme();
@@ -124,6 +126,47 @@ export const LiveMap: React.FC<LiveMapProps> = ({
   const [isGesturing, setIsGesturing] = useState<boolean>(false);
   const [currentZoom, setCurrentZoom] = useState<number>(16);
 
+  // User Direction Cursor & Device Compass Heading State
+  const [userHeading, setUserHeading] = useState<number | null>(null);
+  const userHeadingRef = useRef<number | null>(null);
+  const [isHeadingUpMode, setIsHeadingUpMode] = useState<boolean>(false);
+  const isHeadingUpModeRef = useRef<boolean>(false);
+  isHeadingUpModeRef.current = isHeadingUpMode;
+
+  // Real-time device orientation & compass sensor listener
+  useEffect(() => {
+    const handleOrientation = (e: any) => {
+      let rawHeading: number | null = null;
+      if (e.webkitCompassHeading !== undefined) {
+        rawHeading = e.webkitCompassHeading;
+      } else if (e.alpha !== null && e.alpha !== undefined) {
+        rawHeading = (360 - e.alpha) % 360;
+      }
+
+      if (rawHeading !== null && !isNaN(rawHeading)) {
+        const heading = Math.round(rawHeading);
+        if (userHeadingRef.current === null || Math.abs(userHeadingRef.current - heading) >= 1.5) {
+          userHeadingRef.current = heading;
+          setUserHeading(heading);
+
+          // If heading-up mode is engaged, smoothly sync map bearing with physical orientation
+          if (isHeadingUpModeRef.current) {
+            bearingRef.current = heading;
+            setBearing(heading);
+          }
+        }
+      }
+    };
+
+    window.addEventListener('deviceorientationabsolute', handleOrientation, true);
+    window.addEventListener('deviceorientation', handleOrientation, true);
+
+    return () => {
+      window.removeEventListener('deviceorientationabsolute', handleOrientation, true);
+      window.removeEventListener('deviceorientation', handleOrientation, true);
+    };
+  }, []);
+
   const getCompassHeading = (deg: number): string => {
     const normalized = ((deg % 360) + 360) % 360;
     if (normalized >= 337.5 || normalized < 22.5) return 'N';
@@ -146,9 +189,27 @@ export const LiveMap: React.FC<LiveMapProps> = ({
   };
 
   const resetNorth = () => {
+    setIsHeadingUpMode(false);
     bearingRef.current = 0;
     setBearing(0);
     toast.info('Map oriented North-up (0°)');
+  };
+
+  const toggleHeadingUpMode = () => {
+    if (!isHeadingUpMode) {
+      const currentH =
+        myLocation?.heading != null && !isNaN(myLocation.heading)
+          ? myLocation.heading
+          : (userHeadingRef.current ?? 0);
+      setIsHeadingUpMode(true);
+      const rounded = Math.round(currentH);
+      bearingRef.current = rounded;
+      setBearing(rounded);
+      toast.success(`Heading-Up Follow Mode enabled (${rounded}° ${getCompassHeading(rounded)})`);
+    } else {
+      setIsHeadingUpMode(false);
+      resetNorth();
+    }
   };
 
   const zoomIn = () => {
@@ -533,6 +594,18 @@ export const LiveMap: React.FC<LiveMapProps> = ({
     }
   }, [isActive]);
 
+  // Smoothly swoop/fly to focused coordinates when requested from external card/alert/chat
+  useEffect(() => {
+    if (focusCoords && mapInstanceRef.current) {
+      const map = mapInstanceRef.current;
+      map.invalidateSize();
+      map.flyTo([focusCoords.lat, focusCoords.lng], 17, {
+        animate: true,
+        duration: 1.2,
+      });
+    }
+  }, [focusCoords]);
+
   // Pinch-to-zoom and Two-finger Rotate Touch Gesture Handler
   useEffect(() => {
     const area = gestureAreaRef.current;
@@ -815,22 +888,57 @@ export const LiveMap: React.FC<LiveMapProps> = ({
       }
     }
 
+    const effectiveHeading =
+      myLocation.heading != null && !isNaN(myLocation.heading)
+        ? myLocation.heading
+        : userHeading;
+
+    const visualAngle =
+      effectiveHeading !== null
+        ? ((effectiveHeading - bearing) % 360 + 360) % 360
+        : 0;
+
     const avatar = user?.avatarUrl || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(user?.fullName || 'Me')}`;
     const myIcon = L.divIcon({
       className: 'beacon-my-marker',
       html: `
-        <div class="relative flex items-center justify-center w-12 h-12">
-          <div class="absolute inset-0 rounded-full bg-blue-500/20 animate-ping"></div>
-          <div class="relative w-10 h-10 rounded-full border-2 border-white shadow-lg overflow-hidden bg-slate-900 ring-2 ring-blue-500">
+        <div class="relative flex items-center justify-center w-16 h-16 pointer-events-none">
+          <!-- Directional Beam & Precision Arrowhead Cursor -->
+          <div class="absolute inset-0 flex items-center justify-center pointer-events-none transition-transform duration-150 ease-out" style="transform: rotate(${visualAngle}deg);">
+            <!-- Radiant 60-degree Field-of-View Cone Beam -->
+            <svg class="absolute -top-6 w-24 h-24 overflow-visible pointer-events-none opacity-85" viewBox="0 0 100 100">
+              <defs>
+                <radialGradient id="beaconBeamGradient" cx="50%" cy="100%" r="95%">
+                  <stop offset="0%" stop-color="rgba(14, 165, 233, 0.55)" />
+                  <stop offset="50%" stop-color="rgba(56, 189, 248, 0.22)" />
+                  <stop offset="100%" stop-color="rgba(2, 132, 199, 0)" />
+                </radialGradient>
+              </defs>
+              <path d="M 50 95 L 18 20 A 62 62 0 0 1 82 20 Z" fill="url(#beaconBeamGradient)" />
+            </svg>
+            <!-- Precision Arrowhead Direction Cursor -->
+            <div class="absolute -top-3 flex flex-col items-center">
+              <div class="w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-b-[11px] border-b-cyan-400 drop-shadow-[0_0_8px_rgba(34,211,238,0.95)]"></div>
+            </div>
+          </div>
+
+          <!-- Pulsing Radar Halo -->
+          <div class="absolute inset-2.5 rounded-full bg-cyan-500/20 animate-ping"></div>
+
+          <!-- User Avatar Core -->
+          <div class="relative w-10 h-10 rounded-full border-2 border-white shadow-xl overflow-hidden bg-slate-900 ring-2 ring-cyan-500 pointer-events-auto cursor-pointer">
             <img src="${avatar}" class="w-full h-full object-cover" alt="Me" />
           </div>
-          <div class="absolute -bottom-1 px-1.5 py-0.2 bg-blue-600 text-[10px] text-white font-medium rounded-full shadow">
-            You
+
+          <!-- Direction & Identity Badge -->
+          <div class="absolute -bottom-1.5 px-2 py-0.2 bg-gradient-to-r from-blue-600 to-cyan-600 text-[10px] text-white font-bold rounded-full shadow-md flex items-center gap-1 pointer-events-auto whitespace-nowrap">
+            <span>You</span>
+            ${effectiveHeading !== null ? `<span class="text-cyan-200 font-mono text-[9px]">· ${Math.round(effectiveHeading)}°</span>` : ''}
           </div>
         </div>
       `,
-      iconSize: [48, 48],
-      iconAnchor: [24, 24],
+      iconSize: [64, 64],
+      iconAnchor: [32, 32],
     });
 
     if (!myMarkerRef.current) {
@@ -842,9 +950,9 @@ export const LiveMap: React.FC<LiveMapProps> = ({
       animateMarkerPosition(myMarkerRef.current, myLocation.latitude, myLocation.longitude, 'my_marker');
       myMarkerRef.current.setIcon(myIcon);
     }
-  }, [myLocation, user?.avatarUrl, user?.fullName, hasCenteredOnce]);
+  }, [myLocation, user?.avatarUrl, user?.fullName, hasCenteredOnce, userHeading, bearing]);
 
-  // Update Peer Map Markers with Fluid Smooth Interpolation
+  // Update Peer Map Markers with Fluid Smooth Interpolation & Heading Cursors
   useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map) return;
@@ -870,10 +978,22 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         distText = formatDistance(m);
       }
 
+      const peerHeading = peerLoc.heading;
+      const peerVisualAngle =
+        peerHeading != null && !isNaN(peerHeading)
+          ? ((peerHeading - bearing) % 360 + 360) % 360
+          : null;
+
       const peerIcon = L.divIcon({
         className: 'beacon-peer-marker',
         html: `
           <div class="group relative flex flex-col items-center cursor-pointer">
+            <!-- Peer Heading Direction Pointer Arrow -->
+            ${peerVisualAngle !== null ? `
+              <div class="absolute inset-0 flex items-center justify-center pointer-events-none transition-transform duration-150" style="transform: rotate(${peerVisualAngle}deg);">
+                <div class="absolute -top-3 w-0 h-0 border-l-[5px] border-l-transparent border-r-[5px] border-r-transparent border-b-[9px] border-b-emerald-400 drop-shadow-[0_0_6px_rgba(52,211,153,0.85)]"></div>
+              </div>
+            ` : ''}
             <div class="relative w-10 h-10 rounded-full border-2 border-white shadow-md overflow-hidden bg-slate-800 ${
               isOnline ? 'ring-2 ring-emerald-500' : 'ring-1 ring-slate-400'
             }">
@@ -882,6 +1002,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
             <div class="mt-1 px-2 py-0.5 bg-slate-900/90 backdrop-blur-sm text-[10px] text-white font-medium rounded shadow flex items-center gap-1 whitespace-nowrap">
               <span>${peerLoc.fullName.split(' ')[0]}</span>
               ${distText ? `<span class="text-slate-400">·</span><span class="text-blue-400 font-semibold">${distText}</span>` : ''}
+              ${peerHeading != null ? `<span class="text-emerald-400 font-mono text-[9px]">· ${Math.round(peerHeading)}°</span>` : ''}
             </div>
           </div>
         `,
@@ -912,7 +1033,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         currentMarkers.delete(userId);
       }
     }
-  }, [userLocations, onlineUserIds, myLocation, user?.id]);
+  }, [userLocations, onlineUserIds, myLocation, user?.id, bearing]);
 
   // Update Saved Places Markers
   useEffect(() => {
@@ -1488,6 +1609,26 @@ export const LiveMap: React.FC<LiveMapProps> = ({
             </button>
           </div>
         </div>
+
+        {/* User Direction Cursor / Heading-Up Follow Mode Toggle */}
+        <button
+          onClick={toggleHeadingUpMode}
+          title={isHeadingUpMode ? 'Heading-Up Follow Active (Tap to return to North-Up)' : 'Enable Heading-Up Direction Follow'}
+          className={`w-12 h-12 rounded-2xl shadow-xl border flex flex-col items-center justify-center transition-all cursor-pointer active:scale-95 ${
+            isHeadingUpMode
+              ? 'bg-gradient-to-br from-cyan-500 to-blue-600 text-white border-cyan-300 shadow-cyan-500/30 ring-2 ring-cyan-400/50'
+              : `${themeConfig.glassPanel} text-white hover:bg-white/10 ${themeConfig.glassBorder}`
+          }`}
+        >
+          <Navigation
+            className={`w-5 h-5 transition-transform duration-200 ${
+              isHeadingUpMode ? 'text-white fill-current scale-110' : 'text-cyan-400'
+            }`}
+          />
+          <span className={`text-[8px] font-bold tracking-tight font-mono mt-0.5 ${isHeadingUpMode ? 'text-cyan-100' : 'text-slate-400'}`}>
+            {isHeadingUpMode ? 'FOLLOW' : 'DIR'}
+          </span>
+        </button>
 
         {/* Center on My Location Button */}
         <button

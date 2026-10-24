@@ -5,18 +5,28 @@ import { useTheme } from '../../context/ThemeContext.tsx';
 import { Compass, Siren, Palette } from 'lucide-react';
 import { PWAInstallButton } from './PWAInstallButton.tsx';
 import { ThemeSelectorModal } from './ThemeSelectorModal.tsx';
+import { sound, triggerHaptic } from '../../utils/audio.ts';
 
 interface NavbarProps {
   currentTab: string;
   onSelectTab: (tab: string) => void;
   onOpenSos: () => void;
+  onPrefetchTab?: (tab: string) => void;
 }
 
-export const Navbar: React.FC<NavbarProps> = ({ currentTab, onSelectTab, onOpenSos }) => {
+export const Navbar: React.FC<NavbarProps> = ({ currentTab, onSelectTab, onOpenSos, onPrefetchTab }) => {
   const { user } = useAuth();
   const { activeAlerts, isConnected } = useRealtime();
   const { themeConfig } = useTheme();
   const [showThemeModal, setShowThemeModal] = useState(false);
+
+  const handleTabSelect = (tabId: string) => {
+    if (tabId !== currentTab) {
+      sound.playTap();
+      triggerHaptic('selection');
+      onSelectTab(tabId);
+    }
+  };
 
   return (
     <>
@@ -37,80 +47,43 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, onSelectTab, onOpenS
         </div>
 
         {/* Zone 2: 4–5 clean single-line text navigation links */}
+        {/* Zone 2: 4–5 clean single-line text navigation links with smooth active indicator */}
         <nav className={`hidden md:flex items-center gap-6 text-xs font-semibold ${themeConfig.textSecondary}`}>
-          <button
-            onClick={() => onSelectTab('map')}
-            className={`hover:opacity-100 transition-all whitespace-nowrap shrink-0 cursor-pointer ${
-              currentTab === 'map'
-                ? `${themeConfig.textPrimary} font-bold border-b-2 border-current pb-0.5`
-                : 'opacity-75 hover:opacity-100'
-            }`}
-          >
-            Live Map
-          </button>
-          <button
-            onClick={() => onSelectTab('rooms')}
-            className={`hover:opacity-100 transition-all whitespace-nowrap shrink-0 cursor-pointer ${
-              currentTab === 'rooms'
-                ? `${themeConfig.textPrimary} font-bold border-b-2 border-current pb-0.5`
-                : 'opacity-75 hover:opacity-100'
-            }`}
-          >
-            Rooms & Mesh
-          </button>
-          <button
-            onClick={() => onSelectTab('chat')}
-            className={`hover:opacity-100 transition-all whitespace-nowrap shrink-0 cursor-pointer ${
-              currentTab === 'chat'
-                ? `${themeConfig.textPrimary} font-bold border-b-2 border-current pb-0.5`
-                : 'opacity-75 hover:opacity-100'
-            }`}
-          >
-            Chat & Voice
-          </button>
-          <button
-            onClick={() => onSelectTab('alerts')}
-            className={`hover:opacity-100 transition-all whitespace-nowrap shrink-0 flex items-center gap-1.5 cursor-pointer ${
-              currentTab === 'alerts'
-                ? 'text-rose-500 font-bold border-b-2 border-rose-500 pb-0.5'
-                : 'opacity-75 hover:opacity-100'
-            }`}
-          >
-            <span>Emergency Alerts</span>
-            {activeAlerts.length > 0 && <span className="w-2 h-2 rounded-full bg-rose-500" />}
-          </button>
-          <button
-            onClick={() => onSelectTab('reminders')}
-            className={`hover:opacity-100 transition-all whitespace-nowrap shrink-0 cursor-pointer ${
-              currentTab === 'reminders'
-                ? `${themeConfig.textPrimary} font-bold border-b-2 border-current pb-0.5`
-                : 'opacity-75 hover:opacity-100'
-            }`}
-          >
-            Reminders
-          </button>
-          <button
-            onClick={() => onSelectTab('meetings')}
-            className={`hover:opacity-100 transition-all whitespace-nowrap shrink-0 cursor-pointer ${
-              currentTab === 'meetings'
-                ? `${themeConfig.textPrimary} font-bold border-b-2 border-current pb-0.5`
-                : 'opacity-75 hover:opacity-100'
-            }`}
-          >
-            Meetings
-          </button>
-          {user?.isAdmin && (
-            <button
-              onClick={() => onSelectTab('admin')}
-              className={`hover:opacity-100 transition-all whitespace-nowrap shrink-0 cursor-pointer ${
-                currentTab === 'admin'
-                  ? `${themeConfig.accentText} font-bold border-b-2 border-current pb-0.5`
-                  : 'opacity-75 hover:opacity-100'
-              }`}
-            >
-              Admin
-            </button>
-          )}
+          {[
+            { id: 'map', label: 'Live Map' },
+            { id: 'rooms', label: 'Rooms & Mesh' },
+            { id: 'chat', label: 'Chat & Voice' },
+            { id: 'alerts', label: 'Emergency Alerts', badge: activeAlerts.length },
+            { id: 'reminders', label: 'Reminders' },
+            { id: 'meetings', label: 'Meetings' },
+            ...(user?.isAdmin ? [{ id: 'admin', label: 'Admin' }] : []),
+          ].map((item) => {
+            const isActive = currentTab === item.id;
+            return (
+              <button
+                key={item.id}
+                onClick={() => handleTabSelect(item.id)}
+                onMouseEnter={() => onPrefetchTab?.(item.id)}
+                onTouchStart={() => onPrefetchTab?.(item.id)}
+                className={`relative py-1 transition-all duration-200 whitespace-nowrap shrink-0 cursor-pointer active:scale-95 flex items-center gap-1.5 ${
+                  isActive
+                    ? `${themeConfig.textPrimary} font-bold opacity-100`
+                    : 'opacity-70 hover:opacity-100 hover:text-white'
+                }`}
+              >
+                <span>{item.label}</span>
+                {item.badge && item.badge > 0 ? (
+                  <span className="w-2 h-2 rounded-full bg-rose-500 animate-pulse" />
+                ) : null}
+                {isActive && (
+                  <span
+                    className="absolute -bottom-1 left-0 right-0 h-0.5 rounded-full animate-fade-smooth shadow-sm"
+                    style={{ backgroundColor: item.id === 'alerts' ? '#f43f5e' : themeConfig.accentHex }}
+                  />
+                )}
+              </button>
+            );
+          })}
         </nav>
 
         {/* Zone 3: 1 primary action / User profile trigger / Theme switcher */}

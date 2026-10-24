@@ -4,7 +4,7 @@ import { useRealtime } from '../../context/RealtimeContext.tsx';
 import { useTheme } from '../../context/ThemeContext.tsx';
 import type { ChatMessage, Room, RoomMember, UserRole, UserProfile } from '../../types.ts';
 import { api } from '../../utils/api.ts';
-import { VoiceRecorder } from '../../utils/audio.ts';
+import { VoiceRecorder, sound, triggerHaptic } from '../../utils/audio.ts';
 import { AudioWaveformVisualizer } from './AudioWaveformVisualizer.tsx';
 import { useToast } from '../../context/ToastContext.tsx';
 import { calculateDistanceMeters, formatDistance } from '../../utils/geo.ts';
@@ -246,6 +246,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
       replyToId: replyTarget?.id,
     });
 
+    sound.playTap();
+    triggerHaptic('light');
     setInputVal('');
     setReplyTarget(null);
     setShowEmojiPicker(false);
@@ -272,6 +274,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
       text: locText,
     });
 
+    sound.playSuccess();
+    triggerHaptic('medium');
     toast.success('Live location posted to channel');
     setShowPlusMenu(false);
   };
@@ -334,6 +338,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
         ],
         replyToId: replyTarget?.id,
       });
+      sound.playSuccess();
+      triggerHaptic('light');
       setVoicePreview(null);
       setReplyTarget(null);
     } catch (err: any) {

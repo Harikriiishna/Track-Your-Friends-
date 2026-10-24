@@ -13,9 +13,9 @@ export const ThemeSelectorModal: React.FC<ThemeSelectorModalProps> = ({ isOpen, 
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-md flex items-center justify-center p-4 animate-fade-smooth">
       <div
-        className={`w-full max-w-xl rounded-3xl p-6 ${themeConfig.glassPanel} border shadow-2xl relative overflow-hidden`}
+        className={`w-full max-w-xl rounded-3xl p-6 ${themeConfig.glassPanel} border shadow-2xl relative overflow-hidden animate-pop-in transform-gpu-smooth`}
       >
         {/* Ambient background glow inside modal */}
         <div

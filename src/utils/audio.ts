@@ -46,6 +46,53 @@ class SoundSystem {
     }
   }
 
+  // Soft micro-interaction tap sound for navigation and button clicks
+  public playTap() {
+    try {
+      const ctx = this.getContext();
+      const now = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(440, now);
+      osc.frequency.exponentialRampToValueAtTime(220, now + 0.04);
+
+      gain.gain.setValueAtTime(0.04, now);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.04);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.start(now);
+      osc.stop(now + 0.04);
+    } catch {}
+  }
+
+  // Crisp success indicator tone
+  public playSuccess() {
+    try {
+      const ctx = this.getContext();
+      const now = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(523.25, now); // C5
+      osc.frequency.setValueAtTime(659.25, now + 0.08); // E5
+      osc.frequency.setValueAtTime(783.99, now + 0.16); // G5
+
+      gain.gain.setValueAtTime(0.12, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      osc.start(now);
+      osc.stop(now + 0.35);
+    } catch {}
+  }
+
   // Play distinctive SOS / Emergency Siren
   public startEmergencySiren() {
     try {
@@ -92,6 +139,36 @@ class SoundSystem {
 }
 
 export const sound = new SoundSystem();
+
+/**
+ * Mobile Haptic Feedback Trigger using Navigator.vibrate
+ */
+export function triggerHaptic(type: 'light' | 'selection' | 'medium' | 'heavy' | 'warning' | 'sos' = 'light') {
+  if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+    try {
+      switch (type) {
+        case 'light':
+        case 'selection':
+          navigator.vibrate(12);
+          break;
+        case 'medium':
+          navigator.vibrate(25);
+          break;
+        case 'heavy':
+          navigator.vibrate(45);
+          break;
+        case 'warning':
+          navigator.vibrate([30, 40, 30]);
+          break;
+        case 'sos':
+          navigator.vibrate([150, 70, 150, 70, 300]);
+          break;
+      }
+    } catch {
+      // Ignored if user has not interacted with DOM or permission denied
+    }
+  }
+}
 
 // Real Voice Recorder using MediaRecorder
 export interface VoiceRecordingResult {

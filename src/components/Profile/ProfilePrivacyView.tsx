@@ -587,6 +587,16 @@ export const ProfilePrivacyView: React.FC = () => {
           The standalone native Android project has been scaffolded under <code className="px-1.5 py-0.5 rounded bg-black/40 font-mono text-cyan-300">/android</code> with full permissions for GPS coordinates, microphone audio notes, and WebSocket mesh networking.
         </p>
 
+        {/* Direct APK Download Button */}
+        <a
+          href="https://github.com/Harikrishna8118/Track-Your-Friends-/releases/latest/download/app-debug.apk"
+          download
+          className="w-full py-3 px-4 rounded-2xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 active:scale-98 text-white font-bold text-xs flex items-center justify-center gap-2.5 shadow-lg shadow-emerald-900/30 transition-all cursor-pointer"
+        >
+          <Download className="w-4 h-4" />
+          <span>Download Latest Android APK (app-debug.apk)</span>
+        </a>
+
         {/* Compile Pipeline Steps */}
         <div className="space-y-2 pt-1">
           <div className={`p-3 rounded-2xl ${themeConfig.glassCard} border ${themeConfig.glassBorder} flex items-center justify-between gap-3`}>
