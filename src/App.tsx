@@ -30,6 +30,7 @@ function MainApp() {
   const [savedPlaces, setSavedPlaces] = useState<SavedPlace[]>([]);
   const [userRooms, setUserRooms] = useState<Room[]>([]);
   const [pendingCoords, setPendingCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [pendingReminder, setPendingReminder] = useState<{ lat: number; lng: number; title?: string } | null>(null);
 
   // In-memory registry to deduplicate background data pre-fetching
   const prefetchedDataRef = useRef<Set<string>>(new Set(['map']));
@@ -73,31 +74,22 @@ function MainApp() {
     }
   }, []);
 
-  // Sophisticated tab switcher: pre-warms target component and switches via hardware-accelerated compositor frame
+  // Tab switcher: pre-warms target component and safely switches tab via startTransition
   const handleSelectTab = React.useCallback((tabId: string) => {
-    // Ensure target component and data are pre-fetched
+    // 1. Ensure target component and data are pre-fetched
     prefetchTab(tabId);
 
-    // If the tab is newly visited, allow a single frame tick for browser layout/GPU texture promotion
-    // before triggering the active visibility opacity transition
+    // 2. Mark tab as visited (pure state updater without side effects)
     setVisitedTabs((prev) => {
-      const isNew = !prev.has(tabId);
-      if (isNew) {
-        const next = new Set(prev);
-        next.add(tabId);
-        // Micro-tick ensures zero-jank frame scheduling
-        requestAnimationFrame(() => {
-          startTransition(() => {
-            setCurrentTab(tabId);
-          });
-        });
-        return next;
-      } else {
-        startTransition(() => {
-          setCurrentTab(tabId);
-        });
-        return prev;
-      }
+      if (prev.has(tabId)) return prev;
+      const next = new Set(prev);
+      next.add(tabId);
+      return next;
+    });
+
+    // 3. Switch active tab safely in transition outside render phase
+    startTransition(() => {
+      setCurrentTab(tabId);
     });
   }, [prefetchTab]);
 
@@ -201,6 +193,10 @@ function MainApp() {
               setPendingCoords({ lat, lng });
               handleSelectTab('saved');
             }}
+            onSetReminderAtCoords={(lat, lng, title) => {
+              setPendingReminder({ lat, lng, title });
+              handleSelectTab('reminders');
+            }}
           />
         </div>
 
@@ -221,6 +217,11 @@ function MainApp() {
               }}
               onSelectUserForChat={(targetUserId) => {
                 setSelectedChatUser({ id: targetUserId, name: 'Peer', avatar: '' });
+                handleSelectTab('chat');
+              }}
+              onOpenChat={(roomId) => {
+                if (roomId) setSelectedRoomId(roomId);
+                setSelectedChatUser(null);
                 handleSelectTab('chat');
               }}
               onFocusMapLocation={(lat, lng) => {
@@ -309,7 +310,11 @@ function MainApp() {
                 : 'opacity-0 z-0 pointer-events-none invisible'
             }`}
           >
-            <RemindersManager savedPlaces={savedPlaces} />
+            <RemindersManager
+              savedPlaces={savedPlaces}
+              pendingReminder={pendingReminder}
+              onClearPendingReminder={() => setPendingReminder(null)}
+            />
           </div>
         )}
 

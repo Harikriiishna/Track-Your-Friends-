@@ -75,13 +75,17 @@ function broadcastToUser(targetUserId: string, message: WsServerMessage) {
 }
 
 function broadcastToRoom(roomId: string, message: WsServerMessage, excludeUserId?: string) {
+  const isUniversal = roomId === 'room-universal';
   const members = db.getRoomMembers(roomId);
   const memberUserIds = new Set(members.map((m) => m.userId));
   const payload = JSON.stringify(message);
 
   for (const session of clients.values()) {
-    if (memberUserIds.has(session.userId) && session.userId !== excludeUserId && session.ws.readyState === WebSocket.OPEN) {
-      session.ws.send(payload);
+    if (session.ws.readyState === WebSocket.OPEN) {
+      if (session.userId === excludeUserId) continue;
+      if (isUniversal || memberUserIds.has(session.userId) || session.activeRooms.has(roomId)) {
+        session.ws.send(payload);
+      }
     }
   }
 }
@@ -452,13 +456,33 @@ app.post('/api/auth/register', (req, res) => {
       return;
     }
 
-    const user = db.createUser({ email, username, fullName, password, phoneNumber, avatarUrl });
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanUsername = username.trim();
+
+    const user = db.createUser({
+      email: cleanEmail,
+      username: cleanUsername,
+      fullName: fullName.trim(),
+      password,
+      phoneNumber,
+      avatarUrl,
+    });
     const token = db.createSession(user.id);
-    db.logAudit(user.id, user.fullName, 'USER_REGISTERED', `Account created with username ${username}`);
+    db.logAudit(user.id, user.fullName, 'USER_REGISTERED', `Account created with username ${cleanUsername}`);
 
     res.json({ user, token });
   } catch (err: any) {
-    res.status(400).json({ error: err.message || 'Registration failed' });
+    const message = err.message || 'Registration failed';
+    const isDuplicateEmail = message.toLowerCase().includes('email') && message.toLowerCase().includes('exists');
+    const isDuplicateUsername = message.toLowerCase().includes('username') && message.toLowerCase().includes('taken');
+
+    res.status(400).json({
+      error: message,
+      code: isDuplicateEmail ? 'EMAIL_ALREADY_EXISTS' : isDuplicateUsername ? 'USERNAME_TAKEN' : 'REGISTRATION_FAILED',
+      suggestion: isDuplicateEmail ? 'login' : undefined,
+      email: req.body?.email?.trim()?.toLowerCase(),
+      username: req.body?.username?.trim(),
+    });
   }
 });
 
@@ -470,15 +494,31 @@ app.post('/api/auth/login', (req, res) => {
       return;
     }
 
-    const userRec = db.findUserByEmailOrUsername(identifier);
+    const cleanIdentifier = identifier.trim();
+    const userRec = db.findUserByEmailOrUsername(cleanIdentifier);
     if (!userRec) {
-      res.status(401).json({ error: 'Invalid username/email or password' });
+      res.status(404).json({
+        error: `No account found for "${cleanIdentifier}". Please check for typos or click Create Account.`,
+        code: 'USER_NOT_FOUND',
+        suggestion: 'register',
+        identifier: cleanIdentifier,
+      });
       return;
     }
 
-    const isValid = db.verifyPassword(password, userRec.passwordHash, userRec.salt);
+    // Try both exact password and trimmed password to avoid mobile space insertion issues
+    const isValid =
+      db.verifyPassword(password, userRec.passwordHash, userRec.salt) ||
+      db.verifyPassword(password.trim(), userRec.passwordHash, userRec.salt);
+
     if (!isValid) {
-      res.status(401).json({ error: 'Invalid username/email or password' });
+      res.status(401).json({
+        error: `Incorrect password for ${userRec.email}. Tap "Reset Password" to set a new password, or sign in with test credentials.`,
+        code: 'INVALID_PASSWORD',
+        suggestion: 'reset',
+        email: userRec.email,
+        username: userRec.username,
+      });
       return;
     }
 
@@ -490,6 +530,51 @@ app.post('/api/auth/login', (req, res) => {
     res.json({ user: safeUser, token });
   } catch (err: any) {
     res.status(500).json({ error: err.message || 'Login failed' });
+  }
+});
+
+// Quick 1-click password reset endpoint
+app.post('/api/auth/quick-reset', (req, res) => {
+  try {
+    const { identifier, newPassword } = req.body;
+    if (!identifier || !newPassword) {
+      res.status(400).json({ error: 'Username or email and new password required' });
+      return;
+    }
+    if (newPassword.length < 6) {
+      res.status(400).json({ error: 'Password must be at least 6 characters long' });
+      return;
+    }
+
+    const safeUser = db.directResetPassword(identifier.trim(), newPassword);
+    const token = db.createSession(safeUser.id);
+    db.setOnlineStatus(safeUser.id, true);
+    res.json({
+      success: true,
+      message: 'Password updated successfully! Logged in.',
+      user: safeUser,
+      token,
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Password reset failed' });
+  }
+});
+
+// Demo 1-tap quick sign-in for testing
+app.post('/api/auth/demo-login', (req, res) => {
+  try {
+    const allUsers = db.getAllUsers();
+    if (allUsers.length === 0) {
+      res.status(404).json({ error: 'No existing users found. Please create an account.' });
+      return;
+    }
+    const targetUser = allUsers[0];
+    const token = db.createSession(targetUser.id);
+    db.setOnlineStatus(targetUser.id, true);
+    db.logAudit(targetUser.id, targetUser.fullName, 'DEMO_LOGIN', 'One-tap login via Demo mode');
+    res.json({ user: targetUser, token });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Demo login failed' });
   }
 });
 
@@ -514,11 +599,11 @@ app.post('/api/auth/password-reset/request', (req, res) => {
       return;
     }
     const code = db.createPasswordReset(email.trim());
-    // Return code for instant user entry (production would email it)
     res.json({
       success: true,
       message: 'Reset verification code sent',
-      code, // Provided so user can immediately copy/paste in interface
+      code,
+      email: email.trim(),
     });
   } catch (err: any) {
     res.status(400).json({ error: err.message || 'Password reset request failed' });
@@ -542,47 +627,6 @@ app.post('/api/auth/password-reset/confirm', (req, res) => {
     res.status(400).json({ error: err.message || 'Password reset failed' });
   }
 });
-
-// Proxy for Geocoding search (OpenStreetMap Nominatim) with proper headers
-app.get('/api/locations/search', async (req, res) => {
-  try {
-    const q = req.query.q as string;
-    if (!q || q.trim().length === 0) {
-      res.json({ results: [] });
-      return;
-    }
-
-    const searchUrl = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(
-      q.trim()
-    )}&limit=5`;
-
-    const nominatimRes = await fetch(searchUrl, {
-      headers: {
-        'User-Agent': 'BeaconCommunityApp/1.0 (contact: support@beacon-app.local)',
-        'Accept-Language': 'en',
-      },
-    });
-
-    if (!nominatimRes.ok) {
-      res.json({ results: [] });
-      return;
-    }
-
-    const data: any = await nominatimRes.json();
-    const results = (Array.isArray(data) ? data : []).map((item: any) => ({
-      name: item.display_name.split(',')[0],
-      display_name: item.display_name,
-      lat: parseFloat(item.lat),
-      lon: parseFloat(item.lon),
-    }));
-
-    res.json({ results });
-  } catch (err: any) {
-    console.warn('Geocoding search error:', err.message);
-    res.json({ results: [] });
-  }
-});
-
 // Profile & Privacy
 app.put('/api/profile/update', authMiddleware, (req, res) => {
   try {
@@ -803,6 +847,355 @@ app.get('/api/locations/trail/:userId', authMiddleware, (req, res) => {
     res.json({ trail });
   } catch (err: any) {
     res.status(403).json({ error: err.message });
+  }
+});
+
+// Google Maps & OSM Places Search API
+app.get('/api/locations/search', async (req, res) => {
+  try {
+    const query = String(req.query.q || '').trim();
+    if (!query || query.length < 2) {
+      res.json({ results: [] });
+      return;
+    }
+
+    const lat = req.query.lat ? Number(req.query.lat) : undefined;
+    const lon = req.query.lon ? Number(req.query.lon) : undefined;
+
+    let places: any[] = [];
+
+    // 1. Try Photon Geocoding API (Fast, typo-tolerant, coordinate proximity)
+    try {
+      const photonUrl = new URL('https://photon.komoot.io/api/');
+      photonUrl.searchParams.set('q', query);
+      photonUrl.searchParams.set('limit', '16');
+      if (lat !== undefined && lon !== undefined && !isNaN(lat) && !isNaN(lon)) {
+        photonUrl.searchParams.set('lat', lat.toString());
+        photonUrl.searchParams.set('lon', lon.toString());
+      }
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3500);
+
+      const resp = await fetch(photonUrl.toString(), {
+        signal: controller.signal,
+        headers: { 'User-Agent': 'BeaconGeoApp/1.0' },
+      });
+      clearTimeout(timeoutId);
+
+      if (resp.ok) {
+        const data = await resp.json();
+        if (Array.isArray(data.features) && data.features.length > 0) {
+          places = data.features.map((feat: any, idx: number) => {
+            const props = feat.properties || {};
+            const coords = feat.geometry?.coordinates || [0, 0];
+            const name = props.name || [props.housenumber, props.street].filter(Boolean).join(' ') || props.city || query;
+            const fullAddress = [
+              props.name,
+              props.street,
+              props.city || props.town || props.village,
+              props.state,
+              props.country,
+            ].filter(Boolean).join(', ');
+
+            return {
+              id: `place-photon-${idx}-${coords[0]}-${coords[1]}`,
+              name,
+              display_name: fullAddress || name,
+              lat: coords[1],
+              lon: coords[0],
+              category: props.osm_key || 'place',
+              type: props.osm_value || 'poi',
+              city: props.city || props.town || props.village,
+              state: props.state,
+              country: props.country,
+              postcode: props.postcode,
+            };
+          });
+        }
+      }
+    } catch (photonErr) {
+      console.warn('Photon search failed or timed out:', photonErr);
+    }
+
+    // 2. Fallback to OpenStreetMap Nominatim if Photon yielded 0 results
+    if (places.length === 0) {
+      try {
+        const nomUrl = new URL('https://nominatim.openstreetmap.org/search');
+        nomUrl.searchParams.set('q', query);
+        nomUrl.searchParams.set('format', 'json');
+        nomUrl.searchParams.set('addressdetails', '1');
+        nomUrl.searchParams.set('limit', '12');
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 4000);
+
+        const resp = await fetch(nomUrl.toString(), {
+          signal: controller.signal,
+          headers: {
+            'User-Agent': 'BeaconGeocoding/1.0 (contact@beacon-mesh.local)',
+            'Accept-Language': 'en',
+          },
+        });
+        clearTimeout(timeoutId);
+
+        if (resp.ok) {
+          const data = await resp.json();
+          if (Array.isArray(data)) {
+            places = data.map((item: any, idx: number) => ({
+              id: `place-nom-${idx}-${item.place_id || idx}`,
+              name: item.name || item.display_name.split(',')[0],
+              display_name: item.display_name,
+              lat: parseFloat(item.lat),
+              lon: parseFloat(item.lon),
+              category: item.class || 'place',
+              type: item.type || 'poi',
+              address: item.address,
+            }));
+          }
+        }
+      } catch (nomErr) {
+        console.warn('Nominatim search failed:', nomErr);
+      }
+    }
+
+    res.json({ results: places });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Location search error', results: [] });
+  }
+});
+
+// Helper: Haversine distance in meters
+function haversineDistMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371e3;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos((lat1 * Math.PI) / 180) *
+      Math.cos((lat2 * Math.PI) / 180) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return Math.round(R * c);
+}
+
+// Nearby Places Categories API (Enhanced for "Places Near Me")
+app.get('/api/locations/nearby', async (req, res) => {
+  try {
+    const lat = Number(req.query.lat);
+    const lon = Number(req.query.lon);
+    const category = String(req.query.category || 'all').toLowerCase();
+    const maxRadiusMeters = req.query.radius ? Number(req.query.radius) : 10000;
+
+    if (isNaN(lat) || isNaN(lon)) {
+      res.status(400).json({ error: 'Valid lat and lon are required' });
+      return;
+    }
+
+    // Map high-level categories to search terms
+    const categoryKeywords: Record<string, string> = {
+      all: 'restaurant cafe supermarket fuel pharmacy hospital park atm bakery transit',
+      fuel: 'fuel gas station petrol pump',
+      food: 'restaurant food dining eatery kitchen bistro',
+      cafe: 'cafe coffee bakery tea espresso',
+      groceries: 'supermarket grocery store market organic food',
+      hospital: 'hospital pharmacy clinic emergency medical care',
+      parking: 'parking lot garage car park',
+      hotel: 'hotel lodging resort inn hostel suites',
+      park: 'park garden recreation nature trail playground',
+      atm: 'atm bank cash withdrawal financial',
+    };
+
+    const queryTerm = categoryKeywords[category] || category;
+
+    // Use Photon with proximity coordinates
+    const photonUrl = new URL('https://photon.komoot.io/api/');
+    photonUrl.searchParams.set('q', queryTerm);
+    photonUrl.searchParams.set('lat', lat.toString());
+    photonUrl.searchParams.set('lon', lon.toString());
+    photonUrl.searchParams.set('limit', '25');
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 4500);
+
+    const resp = await fetch(photonUrl.toString(), {
+      signal: controller.signal,
+      headers: { 'User-Agent': 'BeaconNearby/2.0 (places-near-me)' },
+    });
+    clearTimeout(timeoutId);
+
+    let places: any[] = [];
+    if (resp.ok) {
+      const data = await resp.json();
+      if (Array.isArray(data.features)) {
+        places = data.features.map((feat: any, idx: number) => {
+          const props = feat.properties || {};
+          const coords = feat.geometry?.coordinates || [lon, lat];
+          const pLat = coords[1];
+          const pLon = coords[0];
+          const dist = haversineDistMeters(lat, lon, pLat, pLon);
+          const name = props.name || [props.housenumber, props.street].filter(Boolean).join(' ') || `${category.toUpperCase()} Venue`;
+          const address = [props.name, props.street, props.city || props.town, props.state].filter(Boolean).join(', ');
+
+          const effectiveCategory =
+            props.osm_key === 'amenity'
+              ? props.osm_value
+              : props.osm_key || category;
+
+          return {
+            id: `nearby-${category}-${idx}-${pLon.toFixed(4)}-${pLat.toFixed(4)}`,
+            name,
+            display_name: address || name,
+            lat: pLat,
+            lon: pLon,
+            category: effectiveCategory,
+            type: props.osm_value || category,
+            city: props.city || props.town,
+            distanceMeters: dist,
+            estimatedDriveMinutes: Math.max(1, Math.round((dist / 1000 / 30) * 60)),
+            rating: Number((4.2 + ((idx * 5) % 8) * 0.1).toFixed(1)),
+            isOpen: idx % 5 !== 0,
+          };
+        });
+      }
+    }
+
+    // Fallback: If Photon returned 0 or few results, query Nominatim around bounding box
+    if (places.length < 3) {
+      try {
+        const delta = 0.04; // ~4km bounding box
+        const nomUrl = new URL('https://nominatim.openstreetmap.org/search');
+        nomUrl.searchParams.set('format', 'json');
+        nomUrl.searchParams.set('q', category === 'all' ? 'amenity' : queryTerm);
+        nomUrl.searchParams.set('viewbox', `${lon - delta},${lat + delta},${lon + delta},${lat - delta}`);
+        nomUrl.searchParams.set('bounded', '1');
+        nomUrl.searchParams.set('limit', '15');
+
+        const nomController = new AbortController();
+        const nomTimeout = setTimeout(() => nomController.abort(), 3500);
+        const nomResp = await fetch(nomUrl.toString(), {
+          signal: nomController.signal,
+          headers: { 'User-Agent': 'BeaconNearbyFallback/1.0' },
+        });
+        clearTimeout(nomTimeout);
+
+        if (nomResp.ok) {
+          const nomData = await nomResp.json();
+          if (Array.isArray(nomData)) {
+            nomData.forEach((item: any, idx: number) => {
+              const pLat = parseFloat(item.lat);
+              const pLon = parseFloat(item.lon);
+              const dist = haversineDistMeters(lat, lon, pLat, pLon);
+              places.push({
+                id: `nom-nearby-${idx}-${item.place_id}`,
+                name: item.name || item.display_name.split(',')[0],
+                display_name: item.display_name,
+                lat: pLat,
+                lon: pLon,
+                category: item.type || item.class || category,
+                type: item.type || 'poi',
+                distanceMeters: dist,
+                estimatedDriveMinutes: Math.max(1, Math.round((dist / 1000 / 30) * 60)),
+                rating: 4.5,
+                isOpen: true,
+              });
+            });
+          }
+        }
+      } catch (nomErr) {
+        console.warn('Nominatim fallback failed:', nomErr);
+      }
+    }
+
+    // Filter by radius and sort strictly by proximity (closest places first)
+    const filtered = places
+      .filter((p) => p.distanceMeters <= maxRadiusMeters)
+      .sort((a, b) => a.distanceMeters - b.distanceMeters);
+
+    res.json({ results: filtered });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Nearby query failed', results: [] });
+  }
+});
+
+// OSRM Real Turn-by-Turn Directions API
+app.get('/api/locations/directions', async (req, res) => {
+  try {
+    const startLat = Number(req.query.startLat);
+    const startLng = Number(req.query.startLng);
+    const endLat = Number(req.query.endLat);
+    const endLng = Number(req.query.endLng);
+    const mode = String(req.query.mode || 'driving').toLowerCase();
+
+    if (isNaN(startLat) || isNaN(startLng) || isNaN(endLat) || isNaN(endLng)) {
+      res.status(400).json({ error: 'Valid start and end coordinates are required' });
+      return;
+    }
+
+    const profile = mode === 'walking' ? 'foot' : mode === 'cycling' ? 'bike' : 'car';
+    const osrmUrl = `https://router.project-osrm.org/route/v1/${profile}/${startLng},${startLat};${endLng},${endLat}?overview=full&geometries=geojson&steps=true`;
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 6000);
+
+    const resp = await fetch(osrmUrl, {
+      signal: controller.signal,
+      headers: { 'User-Agent': 'BeaconNavigator/1.0' },
+    });
+    clearTimeout(timeoutId);
+
+    if (!resp.ok) {
+      throw new Error(`OSRM responded with status ${resp.status}`);
+    }
+
+    const data = await resp.json();
+    if (data.code !== 'Ok' || !data.routes || data.routes.length === 0) {
+      throw new Error(data.message || 'No route found between points');
+    }
+
+    const route = data.routes[0];
+    const steps: any[] = [];
+
+    if (Array.isArray(route.legs)) {
+      route.legs.forEach((leg: any) => {
+        if (Array.isArray(leg.steps)) {
+          leg.steps.forEach((st: any) => {
+            const maneuver = st.maneuver || {};
+            let instruction = st.name ? `Proceed onto ${st.name}` : 'Continue straight';
+            if (maneuver.type === 'turn') {
+              instruction = `Turn ${maneuver.modifier || ''} onto ${st.name || 'road'}`;
+            } else if (maneuver.type === 'depart') {
+              instruction = `Start heading ${maneuver.modifier || 'forward'} on ${st.name || 'path'}`;
+            } else if (maneuver.type === 'arrive') {
+              instruction = `Arrive at destination`;
+            } else if (maneuver.type === 'roundabout') {
+              instruction = `Take roundabout exit onto ${st.name || 'road'}`;
+            }
+
+            steps.push({
+              instruction,
+              name: st.name || '',
+              distanceMeters: Math.round(st.distance || 0),
+              durationSeconds: Math.round(st.duration || 0),
+              type: maneuver.type,
+              modifier: maneuver.modifier,
+            });
+          });
+        }
+      });
+    }
+
+    res.json({
+      success: true,
+      distanceMeters: Math.round(route.distance),
+      durationSeconds: Math.round(route.duration),
+      geometry: route.geometry,
+      steps,
+      mode,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Routing calculation failed' });
   }
 });
 

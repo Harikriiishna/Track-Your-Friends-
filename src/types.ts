@@ -26,6 +26,9 @@ export interface UserProfile {
     showOnlineStatus: boolean;
   };
   isAdmin?: boolean;
+  markerColor?: string; // Custom hex color for live map marker
+  markerIcon?: string; // Custom icon identifier e.g. person, dad, mom, kid, pet, car, etc.
+  markerLabel?: string;
 }
 
 export interface UserLocation {
@@ -41,6 +44,9 @@ export interface UserLocation {
   speed?: number | null;
   timestamp: string; // ISO string
   batteryLevel?: number | null;
+  markerColor?: string;
+  markerIcon?: string;
+  markerLabel?: string;
 }
 
 export interface LocationBreadcrumb {
@@ -122,10 +128,48 @@ export interface SavedPlace {
   latitude: number;
   longitude: number;
   radiusMeters: number; // For geofencing
-  category: 'home' | 'work' | 'school' | 'family' | 'favorite' | 'emergency_point';
+  category: 'home' | 'work' | 'school' | 'family' | 'favorite' | 'emergency_point' | 'hospital' | 'park' | 'groceries' | 'gym';
   visibility: 'private' | 'room' | 'public';
   roomId?: string;
   createdAt: string;
+  markerColor?: string; // Custom color for map marker e.g. '#10b981'
+  markerIcon?: string; // Custom icon e.g. 'home' | 'work' | 'school' | 'family' | 'favorite' | 'emergency_point' | 'hospital' | 'park' | 'groceries' | 'gym' | 'star'
+}
+
+export interface PlaceResult {
+  id: string;
+  name: string;
+  display_name: string;
+  lat: number;
+  lon: number;
+  category?: string;
+  type?: string;
+  city?: string;
+  state?: string;
+  country?: string;
+  distanceMeters?: number;
+  estimatedDriveMinutes?: number;
+  rating?: number;
+  isOpen?: boolean;
+}
+
+export interface NavigationStep {
+  instruction: string;
+  name: string;
+  distanceMeters: number;
+  durationSeconds: number;
+  type?: string;
+  modifier?: string;
+}
+
+export interface RouteData {
+  distanceMeters: number;
+  durationSeconds: number;
+  geometry: any;
+  steps: NavigationStep[];
+  mode: 'driving' | 'walking' | 'cycling';
+  destinationName?: string;
+  destinationCoords?: { lat: number; lng: number };
 }
 
 export interface ReminderItem {

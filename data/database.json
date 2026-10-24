@@ -1,35 +1,6 @@
 {
-  "users": [
-    {
-      "id": "491cffd5-ba12-434d-a1a9-91ce16415998",
-      "email": "reddytest39@gmail.com",
-      "username": "Reddy",
-      "fullName": "Reddy",
-      "avatarUrl": "https://api.dicebear.com/7.x/initials/svg?seed=Reddy",
-      "about": "Member of Beacon Community",
-      "phoneNumber": "9880035450",
-      "createdAt": "2026-10-23T13:57:36.761Z",
-      "isOnline": true,
-      "lastSeen": "2026-10-23T13:57:37.994Z",
-      "privacy": {
-        "locationVisibility": "room_members",
-        "phoneVisibility": "room_members",
-        "profileVisibility": "public",
-        "showOnlineStatus": true
-      },
-      "isAdmin": true,
-      "passwordHash": "490948a1114efed52ed8b001c9a63a26e33d85d737df6c167f74f3afd63e82336447c62d62b8cf70ee52e72d7dcfd9b105cdd630d9e83c130db17fb5fbef2fdf",
-      "salt": "87438ce959466df8922c93eed9fb5f6b"
-    }
-  ],
-  "sessions": [
-    {
-      "token": "13f9829bb8759c4ac35eb639129abf8473af91416ddd5eedbd3fc9a40bbf1fd1",
-      "userId": "491cffd5-ba12-434d-a1a9-91ce16415998",
-      "createdAt": "2026-10-23T13:57:36.762Z",
-      "expiresAt": "2026-11-22T13:57:36.762Z"
-    }
-  ],
+  "users": [],
+  "sessions": [],
   "rooms": [
     {
       "id": "room-universal",
@@ -39,35 +10,13 @@
       "ownerId": "system",
       "hasPassword": false,
       "createdAt": "2026-01-01T00:00:00.000Z",
-      "memberCount": 1,
+      "memberCount": 0,
       "isPrivate": false,
       "isUniversal": true
     }
   ],
-  "roomMembers": [
-    {
-      "roomId": "room-universal",
-      "userId": "491cffd5-ba12-434d-a1a9-91ce16415998",
-      "role": "MEMBER",
-      "joinedAt": "2026-10-23T13:57:37.410Z"
-    }
-  ],
-  "locations": {
-    "491cffd5-ba12-434d-a1a9-91ce16415998": {
-      "userId": "491cffd5-ba12-434d-a1a9-91ce16415998",
-      "username": "Reddy",
-      "fullName": "Reddy",
-      "avatarUrl": "https://api.dicebear.com/7.x/initials/svg?seed=Reddy",
-      "latitude": 13.0551937,
-      "longitude": 77.717627,
-      "accuracy": 11.96399974822998,
-      "altitude": 813.5999755859375,
-      "heading": null,
-      "speed": null,
-      "batteryLevel": null,
-      "timestamp": "2026-10-23T13:57:38.460Z"
-    }
-  },
+  "roomMembers": [],
+  "locations": {},
   "savedPlaces": [],
   "messages": [],
   "reminders": [],
@@ -75,27 +24,7 @@
   "emergencyAlerts": [],
   "locationShareRequests": [],
   "reports": [],
-  "auditLogs": [
-    {
-      "id": "log-0145b4c1-e9d1-4872-b44e-ea34529b2660",
-      "timestamp": "2026-10-23T13:57:36.762Z",
-      "userId": "491cffd5-ba12-434d-a1a9-91ce16415998",
-      "userName": "Reddy",
-      "action": "USER_REGISTERED",
-      "details": "Account created with username Reddy "
-    }
-  ],
-  "locationHistory": [
-    {
-      "id": "bcd20f31-dd4d-494b-856d-035d12f711c4",
-      "userId": "491cffd5-ba12-434d-a1a9-91ce16415998",
-      "latitude": 13.0551937,
-      "longitude": 77.717627,
-      "accuracy": 11.96399974822998,
-      "altitude": 813.5999755859375,
-      "heading": null,
-      "speed": null,
-      "timestamp": "2026-10-23T13:57:38.460Z"
-    }
-  ]
+  "auditLogs": [],
+  "passwordResets": [],
+  "locationHistory": []
 }

@@ -2,11 +2,12 @@ import React, { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import { useRealtime } from '../../context/RealtimeContext.tsx';
 import { useAuth } from '../../context/AuthContext.tsx';
-import type { UserLocation, SavedPlace, UserPathTrail, Room } from '../../types.ts';
+import type { UserLocation, SavedPlace, UserPathTrail, Room, PlaceResult, RouteData } from '../../types.ts';
 import { calculateDistanceMeters, formatDistance, formatAccuracy, formatTimeAgo } from '../../utils/geo.ts';
 import { api } from '../../utils/api.ts';
 import { useToast } from '../../context/ToastContext.tsx';
 import { useTheme } from '../../context/ThemeContext.tsx';
+import { GooglePlacesExplorer } from '../Places/GooglePlacesExplorer.tsx';
 import {
   Layers,
   Crosshair,
@@ -40,7 +41,26 @@ import {
   RotateCcw,
   RotateCw,
   Minus,
+  Moon,
+  Bell,
+  Copy,
+  ExternalLink,
+  Share2,
 } from 'lucide-react';
+
+export interface MarkerContextMenuTarget {
+  type: 'peer' | 'self' | 'place' | 'coord';
+  title: string;
+  subtitle?: string;
+  lat: number;
+  lng: number;
+  userId?: string;
+  avatarUrl?: string;
+  isOnline?: boolean;
+  distanceText?: string;
+  heading?: number | null;
+  radiusMeters?: number;
+}
 
 interface LiveMapProps {
   savedPlaces?: SavedPlace[];
@@ -48,6 +68,8 @@ interface LiveMapProps {
   selectedRoomId?: string | null;
   onSelectUserForChat?: (userId: string) => void;
   onAddPlaceAtCoords?: (lat: number, lng: number) => void;
+  onNavigateTo?: (lat: number, lng: number, label?: string) => void;
+  onSetReminderAtCoords?: (lat: number, lng: number, title?: string) => void;
   isActive?: boolean;
   focusCoords?: { lat: number; lng: number } | null;
 }
@@ -65,6 +87,8 @@ export const LiveMap: React.FC<LiveMapProps> = ({
   selectedRoomId = null,
   onSelectUserForChat,
   onAddPlaceAtCoords,
+  onNavigateTo,
+  onSetReminderAtCoords,
   isActive = true,
   focusCoords = null,
 }) => {
@@ -88,6 +112,8 @@ export const LiveMap: React.FC<LiveMapProps> = ({
   const accuracyCircleRef = useRef<L.Circle | null>(null);
   const savedPlacesMarkersRef = useRef<L.Marker[]>([]);
   const searchMarkerRef = useRef<L.Marker | null>(null);
+  const nearbyPoiMarkersRef = useRef<L.Marker[]>([]);
+  const [nearbyPoisOnMap, setNearbyPoisOnMap] = useState<PlaceResult[]>([]);
 
   // Multi-user Breadcrumb Trail Palette & Layer Groups
   interface TrailLayerGroup {
@@ -100,7 +126,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
   const trailLayersRef = useRef<Map<string, TrailLayerGroup>>(new Map());
 
   const toast = useToast();
-  const [mapMode, setMapMode] = useState<'standard' | 'satellite' | 'traffic'>('standard');
+  const [mapMode, setMapMode] = useState<'standard' | 'satellite' | 'traffic' | 'dark'>('standard');
   const [selectedUser, setSelectedUser] = useState<UserLocation | null>(null);
   const [hasCenteredOnce, setHasCenteredOnce] = useState(false);
   const [showPermissionBanner, setShowPermissionBanner] = useState(!isGpsActive && !myLocation);
@@ -110,6 +136,323 @@ export const LiveMap: React.FC<LiveMapProps> = ({
   const [loadingTrailUserIds, setLoadingTrailUserIds] = useState<string[]>([]);
   const [trailWindowHours, setTrailWindowHours] = useState<number>(1);
   const [showTrailsControl, setShowTrailsControl] = useState<boolean>(false);
+  const [showMapControlsPop, setShowMapControlsPop] = useState<boolean>(false);
+
+  // Google Maps Places Explorer Separate Page & Navigation Overlay State
+  const [showPlacesPage, setShowPlacesPage] = useState<boolean>(false);
+  const [activeRouteData, setActiveRouteData] = useState<RouteData | null>(null);
+  const routePolylineRef = useRef<L.Polyline | null>(null);
+  const routeGlowPolylineRef = useRef<L.Polyline | null>(null);
+
+  // Marker Long-Press & Context Menu State
+  const [contextMenu, setContextMenu] = useState<{
+    isOpen: boolean;
+    x: number;
+    y: number;
+    target: MarkerContextMenuTarget;
+  }>({
+    isOpen: false,
+    x: 0,
+    y: 0,
+    target: {
+      type: 'coord',
+      title: '',
+      lat: 0,
+      lng: 0,
+    },
+  });
+
+  // Active Navigation Route & Turn-by-Turn HUD State
+  const [activeNavigation, setActiveNavigation] = useState<{
+    targetName: string;
+    lat: number;
+    lng: number;
+    distanceMeters: number;
+    walkMin: number;
+    driveMin: number;
+  } | null>(null);
+
+  const navPolylineRef = useRef<L.Polyline | null>(null);
+  const navGlowPolylineRef = useRef<L.Polyline | null>(null);
+  const navTargetMarkerRef = useRef<L.CircleMarker | null>(null);
+
+  const closeContextMenu = () => {
+    setContextMenu((prev) => (prev.isOpen ? { ...prev, isOpen: false } : prev));
+  };
+
+  const openContextMenu = (clientX: number, clientY: number, target: MarkerContextMenuTarget) => {
+    setShowSearchDropdown(false);
+    const menuWidth = 280;
+    const menuHeight = 350;
+    const padding = 16;
+
+    let x = clientX;
+    let y = clientY;
+
+    if (x + menuWidth > window.innerWidth - padding) {
+      x = window.innerWidth - menuWidth - padding;
+    }
+    if (x < padding) {
+      x = padding;
+    }
+
+    const bottomMargin = 85;
+    if (y + menuHeight > window.innerHeight - bottomMargin) {
+      y = Math.max(padding + 50, y - menuHeight - 12);
+    }
+    if (y < padding + 50) {
+      y = padding + 50;
+    }
+
+    setContextMenu({
+      isOpen: true,
+      x,
+      y,
+      target,
+    });
+  };
+
+  // Attach touch long-press (450ms) & contextmenu listeners to Leaflet marker
+  const attachMarkerLongPress = (marker: L.Marker, target: MarkerContextMenuTarget) => {
+    marker.off('contextmenu');
+    marker.on('contextmenu', (e: L.LeafletMouseEvent) => {
+      L.DomEvent.stopPropagation(e);
+      if (e.originalEvent) {
+        e.originalEvent.preventDefault();
+        openContextMenu(e.originalEvent.clientX, e.originalEvent.clientY, target);
+      }
+    });
+
+    const el = marker.getElement();
+    if (!el) return;
+
+    if ((el as any)._cleanupMarkerLongPress) {
+      (el as any)._cleanupMarkerLongPress();
+    }
+
+    let timer: any = null;
+    let startX = 0;
+    let startY = 0;
+    let hasMoved = false;
+
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length !== 1) return;
+      const touch = e.touches[0];
+      startX = touch.clientX;
+      startY = touch.clientY;
+      hasMoved = false;
+
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (!hasMoved) {
+          if (typeof navigator !== 'undefined' && navigator.vibrate) {
+            try {
+              navigator.vibrate(50);
+            } catch (_) {}
+          }
+          openContextMenu(startX, startY, target);
+        }
+        timer = null;
+      }, 450);
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+      if (!timer) return;
+      const touch = e.touches[0];
+      const dist = Math.hypot(touch.clientX - startX, touch.clientY - startY);
+      if (dist > 8) {
+        hasMoved = true;
+        clearTimeout(timer);
+        timer = null;
+      }
+    };
+
+    const onTouchEnd = () => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    };
+
+    el.addEventListener('touchstart', onTouchStart, { passive: true });
+    el.addEventListener('touchmove', onTouchMove, { passive: true });
+    el.addEventListener('touchend', onTouchEnd, { passive: true });
+    el.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+    (el as any)._cleanupMarkerLongPress = () => {
+      if (timer) clearTimeout(timer);
+      el.removeEventListener('touchstart', onTouchStart);
+      el.removeEventListener('touchmove', onTouchMove);
+      el.removeEventListener('touchend', onTouchEnd);
+      el.removeEventListener('touchcancel', onTouchEnd);
+    };
+  };
+
+  const copyCoordinates = async (lat: number, lng: number) => {
+    closeContextMenu();
+    const coordStr = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(coordStr);
+        toast.success(`Copied coordinates (${coordStr})`);
+        return;
+      }
+    } catch (_) {}
+
+    try {
+      const el = document.createElement('textarea');
+      el.value = coordStr;
+      document.body.appendChild(el);
+      el.select();
+      document.execCommand('copy');
+      document.body.removeChild(el);
+      toast.success(`Copied coordinates (${coordStr})`);
+    } catch (_) {
+      toast.info(`Coordinates: ${coordStr}`);
+    }
+  };
+
+  const handleShareLocation = async (target: MarkerContextMenuTarget) => {
+    closeContextMenu();
+    const shareUrl = `https://www.google.com/maps/search/?api=1&query=${target.lat},${target.lng}`;
+    if (typeof navigator !== 'undefined' && navigator.share) {
+      try {
+        await navigator.share({
+          title: target.title,
+          text: `Location of ${target.title}: ${target.lat.toFixed(5)}, ${target.lng.toFixed(5)}`,
+          url: shareUrl,
+        });
+        return;
+      } catch (err: any) {
+        if (err.name !== 'AbortError') {
+          console.warn('Share error:', err);
+        }
+      }
+    }
+    copyCoordinates(target.lat, target.lng);
+  };
+
+  const startNavigation = (lat: number, lng: number, label?: string) => {
+    closeContextMenu();
+    const targetName = label || 'Destination';
+
+    if (onNavigateTo) {
+      onNavigateTo(lat, lng, targetName);
+    }
+
+    const map = mapInstanceRef.current;
+    if (!map) return;
+
+    if (!myLocation) {
+      toast.info(`Navigation target: ${targetName} (${lat.toFixed(5)}, ${lng.toFixed(5)})`);
+      return;
+    }
+
+    const distMeters = calculateDistanceMeters(
+      myLocation.latitude,
+      myLocation.longitude,
+      lat,
+      lng
+    );
+
+    const walkMin = Math.max(1, Math.round(distMeters / 80));
+    const driveMin = Math.max(1, Math.round(distMeters / 400));
+
+    setActiveNavigation({
+      targetName,
+      lat,
+      lng,
+      distanceMeters: distMeters,
+      walkMin,
+      driveMin,
+    });
+
+    if (navPolylineRef.current) map.removeLayer(navPolylineRef.current);
+    if (navGlowPolylineRef.current) map.removeLayer(navGlowPolylineRef.current);
+    if (navTargetMarkerRef.current) map.removeLayer(navTargetMarkerRef.current);
+
+    const startPoint: [number, number] = [myLocation.latitude, myLocation.longitude];
+    const endPoint: [number, number] = [lat, lng];
+
+    const glow = L.polyline([startPoint, endPoint], {
+      color: '#06b6d4',
+      weight: 8,
+      opacity: 0.35,
+      lineCap: 'round',
+      lineJoin: 'round',
+    }).addTo(map);
+
+    const main = L.polyline([startPoint, endPoint], {
+      color: '#0284c7',
+      weight: 3.5,
+      opacity: 0.95,
+      dashArray: '8, 8',
+      lineCap: 'round',
+      lineJoin: 'round',
+    }).addTo(map);
+
+    const targetMarker = L.circleMarker(endPoint, {
+      radius: 9,
+      color: '#0284c7',
+      fillColor: '#38bdf8',
+      fillOpacity: 0.85,
+      weight: 2.5,
+    }).addTo(map);
+
+    navPolylineRef.current = main;
+    navGlowPolylineRef.current = glow;
+    navTargetMarkerRef.current = targetMarker;
+
+    const bounds = L.latLngBounds([startPoint, endPoint]);
+    map.fitBounds(bounds, { padding: [80, 80], maxZoom: 17 });
+    toast.success(`Navigating to ${targetName} (${formatDistance(distMeters)})`);
+  };
+
+  const cancelNavigation = () => {
+    const map = mapInstanceRef.current;
+    if (map) {
+      if (navPolylineRef.current) map.removeLayer(navPolylineRef.current);
+      if (navGlowPolylineRef.current) map.removeLayer(navGlowPolylineRef.current);
+      if (navTargetMarkerRef.current) map.removeLayer(navTargetMarkerRef.current);
+    }
+    navPolylineRef.current = null;
+    navGlowPolylineRef.current = null;
+    navTargetMarkerRef.current = null;
+    setActiveNavigation(null);
+    toast.info('Navigation route stopped');
+  };
+
+  // Sync active navigation path whenever myLocation updates
+  useEffect(() => {
+    if (!activeNavigation || !myLocation || !mapInstanceRef.current) return;
+    const startPoint: [number, number] = [myLocation.latitude, myLocation.longitude];
+    const endPoint: [number, number] = [activeNavigation.lat, activeNavigation.lng];
+
+    if (navPolylineRef.current) {
+      navPolylineRef.current.setLatLngs([startPoint, endPoint]);
+    }
+    if (navGlowPolylineRef.current) {
+      navGlowPolylineRef.current.setLatLngs([startPoint, endPoint]);
+    }
+
+    const distMeters = calculateDistanceMeters(
+      myLocation.latitude,
+      myLocation.longitude,
+      activeNavigation.lat,
+      activeNavigation.lng
+    );
+
+    setActiveNavigation((prev) =>
+      prev
+        ? {
+            ...prev,
+            distanceMeters: distMeters,
+            walkMin: Math.max(1, Math.round(distMeters / 80)),
+            driveMin: Math.max(1, Math.round(distMeters / 400)),
+          }
+        : null
+    );
+  }, [myLocation]);
 
   // Search state
   const [searchQuery, setSearchQuery] = useState('');
@@ -485,32 +828,46 @@ export const LiveMap: React.FC<LiveMapProps> = ({
 
   const GOOGLE_MAPS_KEY = (import.meta as any).env?.VITE_GOOGLE_MAPS_API_KEY || 'AIzaSyAOVYRIgupAurZup5y1PRh8Ismb1A3lLao';
 
-  const createGoogleTileLayer = (mode: 'standard' | 'satellite' | 'traffic') => {
+  const createGoogleTileLayer = (mode: 'standard' | 'satellite' | 'traffic' | 'dark') => {
     if (mode === 'satellite') {
       return L.tileLayer(
-        `https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}&key=${GOOGLE_MAPS_KEY}`,
+        `https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}&scale=2&hl=en`,
         {
           maxZoom: 21,
           subdomains: ['0', '1', '2', '3'],
-          attribution: '&copy; Google Maps',
+          detectRetina: true,
+          attribution: '&copy; Google Maps Satellite HD',
         }
       );
     } else if (mode === 'traffic') {
       return L.tileLayer(
-        `https://mt{s}.google.com/vt/lyrs=m,traffic&x={x}&y={y}&z={z}&key=${GOOGLE_MAPS_KEY}`,
+        `https://mt{s}.google.com/vt/lyrs=m,traffic&x={x}&y={y}&z={z}&scale=2&hl=en`,
         {
           maxZoom: 21,
           subdomains: ['0', '1', '2', '3'],
-          attribution: '&copy; Google Maps Traffic',
+          detectRetina: true,
+          attribution: '&copy; Google Maps Live Traffic HD',
+        }
+      );
+    } else if (mode === 'dark') {
+      return L.tileLayer(
+        `https://{s}.basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}{r}.png`,
+        {
+          maxZoom: 20,
+          subdomains: 'abcd',
+          detectRetina: true,
+          attribution: '&copy; CARTO Dark Matter HD',
         }
       );
     } else {
+      // High-Clarity Crisp Retina Google Street Map
       return L.tileLayer(
-        `https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}&key=${GOOGLE_MAPS_KEY}`,
+        `https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}&scale=2&hl=en`,
         {
           maxZoom: 21,
           subdomains: ['0', '1', '2', '3'],
-          attribution: '&copy; Google Maps',
+          detectRetina: true,
+          attribution: '&copy; Google Maps HD',
         }
       );
     }
@@ -520,8 +877,9 @@ export const LiveMap: React.FC<LiveMapProps> = ({
   useEffect(() => {
     if (!mapContainerRef.current || mapInstanceRef.current) return;
 
-    const initialLat = myLocation ? myLocation.latitude : 37.7749;
-    const initialLng = myLocation ? myLocation.longitude : -122.4194;
+    // Use current user's recorded location or immediate GPS instead of foreign default
+    const initialLat = myLocation ? myLocation.latitude : 13.043625;
+    const initialLng = myLocation ? myLocation.longitude : 77.723065;
 
     const map = L.map(mapContainerRef.current, {
       center: [initialLat, initialLng],
@@ -557,8 +915,23 @@ export const LiveMap: React.FC<LiveMapProps> = ({
       });
     }
 
-    map.on('click', (e: L.LeafletMouseEvent) => {
+    map.on('movestart', () => {
+      closeContextMenu();
+      setShowMapControlsPop(false);
+    });
+
+    map.on('zoomstart', () => {
+      closeContextMenu();
+      setShowMapControlsPop(false);
+    });
+
+    map.on('click', () => {
+      closeContextMenu();
       setShowSearchDropdown(false);
+      setShowMapControlsPop(false);
+    });
+
+    map.on('contextmenu', (e: L.LeafletMouseEvent) => {
       let lat = e.latlng.lat;
       let lng = e.latlng.lng;
       if (bearingRef.current !== 0 && mapInstanceRef.current) {
@@ -573,9 +946,13 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         lat = corrected.lat;
         lng = corrected.lng;
       }
-      if (onAddPlaceAtCoords) {
-        onAddPlaceAtCoords(lat, lng);
-      }
+      openContextMenu(e.originalEvent.clientX, e.originalEvent.clientY, {
+        type: 'coord',
+        title: 'Dropped Pin',
+        subtitle: `${lat.toFixed(5)}, ${lng.toFixed(5)}`,
+        lat,
+        lng,
+      });
     });
 
     return () => {
@@ -941,14 +1318,26 @@ export const LiveMap: React.FC<LiveMapProps> = ({
       iconAnchor: [32, 32],
     });
 
+    const selfTarget: MarkerContextMenuTarget = {
+      type: 'self',
+      title: `${user?.fullName || 'You'} (Your Location)`,
+      subtitle: `Accuracy: ${formatAccuracy(myLocation.accuracy)}`,
+      lat: myLocation.latitude,
+      lng: myLocation.longitude,
+      avatarUrl: avatar,
+      heading: effectiveHeading,
+    };
+
     if (!myMarkerRef.current) {
       myMarkerRef.current = L.marker(latLng, { icon: myIcon, zIndexOffset: 1000 }).addTo(map);
       myMarkerRef.current.on('click', () => {
         setSelectedUser(myLocation);
       });
+      attachMarkerLongPress(myMarkerRef.current, selfTarget);
     } else {
       animateMarkerPosition(myMarkerRef.current, myLocation.latitude, myLocation.longitude, 'my_marker');
       myMarkerRef.current.setIcon(myIcon);
+      attachMarkerLongPress(myMarkerRef.current, selfTarget);
     }
   }, [myLocation, user?.avatarUrl, user?.fullName, hasCenteredOnce, userHeading, bearing]);
 
@@ -1010,16 +1399,31 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         iconAnchor: [20, 20],
       });
 
+      const peerTarget: MarkerContextMenuTarget = {
+        type: 'peer',
+        userId: peerLoc.userId,
+        title: peerLoc.fullName,
+        subtitle: `@${peerLoc.username}${distText ? ` · ${distText}` : ''}`,
+        lat: peerLoc.latitude,
+        lng: peerLoc.longitude,
+        avatarUrl: peerLoc.avatarUrl,
+        isOnline,
+        distanceText: distText,
+        heading: peerHeading,
+      };
+
       if (!currentMarkers.has(peerLoc.userId)) {
         const marker = L.marker(latLng, { icon: peerIcon }).addTo(map);
         marker.on('click', () => {
           setSelectedUser(peerLoc);
         });
+        attachMarkerLongPress(marker, peerTarget);
         currentMarkers.set(peerLoc.userId, marker);
       } else {
         const existingMarker = currentMarkers.get(peerLoc.userId)!;
         animateMarkerPosition(existingMarker, peerLoc.latitude, peerLoc.longitude, peerLoc.userId);
         existingMarker.setIcon(peerIcon);
+        attachMarkerLongPress(existingMarker, peerTarget);
       }
     }
 
@@ -1072,6 +1476,14 @@ export const LiveMap: React.FC<LiveMapProps> = ({
           <p class="text-[10px] text-slate-400 mt-1">Geofence radius: ${place.radiusMeters} m</p>
         </div>
       `);
+      attachMarkerLongPress(marker, {
+        type: 'place',
+        title: place.name,
+        subtitle: place.description || `Radius: ${place.radiusMeters}m`,
+        lat: place.latitude,
+        lng: place.longitude,
+        radiusMeters: place.radiusMeters,
+      });
       savedPlacesMarkersRef.current.push(marker);
     });
   }, [savedPlaces]);
@@ -1143,10 +1555,229 @@ export const LiveMap: React.FC<LiveMapProps> = ({
     }, 200);
   };
 
+  const handleClearNavigationRoute = () => {
+    const map = mapInstanceRef.current;
+    if (map) {
+      if (routePolylineRef.current) {
+        map.removeLayer(routePolylineRef.current);
+        routePolylineRef.current = null;
+      }
+      if (routeGlowPolylineRef.current) {
+        map.removeLayer(routeGlowPolylineRef.current);
+        routeGlowPolylineRef.current = null;
+      }
+    }
+    setActiveRouteData(null);
+    toast.info('Navigation route cleared');
+  };
+
+  const handleSelectPlaceFromExplorer = (place: PlaceResult) => {
+    setSearchQuery(place.name);
+    setShowPlacesPage(false);
+    setShowSearchDropdown(false);
+
+    const map = mapInstanceRef.current;
+    if (!map) return;
+
+    const latLng = L.latLng(place.lat, place.lon);
+    map.flyTo(latLng, 17, { duration: 1.2 });
+
+    if (searchMarkerRef.current) {
+      map.removeLayer(searchMarkerRef.current);
+    }
+
+    const placeIcon = L.divIcon({
+      className: 'beacon-google-place-marker',
+      html: `
+        <div class="relative flex flex-col items-center cursor-pointer animate-pop-in">
+          <div class="absolute -inset-2 rounded-full bg-sky-500/30 animate-ping"></div>
+          <div class="w-10 h-10 rounded-2xl bg-gradient-to-tr from-sky-600 via-blue-600 to-indigo-600 text-white flex items-center justify-center shadow-2xl border-2 border-white">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/>
+              <circle cx="12" cy="10" r="3"/>
+            </svg>
+          </div>
+          <div class="mt-1 px-2.5 py-1 bg-slate-900/95 backdrop-blur-md text-xs font-bold text-white rounded-xl shadow-lg border border-white/20 whitespace-nowrap">
+            ${place.name}
+          </div>
+        </div>
+      `,
+      iconSize: [40, 60],
+      iconAnchor: [20, 30],
+    });
+
+    const pin = L.marker(latLng, { icon: placeIcon }).addTo(map);
+    searchMarkerRef.current = pin;
+
+    attachMarkerLongPress(pin, {
+      type: 'coord',
+      title: place.name,
+      subtitle: place.display_name,
+      lat: place.lat,
+      lng: place.lon,
+    });
+
+    toast.success(`Showing ${place.name} on map`);
+  };
+
+  const handleClearNearbyPois = () => {
+    const map = mapInstanceRef.current;
+    if (map && nearbyPoiMarkersRef.current.length > 0) {
+      nearbyPoiMarkersRef.current.forEach((marker) => map.removeLayer(marker));
+    }
+    nearbyPoiMarkersRef.current = [];
+    setNearbyPoisOnMap([]);
+  };
+
+  const handleShowNearbyPlacesOnMap = (places: PlaceResult[]) => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+
+    handleClearNearbyPois();
+    setNearbyPoisOnMap(places);
+
+    const newMarkers: L.Marker[] = [];
+    const bounds = L.latLngBounds([]);
+
+    if (myLocation) {
+      bounds.extend(L.latLng(myLocation.latitude, myLocation.longitude));
+    }
+
+    places.forEach((place) => {
+      const latLng = L.latLng(place.lat, place.lon);
+      bounds.extend(latLng);
+
+      let badgeBg = 'bg-sky-600';
+      if (place.category?.includes('fuel') || place.type?.includes('fuel')) badgeBg = 'bg-amber-600';
+      else if (place.category?.includes('food') || place.category?.includes('restaurant')) badgeBg = 'bg-rose-600';
+      else if (place.category?.includes('cafe')) badgeBg = 'bg-amber-700';
+      else if (place.category?.includes('hospital') || place.category?.includes('health')) badgeBg = 'bg-red-600';
+      else if (place.category?.includes('park')) badgeBg = 'bg-emerald-600';
+      else if (place.category?.includes('supermarket') || place.category?.includes('shop')) badgeBg = 'bg-teal-600';
+
+      const iconHtml = `
+        <div class="relative flex flex-col items-center cursor-pointer group hover:scale-110 transition-transform">
+          <div class="w-8 h-8 rounded-xl ${badgeBg} text-white flex items-center justify-center shadow-lg border-2 border-white/90">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/>
+              <circle cx="12" cy="10" r="3"/>
+            </svg>
+          </div>
+          <div class="mt-0.5 px-2 py-0.5 bg-slate-900/90 backdrop-blur text-[10px] font-bold text-white rounded-lg shadow-md border border-white/10 whitespace-nowrap max-w-[120px] truncate">
+            ${place.name}
+          </div>
+        </div>
+      `;
+
+      const markerIcon = L.divIcon({
+        className: 'beacon-nearby-poi-marker',
+        html: iconHtml,
+        iconSize: [32, 48],
+        iconAnchor: [16, 24],
+      });
+
+      const poiMarker = L.marker(latLng, { icon: markerIcon }).addTo(map);
+
+      poiMarker.bindPopup(`
+        <div style="font-family: inherit; font-size: 12px; color: #0f172a; min-width: 180px;">
+          <div style="font-weight: 700; font-size: 13px; margin-bottom: 2px;">${place.name}</div>
+          <div style="font-size: 11px; color: #64748b; margin-bottom: 6px;">${place.display_name}</div>
+          <div style="display: flex; justify-content: space-between; font-size: 11px; font-weight: 600; color: #0284c7; margin-bottom: 8px;">
+            <span>${place.distanceMeters ? formatDistance(place.distanceMeters) : ''}</span>
+            <span>${place.rating ? '★ ' + place.rating : ''}</span>
+          </div>
+          <button id="poi-nav-${place.id}" style="width: 100%; background: #0284c7; color: white; border: none; padding: 6px; border-radius: 8px; font-weight: 700; cursor: pointer; margin-bottom: 4px;">
+            Start Route
+          </button>
+        </div>
+      `);
+
+      poiMarker.on('popupopen', () => {
+        const btn = document.getElementById('poi-nav-' + place.id);
+        if (btn) {
+          btn.onclick = () => {
+            poiMarker.closePopup();
+            startNavigation(place.lat, place.lon, place.name);
+          };
+        }
+      });
+
+      attachMarkerLongPress(poiMarker, {
+        type: 'coord',
+        title: place.name,
+        subtitle: place.display_name,
+        lat: place.lat,
+        lng: place.lon,
+        distanceText: place.distanceMeters ? formatDistance(place.distanceMeters) : undefined,
+      });
+
+      newMarkers.push(poiMarker);
+    });
+
+    nearbyPoiMarkersRef.current = newMarkers;
+
+    if (bounds.isValid()) {
+      map.fitBounds(bounds, { padding: [50, 50], maxZoom: 16 });
+    }
+  };
+
+  const handleStartRouteOnMap = (route: RouteData, destination: PlaceResult) => {
+    setShowPlacesPage(false);
+    setActiveRouteData(route);
+
+    const map = mapInstanceRef.current;
+    if (!map) return;
+
+    // Remove existing route polylines
+    if (routePolylineRef.current) {
+      map.removeLayer(routePolylineRef.current);
+      routePolylineRef.current = null;
+    }
+    if (routeGlowPolylineRef.current) {
+      map.removeLayer(routeGlowPolylineRef.current);
+      routeGlowPolylineRef.current = null;
+    }
+
+    if (route.geometry && Array.isArray(route.geometry.coordinates)) {
+      const latLngs = route.geometry.coordinates.map((coord: [number, number]) =>
+        L.latLng(coord[1], coord[0])
+      );
+
+      // Glow line
+      routeGlowPolylineRef.current = L.polyline(latLngs, {
+        color: '#38bdf8',
+        weight: 9,
+        opacity: 0.45,
+        lineCap: 'round',
+        lineJoin: 'round',
+      }).addTo(map);
+
+      // Main line
+      routePolylineRef.current = L.polyline(latLngs, {
+        color: '#0284c7',
+        weight: 4.5,
+        opacity: 0.95,
+        lineCap: 'round',
+        lineJoin: 'round',
+      }).addTo(map);
+
+      map.fitBounds(routePolylineRef.current.getBounds(), { padding: [80, 80], maxZoom: 18 });
+      toast.success(
+        `Navigation route active: ~${Math.round(route.durationSeconds / 60)} mins to ${destination.name}`
+      );
+    }
+  };
+
   const centerOnMyLocation = () => {
+    requestLocationUpdate();
     if (mapInstanceRef.current && myLocation) {
-      mapInstanceRef.current.flyTo([myLocation.latitude, myLocation.longitude], 17, { duration: 1.2 });
+      mapInstanceRef.current.flyTo([myLocation.latitude, myLocation.longitude], 18, {
+        animate: true,
+        duration: 0.9,
+      });
+      toast.success(`Centered on your accurate place (±${gpsAccuracy ? Math.round(gpsAccuracy) : 5}m)`);
     } else {
+      toast.info('Acquiring fresh high-precision GPS fix...');
       requestLocationUpdate();
     }
   };
@@ -1175,9 +1806,9 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         <div ref={mapContainerRef} className="w-full h-full z-0" />
       </div>
 
-      {/* Floating Gesture & Bearing HUD */}
+      {/* Floating Gesture & Bearing HUD - clean bottom-right placement above compass cluster */}
       {(isGesturing || bearing !== 0) && (
-        <div className="absolute top-20 right-4 z-30 bg-slate-900/90 backdrop-blur-md text-white px-3 py-1.5 rounded-2xl shadow-xl border border-slate-700/80 flex items-center gap-2 text-xs font-mono animate-in fade-in duration-150">
+        <div className="absolute bottom-56 right-4 z-20 bg-slate-900/90 backdrop-blur-md text-white px-3 py-1.5 rounded-2xl shadow-xl border border-slate-700/80 flex items-center gap-2 text-xs font-mono animate-in fade-in duration-150">
           <Compass className="w-4 h-4 text-sky-400" style={{ transform: `rotate(${-bearing}deg)` }} />
           <div className="flex items-center gap-1.5">
             <span className="font-bold text-white">{bearing}° {getCompassHeading(bearing)}</span>
@@ -1196,314 +1827,385 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         </div>
       )}
 
-      {/* Top Floating Bar: Address Search & Map Mode Switcher */}
-      <div className="absolute top-4 left-4 right-4 md:right-auto md:w-96 z-20 flex flex-col gap-2">
-        {/* Search Input Box */}
-        <div className="relative">
-          <div className={`flex items-center gap-2 ${themeConfig.glassPanel} px-3.5 py-2.5 rounded-2xl shadow-xl border ${themeConfig.glassBorder}`}>
-            <Search className="w-4 h-4 text-slate-400 shrink-0" />
-            <input
-              type="text"
-              placeholder="Search address, landmark, or street..."
-              value={searchQuery}
-              onChange={handleSearchChange}
-              onFocus={() => {
-                if (searchResults.length > 0) setShowSearchDropdown(true);
-              }}
-              className={`w-full bg-transparent text-xs ${themeConfig.textPrimary} focus:outline-none placeholder-slate-400 font-medium`}
-            />
-            {searchQuery && (
+      {/* Top Floating Bar: Address Search, Navigation HUD & Quick Pop Button */}
+      <div className="absolute top-4 left-4 right-4 md:right-auto md:w-[440px] z-30 flex flex-col gap-2">
+        {/* Active Route / Google Maps Turn-by-Turn Navigation HUD */}
+        {activeRouteData && (
+          <div className="p-3.5 rounded-2xl bg-slate-900/95 backdrop-blur-xl border border-sky-500/40 shadow-2xl text-white flex items-center justify-between gap-3 animate-in slide-in-from-top-2">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="w-8 h-8 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0 animate-pulse">
+                <Navigation className="w-4 h-4" />
+              </div>
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span className="font-bold text-xs text-white truncate">
+                    {activeRouteData.destinationName || 'Destination'}
+                  </span>
+                  <span className="px-1.5 py-0.2 rounded bg-emerald-500/30 text-emerald-300 font-mono text-[9px] font-bold">
+                    ~{Math.round(activeRouteData.durationSeconds / 60)} min
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-300 truncate mt-0.5">
+                  {activeRouteData.steps?.[0]?.instruction || 'Proceed on route'} · {formatDistance(activeRouteData.distanceMeters)}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1.5 shrink-0">
               <button
-                onClick={() => {
-                  setSearchQuery('');
-                  setSearchResults([]);
-                  setShowSearchDropdown(false);
-                }}
-                className="text-slate-400 hover:text-white"
+                onClick={() => setShowPlacesPage(true)}
+                className="px-2 py-1 bg-white/10 hover:bg-white/20 text-slate-200 rounded-lg text-xs font-semibold cursor-pointer transition-colors"
+                title="View full step-by-step route"
+              >
+                Steps
+              </button>
+              <button
+                onClick={handleClearNavigationRoute}
+                className="p-1.5 text-slate-400 hover:text-white hover:bg-white/10 rounded-lg transition-colors cursor-pointer"
+                title="End Navigation"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Nearby POIs Active HUD Banner */}
+        {nearbyPoisOnMap.length > 0 && (
+          <div className="flex items-center justify-between p-2.5 rounded-2xl bg-slate-900/95 border border-sky-500/40 shadow-xl backdrop-blur-md animate-in slide-in-from-top-1 text-xs">
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="w-6 h-6 rounded-lg bg-sky-500/20 text-sky-400 flex items-center justify-center shrink-0">
+                <MapPin className="w-3.5 h-3.5" />
+              </div>
+              <span className="text-white font-bold truncate">
+                Showing {nearbyPoisOnMap.length} places near you
+              </span>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                onClick={() => setShowPlacesPage(true)}
+                className="px-2.5 py-1 rounded-lg bg-sky-600 hover:bg-sky-500 text-white font-semibold text-[11px] cursor-pointer"
+              >
+                List
+              </button>
+              <button
+                onClick={handleClearNearbyPois}
+                className="p-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white cursor-pointer"
+                title="Clear plotted places"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
-            )}
+            </div>
+          </div>
+        )}
+
+        <div className="flex items-center gap-2">
+          {/* Search Input Box (Opens Dedicated Google Places Page on Click) */}
+          <div className="relative flex-1">
+            <div
+              onClick={() => setShowPlacesPage(true)}
+              className={`flex items-center gap-2 ${themeConfig.glassPanel} px-3.5 py-2.5 rounded-2xl shadow-xl border ${themeConfig.glassBorder} cursor-pointer group hover:bg-white/15 transition-all`}
+            >
+              <Search className="w-4 h-4 text-sky-400 shrink-0 group-hover:scale-110 transition-transform" />
+              <input
+                type="text"
+                placeholder="Search address, landmark, or street..."
+                value={searchQuery}
+                readOnly
+                onClick={() => setShowPlacesPage(true)}
+                className={`w-full bg-transparent text-xs ${themeConfig.textPrimary} focus:outline-none placeholder-slate-400 font-medium cursor-pointer`}
+              />
+              <span className="px-2 py-0.5 rounded-lg bg-sky-500/20 text-sky-300 text-[10px] font-bold shrink-0 border border-sky-400/30 group-hover:bg-sky-500 group-hover:text-white transition-colors">
+                Google Places
+              </span>
+            </div>
           </div>
 
-          {/* Search Results Dropdown */}
-          {showSearchDropdown && searchResults.length > 0 && (
-            <div className={`absolute top-full left-0 right-0 mt-1 ${themeConfig.glassPanel} rounded-2xl shadow-2xl border ${themeConfig.glassBorder} overflow-hidden divide-y divide-white/10 max-h-60 overflow-y-auto`}>
-              {searchResults.map((res, idx) => (
-                <button
-                  key={idx}
-                  onClick={() => handleSelectSearchResult(res)}
-                  className="w-full p-3 text-left hover:bg-white/10 transition-colors flex items-start gap-2.5"
-                >
-                  <MapPin className="w-4 h-4 text-sky-400 shrink-0 mt-0.5" />
-                  <div className="truncate">
-                    <span className={`font-bold text-xs ${themeConfig.textPrimary} block truncate`}>{res.name}</span>
-                    <span className="text-[10px] text-slate-400 block truncate">{res.display_name}</span>
-                  </div>
-                </button>
-              ))}
-            </div>
-          )}
+          {/* Near Me Direct Shortcut Button */}
+          <button
+            onClick={() => setShowPlacesPage(true)}
+            title="Explore Places Near Me"
+            className="flex items-center gap-1.5 px-3 py-2.5 bg-gradient-to-r from-sky-600 to-indigo-600 hover:from-sky-500 hover:to-indigo-500 text-white font-bold text-xs rounded-2xl shadow-xl border border-sky-400/40 cursor-pointer active:scale-95 transition-all shrink-0"
+          >
+            <Compass className="w-4 h-4 text-sky-200" />
+            <span className="hidden sm:inline">Near Me</span>
+          </button>
+
+          {/* Map Controls Pop Button */}
+          <button
+            onClick={() => {
+              setShowMapControlsPop(!showMapControlsPop);
+              setShowSearchDropdown(false);
+            }}
+            title="Map Views, Layers & Controls"
+            className={`px-3 py-2.5 ${themeConfig.glassPanel} hover:bg-white/15 text-white rounded-2xl shadow-xl border ${themeConfig.glassBorder} flex items-center gap-1.5 shrink-0 transition-all cursor-pointer active:scale-95 ${
+              showMapControlsPop ? 'ring-2 ring-sky-400 bg-white/20' : ''
+            }`}
+          >
+            <Layers className="w-4 h-4 text-sky-400" />
+            <span className="text-xs font-semibold capitalize hidden xs:inline sm:inline">
+              {mapMode === 'standard' ? 'Standard' : mapMode === 'satellite' ? 'Satellite' : mapMode === 'traffic' ? 'Traffic' : 'Dark'}
+            </span>
+            {bearing !== 0 && (
+              <span className="px-1.5 py-0.2 bg-sky-500 text-white rounded-full text-[9px] font-mono font-bold">
+                {bearing}°
+              </span>
+            )}
+            <ChevronDown className={`w-3.5 h-3.5 text-slate-300 transition-transform duration-200 ${showMapControlsPop ? 'rotate-180' : ''}`} />
+          </button>
         </div>
 
-        {/* Layer Toggle Control: Standard Map, Satellite View, and High-Contrast Traffic View */}
-        <div className="flex items-center gap-2">
-          <div className={`flex items-center gap-1 ${themeConfig.glassPanel} p-1 rounded-2xl shadow-xl border ${themeConfig.glassBorder}`}>
-            <button
-              onClick={() => {
-                setMapMode('standard');
-                toast.info('Standard map layer enabled');
-              }}
-              title="Standard Street Map"
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-xl transition-all whitespace-nowrap cursor-pointer active:scale-95 ${
-                mapMode === 'standard'
-                  ? 'bg-white/20 text-white shadow-sm ring-1 ring-white/30'
-                  : 'text-slate-300 hover:text-white hover:bg-white/10'
-              }`}
-            >
-              <MapIcon className="w-3.5 h-3.5" />
-              <span>Standard</span>
-            </button>
-            <button
-              onClick={() => {
-                setMapMode('satellite');
-                toast.info('Satellite imagery layer enabled');
-              }}
-              title="Satellite Aerial Imagery"
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-xl transition-all whitespace-nowrap cursor-pointer active:scale-95 ${
-                mapMode === 'satellite'
-                  ? 'bg-white/20 text-white shadow-sm ring-1 ring-white/30'
-                  : 'text-slate-300 hover:text-white hover:bg-white/10'
-              }`}
-            >
-              <Globe className="w-3.5 h-3.5" />
-              <span>Satellite</span>
-            </button>
-            <button
-              onClick={() => {
-                setMapMode('traffic');
-                toast.info('High-contrast traffic layer enabled');
-              }}
-              title="High-Contrast Traffic & Transit Network"
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-xl transition-all whitespace-nowrap cursor-pointer active:scale-95 ${
-                mapMode === 'traffic'
-                  ? 'bg-white/20 text-white shadow-sm ring-1 ring-sky-400/50'
-                  : 'text-slate-300 hover:text-white hover:bg-white/10'
-              }`}
-            >
-              <Car className="w-3.5 h-3.5" />
-              <span>Traffic</span>
-            </button>
-          </div>
-
-          {/* Breadcrumb Trail Toggle Control for Selected Users in Room */}
-          <div className="relative">
-            <button
-              onClick={() => setShowTrailsControl(!showTrailsControl)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-2xl shadow-xl border transition-all cursor-pointer active:scale-95 whitespace-nowrap ${
-                Object.keys(activeTrails).length > 0
-                  ? 'bg-sky-600 text-white border-sky-400 shadow-sky-600/30 ring-2 ring-sky-400/40'
-                  : `${themeConfig.glassPanel} text-white hover:text-white ${themeConfig.glassBorder} hover:bg-white/10`
-              }`}
-              title="Toggle breadcrumb trail (previous locations) for room members"
-            >
-              <Footprints className={`w-3.5 h-3.5 ${Object.keys(activeTrails).length > 0 ? 'text-white' : 'text-sky-400'}`} />
-              <span>Trails</span>
-              {Object.keys(activeTrails).length > 0 && (
-                <span className="px-1.5 py-0.2 bg-white text-sky-800 rounded-full text-[10px] font-bold">
-                  {Object.keys(activeTrails).length}
-                </span>
-              )}
-              <ChevronDown className={`w-3 h-3 transition-transform ${showTrailsControl ? 'rotate-180' : ''}`} />
-            </button>
-
-            {/* Room Members Breadcrumb Popover Menu */}
-            {showTrailsControl && (
-              <div className={`absolute top-full left-0 mt-2 w-80 md:w-96 ${themeConfig.glassPanel} rounded-2xl shadow-2xl border ${themeConfig.glassBorder} p-4 z-40 animate-in fade-in slide-in-from-top-2 duration-150`}>
-                <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-                  <div>
-                    <h4 className="font-bold text-xs text-slate-900 flex items-center gap-1.5">
-                      <Route className="w-3.5 h-3.5 text-sky-500" />
-                      <span>Breadcrumb Trails</span>
-                    </h4>
-                    <p className="text-[10px] text-slate-500">
-                      {activeRoom ? `Room #${activeRoom.name}` : 'Toggle previous locations for room members'}
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => setShowTrailsControl(false)}
-                    className="p-1 text-slate-400 hover:text-slate-700 rounded-lg cursor-pointer"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
+        {/* Floating Map Controls Popover Card (Pop Button Modal) */}
+        {showMapControlsPop && (
+          <div className={`w-full ${themeConfig.glassPanel} rounded-3xl shadow-2xl border ${themeConfig.glassBorder} p-4 z-40 animate-in fade-in slide-in-from-top-2 duration-150 backdrop-blur-xl text-white space-y-3.5 max-h-[80vh] overflow-y-auto`}>
+            {/* Popover Header */}
+            <div className="flex items-center justify-between pb-2 border-b border-white/10">
+              <div className="flex items-center gap-2">
+                <div className="w-7 h-7 rounded-xl bg-sky-500/20 text-sky-400 flex items-center justify-center">
+                  <Layers className="w-4 h-4" />
                 </div>
+                <div>
+                  <h4 className="font-bold text-xs text-white">Map Views & Layers</h4>
+                  <p className="text-[10px] text-slate-400">High-definition tiles, orientation & trails</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowMapControlsPop(false)}
+                className="p-1 text-slate-400 hover:text-white rounded-lg transition-colors cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
 
-                {/* History Window & Batch Actions */}
-                <div className="py-2.5 flex items-center justify-between gap-2 border-b border-slate-100 text-xs">
-                  <div className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-lg text-[10px]">
-                    {[
-                      { label: '15m', val: 0.25 },
-                      { label: '30m', val: 0.5 },
-                      { label: '1h', val: 1 },
-                    ].map((opt) => (
-                      <button
-                        key={opt.label}
-                        onClick={() => reloadAllActiveTrails(opt.val)}
-                        className={`px-2 py-0.5 rounded-md font-semibold transition-colors cursor-pointer ${
-                          trailWindowHours === opt.val
-                            ? 'bg-slate-900 text-white shadow-xs'
-                            : 'text-slate-600 hover:text-slate-900'
-                        }`}
-                      >
-                        {opt.label}
-                      </button>
-                    ))}
-                  </div>
-
-                  <div className="flex items-center gap-1.5">
+            {/* Section 1: Map Styles Grid */}
+            <div>
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-2 font-mono">
+                Select Layer Style
+              </span>
+              <div className="grid grid-cols-2 gap-2">
+                {[
+                  { id: 'standard', name: 'Standard HD', icon: MapIcon, desc: 'Google Street Retina' },
+                  { id: 'satellite', name: 'Satellite HD', icon: Globe, desc: 'Aerial Hybrid Imagery' },
+                  { id: 'traffic', name: 'Live Traffic', icon: Car, desc: 'Real-time Congestion' },
+                  { id: 'dark', name: 'Dark Matter', icon: Moon, desc: 'OLED High Contrast' },
+                ].map((item) => {
+                  const Icon = item.icon;
+                  const isSelected = mapMode === item.id;
+                  return (
                     <button
-                      onClick={toggleAllRoomTrails}
-                      className="px-2.5 py-1 bg-sky-50 hover:bg-sky-100 text-sky-700 rounded-lg text-[10px] font-bold cursor-pointer transition-colors"
+                      key={item.id}
+                      onClick={() => {
+                        setMapMode(item.id as any);
+                        toast.info(`${item.name} enabled`);
+                      }}
+                      className={`p-2.5 rounded-2xl border text-left transition-all flex items-start gap-2.5 cursor-pointer active:scale-95 ${
+                        isSelected
+                          ? 'bg-sky-500/25 border-sky-400/80 ring-1 ring-sky-400/50 shadow-sm'
+                          : 'bg-white/5 border-white/10 hover:bg-white/10 hover:border-white/20'
+                      }`}
                     >
-                      {roomUsersList.length > 0 && roomUsersList.every((u) => !!activeTrails[u.id])
-                        ? 'Hide All'
-                        : 'Show All'}
-                    </button>
-                    {Object.keys(activeTrails).length > 0 && (
-                      <button
-                        onClick={clearAllTrails}
-                        className="px-2 py-1 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded-lg text-[10px] font-bold cursor-pointer transition-colors"
-                      >
-                        Clear
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {/* Member Checkbox/Toggle List */}
-                <div className="mt-2 divide-y divide-slate-100 max-h-56 overflow-y-auto">
-                  {roomUsersList.length === 0 ? (
-                    <div className="py-4 text-center text-xs text-slate-400">
-                      No members currently sharing location in this room.
-                    </div>
-                  ) : (
-                    roomUsersList.map((member) => {
-                      const isActive = !!activeTrails[member.id];
-                      const isLoading = loadingTrailUserIds.includes(member.id);
-                      const palette = getPaletteForUser(member.id);
-                      const trail = activeTrails[member.id];
-
-                      return (
-                        <div
-                          key={member.id}
-                          className="py-2 flex items-center justify-between gap-2.5 hover:bg-slate-50/80 rounded-xl px-1.5 transition-colors"
-                        >
-                          <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                            <div className="relative shrink-0">
-                              <img
-                                src={member.avatarUrl}
-                                alt={member.fullName}
-                                className={`w-8 h-8 rounded-full object-cover border-2 ${
-                                  isActive ? palette.border : 'border-slate-200'
-                                }`}
-                              />
-                              <span
-                                className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-white ${
-                                  member.isOnline ? 'bg-emerald-500' : 'bg-slate-400'
-                                }`}
-                              />
-                            </div>
-
-                            <div className="truncate flex-1">
-                              <div className="flex items-center gap-1.5">
-                                <span className="font-bold text-xs text-slate-900 truncate">
-                                  {member.fullName}
-                                </span>
-                                <span
-                                  className={`w-2 h-2 rounded-full shrink-0 ${palette.bg}`}
-                                  title={`Trail color: ${palette.name}`}
-                                />
-                              </div>
-                              <div className="text-[10px] text-slate-500 flex items-center gap-1.5">
-                                {isActive && trail ? (
-                                  <span className="text-sky-600 font-semibold font-mono">
-                                    {formatDistance(trail.totalDistanceMeters)} · {trail.points.length} pts
-                                  </span>
-                                ) : (
-                                  <span>@{member.username}</span>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-
-                          <div className="flex items-center gap-1 shrink-0">
-                            {isActive && (
-                              <button
-                                onClick={() => fitUserTrailBounds(member.id)}
-                                title="Zoom to trail"
-                                className="p-1.5 text-slate-400 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
-                              >
-                                <Maximize2 className="w-3.5 h-3.5" />
-                              </button>
-                            )}
-
-                            <button
-                              onClick={() => toggleUserTrail(member.id)}
-                              disabled={isLoading}
-                              className={`p-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1 transition-all cursor-pointer ${
-                                isActive
-                                  ? `${palette.bg} text-white border-transparent shadow-xs`
-                                  : 'bg-slate-100 hover:bg-slate-200 text-slate-600 border-slate-200'
-                              }`}
-                              title={isActive ? 'Hide Trail' : 'Show Trail'}
-                            >
-                              {isLoading ? (
-                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                              ) : isActive ? (
-                                <Eye className="w-3.5 h-3.5" />
-                              ) : (
-                                <EyeOff className="w-3.5 h-3.5 opacity-60" />
-                              )}
-                            </button>
-                          </div>
+                      <div className={`p-1.5 rounded-xl shrink-0 ${isSelected ? 'bg-sky-500 text-white' : 'bg-white/10 text-slate-300'}`}>
+                        <Icon className="w-4 h-4" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center justify-between">
+                          <span className="font-bold text-xs text-white truncate">{item.name}</span>
+                          {isSelected && <Check className="w-3.5 h-3.5 text-sky-400 shrink-0" />}
                         </div>
-                      );
-                    })
+                        <span className="text-[10px] text-slate-400 block truncate">{item.desc}</span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Section 2: Orientation & Compass Quick Actions */}
+            <div className="pt-2 border-t border-white/10">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider font-mono">
+                  Orientation & Compass
+                </span>
+                <span className="text-[10px] font-mono text-sky-300 font-bold">
+                  {bearing}° {getCompassHeading(bearing)} · Zoom {currentZoom.toFixed(1)}x
+                </span>
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <button
+                  onClick={() => rotateMapBy(-45)}
+                  className="py-2 px-2 bg-white/5 hover:bg-white/10 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 border border-white/10 transition-colors cursor-pointer"
+                >
+                  <RotateCcw className="w-3.5 h-3.5 text-sky-400" />
+                  <span>-45°</span>
+                </button>
+                <button
+                  onClick={resetNorth}
+                  className={`py-2 px-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 border transition-colors cursor-pointer ${
+                    bearing !== 0
+                      ? 'bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border-rose-500/40 ring-1 ring-rose-400/40'
+                      : 'bg-white/5 hover:bg-white/10 text-slate-300 border-white/10'
+                  }`}
+                >
+                  <Compass className="w-3.5 h-3.5 text-rose-400" />
+                  <span>North (0°)</span>
+                </button>
+                <button
+                  onClick={() => rotateMapBy(45)}
+                  className="py-2 px-2 bg-white/5 hover:bg-white/10 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 border border-white/10 transition-colors cursor-pointer"
+                >
+                  <RotateCw className="w-3.5 h-3.5 text-sky-400" />
+                  <span>+45°</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Section 3: Room Member Breadcrumb Trails */}
+            <div className="pt-2 border-t border-white/10 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <div>
+                  <span className="font-bold text-xs text-white block">Breadcrumb Trails</span>
+                  <span className="text-[10px] text-slate-400 block">
+                    {Object.keys(activeTrails).length > 0
+                      ? `${Object.keys(activeTrails).length} member trail(s) active`
+                      : 'Historical GPS paths for room members'}
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={toggleAllRoomTrails}
+                    className="px-2.5 py-1.5 bg-sky-600 hover:bg-sky-500 text-white rounded-xl text-xs font-semibold cursor-pointer transition-colors"
+                  >
+                    {roomUsersList.length > 0 && roomUsersList.every((u) => !!activeTrails[u.id])
+                      ? 'Hide All'
+                      : 'Show All'}
+                  </button>
+                  {Object.keys(activeTrails).length > 0 && (
+                    <button
+                      onClick={clearAllTrails}
+                      className="px-2.5 py-1.5 bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 rounded-xl text-xs font-semibold cursor-pointer transition-colors"
+                    >
+                      Clear
+                    </button>
                   )}
                 </div>
-
-                {Object.keys(activeTrails).length > 0 && (
-                  <div className="pt-2.5 mt-2 border-t border-slate-100 flex items-center justify-between text-[11px]">
-                    <span className="text-slate-500 font-medium">
-                      {Object.keys(activeTrails).length} trail{Object.keys(activeTrails).length > 1 ? 's' : ''} active
-                    </span>
-                    <button
-                      onClick={fitAllTrailsBounds}
-                      className="text-sky-600 hover:text-sky-800 font-bold flex items-center gap-1 cursor-pointer"
-                    >
-                      <Maximize2 className="w-3 h-3" />
-                      Fit All on Map
-                    </button>
-                  </div>
-                )}
               </div>
-            )}
-          </div>
 
-          {/* Genuine GPS Accuracy Badge strictly formatted */}
-          <div className="bg-white/90 backdrop-blur-md px-3 py-1.5 rounded-xl shadow-md border border-slate-200 flex items-center gap-2 text-xs">
-            <div
-              className={`w-2 h-2 rounded-full ${
-                isGpsActive ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse'
-              }`}
-            />
-            <span className="font-medium text-slate-800">
-              {isGpsActive
-                ? `Live GPS · ${gpsAccuracy ? formatAccuracy(gpsAccuracy) : 'Acquiring...'}`
-                : 'GPS Initializing'}
-            </span>
+              {/* Time Span Picker */}
+              <div className="flex items-center justify-between text-xs bg-slate-900/60 p-2 rounded-xl">
+                <span className="text-[10px] text-slate-400 font-mono">History Span:</span>
+                <div className="flex items-center gap-1 bg-slate-800 p-0.5 rounded-lg text-[10px]">
+                  {[
+                    { label: '15m', val: 0.25 },
+                    { label: '30m', val: 0.5 },
+                    { label: '1h', val: 1 },
+                  ].map((opt) => (
+                    <button
+                      key={opt.label}
+                      onClick={() => reloadAllActiveTrails(opt.val)}
+                      className={`px-2.5 py-0.5 rounded-md font-semibold transition-colors cursor-pointer ${
+                        trailWindowHours === opt.val
+                          ? 'bg-sky-500 text-white shadow-xs'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Room Member List */}
+              {roomUsersList.length > 0 && (
+                <div className="divide-y divide-white/10 max-h-40 overflow-y-auto">
+                  {roomUsersList.map((member) => {
+                    const isActive = !!activeTrails[member.id];
+                    const isLoading = loadingTrailUserIds.includes(member.id);
+                    const palette = getPaletteForUser(member.id);
+                    const trail = activeTrails[member.id];
+
+                    return (
+                      <div
+                        key={member.id}
+                        className="py-1.5 flex items-center justify-between gap-2 hover:bg-white/5 rounded-xl px-1.5 transition-colors"
+                      >
+                        <div className="flex items-center gap-2 min-w-0 flex-1">
+                          <img
+                            src={member.avatarUrl}
+                            alt={member.fullName}
+                            className={`w-7 h-7 rounded-full object-cover border ${
+                              isActive ? palette.border : 'border-slate-500'
+                            }`}
+                          />
+                          <div className="truncate flex-1">
+                            <span className="font-bold text-xs text-white block truncate">
+                              {member.fullName}
+                            </span>
+                            <span className="text-[10px] text-slate-400 block truncate">
+                              {isActive && trail ? `${formatDistance(trail.totalDistanceMeters)} · ${trail.points.length} pts` : `@${member.username}`}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1 shrink-0">
+                          {isActive && (
+                            <button
+                              onClick={() => fitUserTrailBounds(member.id)}
+                              title="Zoom to trail"
+                              className="p-1 text-slate-400 hover:text-white rounded-lg transition-colors cursor-pointer"
+                            >
+                              <Maximize2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                          <button
+                            onClick={() => toggleUserTrail(member.id)}
+                            disabled={isLoading}
+                            className={`p-1.5 rounded-xl text-xs font-semibold flex items-center gap-1 transition-all cursor-pointer ${
+                              isActive
+                                ? `${palette.bg} text-white shadow-xs`
+                                : 'bg-white/10 hover:bg-white/20 text-slate-300'
+                            }`}
+                            title={isActive ? 'Hide Trail' : 'Show Trail'}
+                          >
+                            {isLoading ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : isActive ? (
+                              <Eye className="w-3.5 h-3.5" />
+                            ) : (
+                              <EyeOff className="w-3.5 h-3.5 opacity-60" />
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Section 4: Live GNSS Status */}
+            <div className="pt-2 border-t border-white/10 flex items-center justify-between">
+              <div className="flex items-center gap-2 text-xs">
+                <div
+                  className={`w-2.5 h-2.5 rounded-full ${
+                    isGpsActive ? 'bg-emerald-400 shadow-sm shadow-emerald-400/50' : 'bg-amber-400 animate-pulse'
+                  }`}
+                />
+                <span className="text-slate-300 text-xs">
+                  {isGpsActive
+                    ? `GNSS Fix ±${gpsAccuracy ? Math.round(gpsAccuracy) : 5}m`
+                    : 'Acquiring GPS...'}
+                </span>
+              </div>
+              <button
+                onClick={centerOnMyLocation}
+                className="px-2.5 py-1 bg-white/10 hover:bg-white/20 text-sky-300 rounded-xl text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer"
+              >
+                <Crosshair className="w-3.5 h-3.5" />
+                <span>Center Me</span>
+              </button>
+            </div>
           </div>
-        </div>
+        )}
       </div>
 
       {/* Onboarding Explanation Banner (Section 7.1 & 7.2) */}
@@ -1855,6 +2557,314 @@ export const LiveMap: React.FC<LiveMapProps> = ({
             </button>
           </div>
         </div>
+      )}
+
+      {/* Turn-by-Turn Navigation HUD Banner */}
+      {activeNavigation && (
+        <div className="absolute top-20 left-4 right-4 md:left-6 md:right-auto md:w-[420px] z-30 bg-slate-900/95 backdrop-blur-xl text-white p-4 rounded-2xl shadow-2xl border border-cyan-500/40 animate-in fade-in slide-in-from-top-3 duration-200">
+          <div className="flex items-center justify-between pb-2.5 border-b border-slate-800">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center shadow-md shadow-cyan-500/20 shrink-0">
+                <Navigation className="w-4 h-4 text-white fill-current" />
+              </div>
+              <div className="truncate">
+                <div className="flex items-center gap-1.5">
+                  <span className="font-bold text-sm text-white truncate">{activeNavigation.targetName}</span>
+                  <span className="px-1.5 py-0.2 bg-cyan-500/20 text-cyan-300 rounded text-[9px] font-bold font-mono uppercase tracking-wider">NAV</span>
+                </div>
+                <p className="text-[10px] text-cyan-300 font-mono">
+                  {formatDistance(activeNavigation.distanceMeters)} away
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1.5 shrink-0">
+              <a
+                href={`https://www.google.com/maps/dir/?api=1&destination=${activeNavigation.lat},${activeNavigation.lng}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Open in Google Maps"
+                className="px-2.5 py-1.5 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-white rounded-xl text-xs font-bold flex items-center gap-1 shadow-md transition-all cursor-pointer"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Google Maps</span>
+              </a>
+              <button
+                onClick={cancelNavigation}
+                title="End Navigation"
+                className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-slate-800 rounded-xl transition-colors cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2 pt-2.5 text-xs">
+            <div className="bg-slate-800/70 p-2 rounded-xl flex items-center gap-2">
+              <Footprints className="w-4 h-4 text-cyan-400 shrink-0" />
+              <div>
+                <span className="text-[10px] text-slate-400 block font-mono">Walking</span>
+                <span className="font-bold text-white text-xs">~{activeNavigation.walkMin} min</span>
+              </div>
+            </div>
+            <div className="bg-slate-800/70 p-2 rounded-xl flex items-center gap-2">
+              <Car className="w-4 h-4 text-blue-400 shrink-0" />
+              <div>
+                <span className="text-[10px] text-slate-400 block font-mono">Driving</span>
+                <span className="font-bold text-white text-xs">~{activeNavigation.driveMin} min</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Marker Long-Press & Right-Click Context Menu */}
+      {contextMenu.isOpen && (
+        <>
+          {/* Backdrop dismissal */}
+          <div
+            className="fixed inset-0 z-40 cursor-default bg-black/10 backdrop-blur-[0.5px]"
+            onClick={closeContextMenu}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              closeContextMenu();
+            }}
+          />
+
+          {/* Context Menu Floating Card */}
+          <div
+            className={`fixed z-50 w-72 ${themeConfig.glassPanel} rounded-2xl shadow-2xl border ${themeConfig.glassBorder} p-3 animate-in fade-in zoom-in-95 duration-150 backdrop-blur-xl text-white select-none`}
+            style={{
+              left: `${contextMenu.x}px`,
+              top: `${contextMenu.y}px`,
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Context Menu Header */}
+            <div className="flex items-center justify-between pb-2.5 border-b border-white/10">
+              <div className="flex items-center gap-2.5 min-w-0">
+                {contextMenu.target.type === 'peer' && contextMenu.target.avatarUrl ? (
+                  <div className="relative shrink-0">
+                    <img
+                      src={contextMenu.target.avatarUrl}
+                      alt={contextMenu.target.title}
+                      className="w-8 h-8 rounded-full object-cover border border-cyan-400/80 shadow"
+                    />
+                    <span
+                      className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border border-white ${
+                        contextMenu.target.isOnline ? 'bg-emerald-500' : 'bg-slate-400'
+                      }`}
+                    />
+                  </div>
+                ) : contextMenu.target.type === 'self' ? (
+                  <div className="w-8 h-8 rounded-full bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-white shadow shrink-0">
+                    <Navigation className="w-4 h-4 fill-current" />
+                  </div>
+                ) : contextMenu.target.type === 'place' ? (
+                  <div className="w-8 h-8 rounded-full bg-amber-500 flex items-center justify-center text-white shadow shrink-0">
+                    <MapPin className="w-4 h-4" />
+                  </div>
+                ) : (
+                  <div className="w-8 h-8 rounded-full bg-slate-700 flex items-center justify-center text-cyan-300 shadow shrink-0">
+                    <MapPin className="w-4 h-4" />
+                  </div>
+                )}
+
+                <div className="truncate">
+                  <h4 className="font-bold text-xs text-white truncate">{contextMenu.target.title}</h4>
+                  <p className="text-[10px] text-slate-300 truncate font-mono">
+                    {contextMenu.target.subtitle || `${contextMenu.target.lat.toFixed(4)}, ${contextMenu.target.lng.toFixed(4)}`}
+                  </p>
+                </div>
+              </div>
+
+              <button
+                onClick={closeContextMenu}
+                className="p-1 text-slate-400 hover:text-white rounded-lg transition-colors cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            {/* Context Menu Actions */}
+            <div className="py-1.5 space-y-0.5 text-xs">
+              {/* Navigate To */}
+              <button
+                onClick={() => startNavigation(contextMenu.target.lat, contextMenu.target.lng, contextMenu.target.title)}
+                className="w-full px-2.5 py-2 hover:bg-white/10 active:bg-white/15 rounded-xl flex items-center justify-between transition-colors cursor-pointer group text-left"
+              >
+                <div className="flex items-center gap-2.5">
+                  <div className="w-7 h-7 rounded-lg bg-cyan-500/20 text-cyan-300 flex items-center justify-center group-hover:scale-105 transition-transform">
+                    <Navigation className="w-3.5 h-3.5 fill-current" />
+                  </div>
+                  <div>
+                    <span className="font-bold text-white block">Navigate to</span>
+                    <span className="text-[10px] text-slate-400 block">Plot route & turn estimates</span>
+                  </div>
+                </div>
+                <span className="text-[10px] font-mono text-cyan-300 font-semibold">
+                  {contextMenu.target.distanceText || 'Route'}
+                </span>
+              </button>
+
+              {/* Message User (Available for peer markers) */}
+              {contextMenu.target.type === 'peer' && contextMenu.target.userId && (
+                <button
+                  onClick={() => {
+                    const uid = contextMenu.target.userId!;
+                    const name = contextMenu.target.title;
+                    closeContextMenu();
+                    if (onSelectUserForChat) {
+                      onSelectUserForChat(uid);
+                      toast.success(`Opening chat with ${name}...`);
+                    }
+                  }}
+                  className="w-full px-2.5 py-2 hover:bg-white/10 active:bg-white/15 rounded-xl flex items-center justify-between transition-colors cursor-pointer group text-left"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-7 h-7 rounded-lg bg-emerald-500/20 text-emerald-300 flex items-center justify-center group-hover:scale-105 transition-transform">
+                      <MessageSquare className="w-3.5 h-3.5" />
+                    </div>
+                    <div>
+                      <span className="font-bold text-white block">Message user</span>
+                      <span className="text-[10px] text-slate-400 block">Open direct messaging</span>
+                    </div>
+                  </div>
+                  <span className="text-[10px] text-emerald-400 font-semibold">Chat</span>
+                </button>
+              )}
+
+              {/* Set Reminder */}
+              <button
+                onClick={() => {
+                  const lat = contextMenu.target.lat;
+                  const lng = contextMenu.target.lng;
+                  const title = contextMenu.target.title;
+                  closeContextMenu();
+                  if (onSetReminderAtCoords) {
+                    onSetReminderAtCoords(lat, lng, title);
+                    toast.success(`Scheduling reminder at ${title}...`);
+                  }
+                }}
+                className="w-full px-2.5 py-2 hover:bg-white/10 active:bg-white/15 rounded-xl flex items-center justify-between transition-colors cursor-pointer group text-left"
+              >
+                <div className="flex items-center gap-2.5">
+                  <div className="w-7 h-7 rounded-lg bg-amber-500/20 text-amber-300 flex items-center justify-center group-hover:scale-105 transition-transform">
+                    <Bell className="w-3.5 h-3.5" />
+                  </div>
+                  <div>
+                    <span className="font-bold text-white block">Set reminder</span>
+                    <span className="text-[10px] text-slate-400 block">Proximity or geofence alert</span>
+                  </div>
+                </div>
+                <span className="text-[10px] text-amber-300 font-semibold">Alert</span>
+              </button>
+
+              {/* Toggle User Breadcrumb Trail (for peers) */}
+              {contextMenu.target.type === 'peer' && contextMenu.target.userId && (
+                <button
+                  onClick={() => {
+                    const uid = contextMenu.target.userId!;
+                    closeContextMenu();
+                    toggleUserTrail(uid);
+                  }}
+                  className="w-full px-2.5 py-2 hover:bg-white/10 active:bg-white/15 rounded-xl flex items-center justify-between transition-colors cursor-pointer group text-left"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-7 h-7 rounded-lg bg-purple-500/20 text-purple-300 flex items-center justify-center group-hover:scale-105 transition-transform">
+                      <Route className="w-3.5 h-3.5" />
+                    </div>
+                    <div>
+                      <span className="font-bold text-white block">
+                        {activeTrails[contextMenu.target.userId] ? 'Hide trail' : 'Trace path (1h)'}
+                      </span>
+                      <span className="text-[10px] text-slate-400 block">Breadcrumb checkpoints</span>
+                    </div>
+                  </div>
+                  <span className="text-[10px] text-purple-300 font-semibold">
+                    {activeTrails[contextMenu.target.userId] ? 'Active' : 'Trace'}
+                  </span>
+                </button>
+              )}
+
+              {/* Save as Saved Place */}
+              {contextMenu.target.type !== 'place' && (
+                <button
+                  onClick={() => {
+                    const lat = contextMenu.target.lat;
+                    const lng = contextMenu.target.lng;
+                    closeContextMenu();
+                    if (onAddPlaceAtCoords) {
+                      onAddPlaceAtCoords(lat, lng);
+                    }
+                  }}
+                  className="w-full px-2.5 py-2 hover:bg-white/10 active:bg-white/15 rounded-xl flex items-center justify-between transition-colors cursor-pointer group text-left"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-7 h-7 rounded-lg bg-blue-500/20 text-blue-300 flex items-center justify-center group-hover:scale-105 transition-transform">
+                      <MapPin className="w-3.5 h-3.5" />
+                    </div>
+                    <div>
+                      <span className="font-bold text-white block">Save as place</span>
+                      <span className="text-[10px] text-slate-400 block">Add to your geofence list</span>
+                    </div>
+                  </div>
+                  <span className="text-[10px] text-blue-300 font-semibold">Save</span>
+                </button>
+              )}
+
+              {/* Copy Coordinates */}
+              <button
+                onClick={() => copyCoordinates(contextMenu.target.lat, contextMenu.target.lng)}
+                className="w-full px-2.5 py-2 hover:bg-white/10 active:bg-white/15 rounded-xl flex items-center justify-between transition-colors cursor-pointer group text-left"
+              >
+                <div className="flex items-center gap-2.5">
+                  <div className="w-7 h-7 rounded-lg bg-slate-700/60 text-slate-300 flex items-center justify-center group-hover:scale-105 transition-transform">
+                    <Copy className="w-3.5 h-3.5" />
+                  </div>
+                  <div>
+                    <span className="font-bold text-white block">Copy coordinates</span>
+                    <span className="text-[10px] text-slate-400 block font-mono">
+                      {contextMenu.target.lat.toFixed(5)}, {contextMenu.target.lng.toFixed(5)}
+                    </span>
+                  </div>
+                </div>
+                <span className="text-[10px] text-slate-400 font-semibold">Copy</span>
+              </button>
+
+              {/* Share Location */}
+              <button
+                onClick={() => handleShareLocation(contextMenu.target)}
+                className="w-full px-2.5 py-2 hover:bg-white/10 active:bg-white/15 rounded-xl flex items-center justify-between transition-colors cursor-pointer group text-left"
+              >
+                <div className="flex items-center gap-2.5">
+                  <div className="w-7 h-7 rounded-lg bg-sky-500/20 text-sky-300 flex items-center justify-center group-hover:scale-105 transition-transform">
+                    <Share2 className="w-3.5 h-3.5" />
+                  </div>
+                  <div>
+                    <span className="font-bold text-white block">Share location link</span>
+                    <span className="text-[10px] text-slate-400 block">External map URL</span>
+                  </div>
+                </div>
+                <span className="text-[10px] text-sky-300 font-semibold">Share</span>
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Dedicated Separate Google Maps Places Explorer Page */}
+      {showPlacesPage && (
+        <GooglePlacesExplorer
+          initialQuery={searchQuery}
+          onClose={() => setShowPlacesPage(false)}
+          onSelectPlaceOnMap={handleSelectPlaceFromExplorer}
+          onStartRouteOnMap={handleStartRouteOnMap}
+          onShowNearbyOnMap={handleShowNearbyPlacesOnMap}
+          savedPlaces={savedPlaces}
+          rooms={rooms}
+          selectedRoomId={selectedRoomId}
+        />
       )}
     </div>
   );

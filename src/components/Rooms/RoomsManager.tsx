@@ -24,12 +24,17 @@ import {
   MessageSquare,
   Phone,
   Globe,
+  Search,
+  X,
+  MapPin,
+  Check,
 } from 'lucide-react';
 
 interface RoomsManagerProps {
   onSelectRoom: (roomId: string) => void;
   selectedRoomId: string | null;
   onSelectUserForChat?: (userId: string) => void;
+  onOpenChat?: (roomId?: string) => void;
   onFocusMapLocation?: (lat: number, lng: number) => void;
 }
 
@@ -37,6 +42,7 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
   onSelectRoom,
   selectedRoomId,
   onSelectUserForChat,
+  onOpenChat,
   onFocusMapLocation,
 }) => {
   const { user } = useAuth();
@@ -70,6 +76,112 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
   const [joinPassword, setJoinPassword] = useState('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  // Search Bar state
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchCategory, setSearchCategory] = useState<'all' | 'rooms' | 'members'>('all');
+
+  // Filtered rooms based on search query
+  const filteredRooms = React.useMemo(() => {
+    if (!searchQuery.trim()) return rooms;
+    const q = searchQuery.toLowerCase().trim();
+    return rooms.filter(
+      (r) =>
+        r.name.toLowerCase().includes(q) ||
+        (r.description && r.description.toLowerCase().includes(q)) ||
+        r.id.toLowerCase().includes(q)
+    );
+  }, [rooms, searchQuery]);
+
+  // Filtered members based on search query
+  const filteredMembers = React.useMemo(() => {
+    if (!searchQuery.trim()) return [];
+    const q = searchQuery.toLowerCase().trim();
+    const memberMap = new Map<
+      string,
+      {
+        userId: string;
+        fullName: string;
+        username: string;
+        avatarUrl?: string;
+        role?: string;
+        roomId?: string;
+        roomName?: string;
+        isOnline: boolean;
+        latitude?: number;
+        longitude?: number;
+      }
+    >();
+
+    // 1. Check active room members
+    if (activeRoomDetails?.members) {
+      activeRoomDetails.members.forEach((m) => {
+        const u = m.user;
+        const name = u?.fullName || '';
+        const uname = u?.username || '';
+        if (
+          name.toLowerCase().includes(q) ||
+          uname.toLowerCase().includes(q) ||
+          (m.role && m.role.toLowerCase().includes(q))
+        ) {
+          const loc = userLocations.find((l) => l.userId === m.userId);
+          memberMap.set(m.userId, {
+            userId: m.userId,
+            fullName: name || 'Member',
+            username: uname || m.userId.slice(0, 6),
+            avatarUrl: u?.avatarUrl,
+            role: m.role,
+            roomId: activeRoomDetails.id,
+            roomName: activeRoomDetails.name,
+            isOnline: onlineUserIds.includes(m.userId),
+            latitude: loc?.latitude,
+            longitude: loc?.longitude,
+          });
+        }
+      });
+    }
+
+    // 2. Check all active peers from realtime location mesh
+    userLocations.forEach((loc) => {
+      if (
+        loc.fullName.toLowerCase().includes(q) ||
+        loc.username.toLowerCase().includes(q)
+      ) {
+        if (!memberMap.has(loc.userId)) {
+          memberMap.set(loc.userId, {
+            userId: loc.userId,
+            fullName: loc.fullName,
+            username: loc.username,
+            avatarUrl: loc.avatarUrl,
+            isOnline: onlineUserIds.includes(loc.userId),
+            latitude: loc.latitude,
+            longitude: loc.longitude,
+          });
+        }
+      }
+    });
+
+    // 3. Check current user if matches
+    if (
+      user &&
+      (user.fullName.toLowerCase().includes(q) || user.username.toLowerCase().includes(q))
+    ) {
+      if (!memberMap.has(user.id)) {
+        memberMap.set(user.id, {
+          userId: user.id,
+          fullName: `${user.fullName} (You)`,
+          username: user.username,
+          avatarUrl: user.avatarUrl,
+          role: 'SELF',
+          isOnline: true,
+          latitude: myLocation?.latitude,
+          longitude: myLocation?.longitude,
+        });
+      }
+    }
+
+    return Array.from(memberMap.values());
+  }, [searchQuery, activeRoomDetails, userLocations, onlineUserIds, user, myLocation]);
+
   // Fetch rooms
   const loadRooms = async () => {
     try {
@@ -102,10 +214,25 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
         setActiveRoomDetails(res.room);
       } catch (err) {
         console.error('Failed to load room details:', err);
+        if (selectedRoomId === 'room-universal') {
+          const fallback = rooms.find((r) => r.id === 'room-universal') || {
+            id: 'room-universal',
+            name: '🌐 Universal Lounge',
+            description: 'The open global town square for everyone on Beacon. Coordinate live locations, chat across channels, and meet members worldwide.',
+            ownerId: 'system',
+            hasPassword: false,
+            createdAt: '2026-01-01T00:00:00.000Z',
+            memberCount: Math.max(1, onlineUserIds.length),
+            isPrivate: false,
+            isUniversal: true,
+            members: [],
+          };
+          setActiveRoomDetails(fallback as Room);
+        }
       }
     }
     loadDetails();
-  }, [selectedRoomId]);
+  }, [selectedRoomId, rooms, onlineUserIds]);
 
   const handleCreateRoom = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -180,31 +307,267 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
   return (
     <div className={`flex flex-col h-full border-r ${themeConfig.glassBorder} transition-colors duration-200`}>
       {/* Top Header */}
-      <div className={`p-4 border-b ${themeConfig.glassBorder} ${themeConfig.glassHeader} flex items-center justify-between`}>
-        <div>
-          <h2 className={`font-bold ${themeConfig.textPrimary} text-base`}>Rooms & Mesh</h2>
-          <p className={`text-xs ${themeConfig.textSecondary}`}>Private encrypted groups</p>
+      <div className={`p-4 border-b ${themeConfig.glassBorder} ${themeConfig.glassHeader} space-y-3`}>
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className={`font-bold ${themeConfig.textPrimary} text-base flex items-center gap-2`}>
+              <Users className="w-5 h-5 text-sky-400" />
+              <span>Rooms & Mesh</span>
+            </h2>
+            <p className={`text-xs ${themeConfig.textSecondary}`}>Private encrypted groups & mesh coordinates</p>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => setShowJoinModal(true)}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-xl transition-colors flex items-center gap-1 border ${themeConfig.glassBorder} hover:bg-white/10 ${themeConfig.textPrimary} cursor-pointer`}
+            >
+              <KeyRound className="w-3.5 h-3.5" />
+              Join
+            </button>
+            <button
+              onClick={() => setShowCreateModal(true)}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-xl transition-colors flex items-center gap-1 shadow-md cursor-pointer ${themeConfig.accentBg}`}
+            >
+              <Plus className="w-3.5 h-3.5" />
+              New
+            </button>
+          </div>
         </div>
-        <div className="flex items-center gap-1.5">
-          <button
-            onClick={() => setShowJoinModal(true)}
-            className={`px-3 py-1.5 text-xs font-semibold rounded-xl transition-colors flex items-center gap-1 border ${themeConfig.glassBorder} hover:bg-white/10 ${themeConfig.textPrimary} cursor-pointer`}
-          >
-            <KeyRound className="w-3.5 h-3.5" />
-            Join
-          </button>
-          <button
-            onClick={() => setShowCreateModal(true)}
-            className={`px-3 py-1.5 text-xs font-semibold rounded-xl transition-colors flex items-center gap-1 shadow-md cursor-pointer ${themeConfig.accentBg}`}
-          >
-            <Plus className="w-3.5 h-3.5" />
-            New
-          </button>
+
+        {/* Search Bar at Top of Rooms Tab */}
+        <div className="relative">
+          <div className={`flex items-center gap-2.5 px-3 py-2 rounded-2xl border ${themeConfig.glassBorder} bg-black/20 focus-within:ring-2 focus-within:ring-sky-500/50 transition-all shadow-inner`}>
+            <Search className="w-4 h-4 text-sky-400 shrink-0" />
+            <input
+              type="text"
+              placeholder="Search rooms or members by name, handle, role..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className={`w-full bg-transparent text-xs ${themeConfig.textPrimary} focus:outline-none placeholder-slate-400 font-medium`}
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery('')}
+                className="p-1 text-slate-400 hover:text-white rounded-lg transition-colors cursor-pointer"
+                title="Clear search"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+
+          {/* Quick Filter Pills (Shown when search query is entered) */}
+          {searchQuery.trim() && (
+            <div className="flex items-center gap-1.5 mt-2 overflow-x-auto pb-0.5 text-[11px]">
+              <button
+                onClick={() => setSearchCategory('all')}
+                className={`px-2.5 py-1 rounded-xl font-semibold transition-all cursor-pointer ${
+                  searchCategory === 'all'
+                    ? 'bg-sky-500 text-white shadow-sm'
+                    : 'bg-white/5 text-slate-300 hover:bg-white/10'
+                }`}
+              >
+                All ({filteredRooms.length + filteredMembers.length})
+              </button>
+              <button
+                onClick={() => setSearchCategory('rooms')}
+                className={`px-2.5 py-1 rounded-xl font-semibold transition-all cursor-pointer ${
+                  searchCategory === 'rooms'
+                    ? 'bg-sky-500 text-white shadow-sm'
+                    : 'bg-white/5 text-slate-300 hover:bg-white/10'
+                }`}
+              >
+                Rooms ({filteredRooms.length})
+              </button>
+              <button
+                onClick={() => setSearchCategory('members')}
+                className={`px-2.5 py-1 rounded-xl font-semibold transition-all cursor-pointer ${
+                  searchCategory === 'members'
+                    ? 'bg-sky-500 text-white shadow-sm'
+                    : 'bg-white/5 text-slate-300 hover:bg-white/10'
+                }`}
+              >
+                Members ({filteredMembers.length})
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Universal Hub Pinned Notification Banner */}
-      {rooms.some((r) => r.isUniversal || r.id === 'room-universal') && (
+      {/* Real-time Search Results View */}
+      {searchQuery.trim() ? (
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          <div className="flex items-center justify-between text-xs text-slate-400">
+            <span>
+              Search results for <strong className="text-white font-semibold">"{searchQuery}"</strong>
+            </span>
+            <button
+              onClick={() => setSearchQuery('')}
+              className="text-sky-400 hover:underline cursor-pointer"
+            >
+              Clear filter
+            </button>
+          </div>
+
+          {/* Matched Rooms Section */}
+          {(searchCategory === 'all' || searchCategory === 'rooms') && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider font-mono">
+                  Matching Rooms ({filteredRooms.length})
+                </span>
+              </div>
+              {filteredRooms.length === 0 ? (
+                <div className="p-3 rounded-2xl bg-white/5 text-center text-xs text-slate-400">
+                  No rooms matched "{searchQuery}"
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                  {filteredRooms.map((room) => {
+                    const isSelected = room.id === selectedRoomId;
+                    const isUniversal = room.isUniversal || room.id === 'room-universal';
+                    return (
+                      <div
+                        key={room.id}
+                        className={`p-3 rounded-2xl border transition-all flex items-center justify-between ${
+                          isSelected
+                            ? 'bg-sky-500/15 border-sky-400/60 ring-1 ring-sky-400/40'
+                            : 'bg-white/5 border-white/10 hover:bg-white/10'
+                        }`}
+                      >
+                        <div className="min-w-0 flex-1 pr-3">
+                          <div className="flex items-center gap-1.5">
+                            {isUniversal && <Globe className="w-3.5 h-3.5 text-indigo-400 shrink-0" />}
+                            <h4 className="font-bold text-xs text-white truncate">{room.name}</h4>
+                            {room.hasPassword && <Lock className="w-3 h-3 text-amber-400 shrink-0" />}
+                          </div>
+                          <p className="text-[11px] text-slate-400 truncate mt-0.5">
+                            {room.description || 'Secure communication and location sharing channel.'}
+                          </p>
+                          <span className="text-[10px] text-sky-300 font-mono">
+                            {room.memberCount} members · ID: {room.id}
+                          </span>
+                        </div>
+                        <button
+                          onClick={() => {
+                            onSelectRoom(room.id);
+                            toast.success(`Switched to room: ${room.name}`);
+                          }}
+                          className={`px-3 py-1.5 rounded-xl text-xs font-semibold shrink-0 cursor-pointer transition-all ${
+                            isSelected
+                              ? 'bg-sky-500 text-white shadow-sm'
+                              : 'bg-white/10 hover:bg-white/20 text-white'
+                          }`}
+                        >
+                          {isSelected ? 'Active' : 'Select'}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Matched Members Section */}
+          {(searchCategory === 'all' || searchCategory === 'members') && (
+            <div className="space-y-2 pt-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider font-mono">
+                  Matching Members ({filteredMembers.length})
+                </span>
+              </div>
+              {filteredMembers.length === 0 ? (
+                <div className="p-3 rounded-2xl bg-white/5 text-center text-xs text-slate-400">
+                  No members matched "{searchQuery}"
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {filteredMembers.map((member) => (
+                    <div
+                      key={member.userId}
+                      className="p-3 rounded-2xl border border-white/10 bg-white/5 hover:bg-white/10 transition-all flex items-center justify-between gap-3"
+                    >
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="relative w-9 h-9 shrink-0">
+                          <img
+                            src={member.avatarUrl || `https://api.dicebear.com/7.x/bottts/svg?seed=${member.userId}`}
+                            alt={member.fullName}
+                            className="w-full h-full rounded-full object-cover border border-white/20 bg-slate-800"
+                          />
+                          <span
+                            className={`absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border border-slate-900 ${
+                              member.isOnline ? 'bg-emerald-400' : 'bg-slate-500'
+                            }`}
+                          />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <span className="font-bold text-xs text-white truncate">{member.fullName}</span>
+                            {member.role && (
+                              <span className="px-1.5 py-0.2 rounded bg-white/10 text-[9px] font-mono text-sky-300 uppercase">
+                                {member.role}
+                              </span>
+                            )}
+                          </div>
+                          <span className="text-[11px] text-slate-400 block truncate">
+                            @{member.username} {member.roomName ? `· in ${member.roomName}` : ''}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {onSelectUserForChat && member.userId !== user?.id && (
+                          <button
+                            onClick={() => onSelectUserForChat(member.userId)}
+                            className="px-2.5 py-1.5 rounded-xl bg-sky-600/30 hover:bg-sky-600/50 text-sky-300 text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer"
+                            title="Direct Message"
+                          >
+                            <MessageSquare className="w-3.5 h-3.5" />
+                            <span>Message</span>
+                          </button>
+                        )}
+                        {member.latitude !== undefined && member.longitude !== undefined && onFocusMapLocation && (
+                          <button
+                            onClick={() => onFocusMapLocation(member.latitude!, member.longitude!)}
+                            className="px-2.5 py-1.5 rounded-xl bg-emerald-600/30 hover:bg-emerald-600/50 text-emerald-300 text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer"
+                            title="Locate on Map"
+                          >
+                            <MapPin className="w-3.5 h-3.5" />
+                            <span>Map</span>
+                          </button>
+                        )}
+                        {member.roomId && (
+                          <button
+                            onClick={() => onSelectRoom(member.roomId!)}
+                            className="px-2.5 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-semibold transition-colors cursor-pointer"
+                            title="Go to Room"
+                          >
+                            Room
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {filteredRooms.length === 0 && filteredMembers.length === 0 && (
+            <div className="py-10 text-center space-y-2">
+              <Users className="w-10 h-10 text-slate-600 mx-auto" />
+              <p className="text-sm font-semibold text-slate-300">No rooms or members found</p>
+              <p className="text-xs text-slate-500 max-w-xs mx-auto">
+                Try searching by first name, username, or room topic name.
+              </p>
+            </div>
+          )}
+        </div>
+      ) : (
+        <>
+          {/* Universal Hub Pinned Notification Banner */}
+          {rooms.some((r) => r.isUniversal || r.id === 'room-universal') && (
         <div className="mx-3 mt-3 p-3 rounded-2xl bg-gradient-to-r from-indigo-900 via-slate-900 to-blue-900 text-white flex items-center justify-between shadow-lg border border-indigo-500/30">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-xl bg-indigo-500/30 border border-indigo-400/40 flex items-center justify-center text-indigo-200 shadow-inner">
@@ -222,16 +585,34 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
               </p>
             </div>
           </div>
-          <button
-            onClick={() => onSelectRoom('room-universal')}
-            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-              selectedRoomId === 'room-universal'
-                ? 'bg-white text-indigo-900 shadow-md'
-                : 'bg-indigo-500/40 hover:bg-indigo-500/60 text-white border border-indigo-400/30'
-            }`}
-          >
-            {selectedRoomId === 'room-universal' ? 'Active' : 'Enter Lounge'}
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={() => {
+                onSelectRoom('room-universal');
+                if (onOpenChat) {
+                  onOpenChat('room-universal');
+                  toast.success('Entering Universal Lounge...');
+                }
+              }}
+              className="px-3.5 py-2 rounded-xl text-xs font-bold bg-white hover:bg-slate-100 text-indigo-900 shadow-md transition-all cursor-pointer flex items-center gap-1.5 active:scale-95 shrink-0"
+              title="Open Universal Chat Channels"
+            >
+              <MessageSquare className="w-3.5 h-3.5 text-indigo-700" />
+              <span>Enter Lounge</span>
+            </button>
+            <button
+              onClick={() => {
+                onSelectRoom('room-universal');
+                joinVoiceChannel('room-universal');
+                toast.info('Connecting to Universal WebRTC voice channel...');
+              }}
+              className="px-2.5 py-2 rounded-xl text-xs font-semibold bg-indigo-500/40 hover:bg-indigo-500/60 text-white border border-indigo-400/30 transition-all cursor-pointer flex items-center gap-1 shrink-0"
+              title="Join Universal Live Audio"
+            >
+              <PhoneCall className="w-3.5 h-3.5" />
+              <span>Voice</span>
+            </button>
+          </div>
         </div>
       )}
 
@@ -325,6 +706,43 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
                 </div>
               )}
             </div>
+
+            {/* Quick Action Suite for Universal Hub */}
+            {(activeRoomDetails.isUniversal || activeRoomDetails.id === 'room-universal') && (
+              <div className="mt-4 p-3.5 rounded-2xl bg-gradient-to-r from-indigo-950 via-slate-900 to-blue-950 border border-indigo-500/30 text-white flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-md">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-xl bg-indigo-500/30 flex items-center justify-center text-indigo-300">
+                    <Globe className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <span className="text-xs font-bold text-white block">Universal Lounge Communication Hub</span>
+                    <span className="text-[11px] text-indigo-200/80 block">#general · #live-locations · #announcements · #lounge</span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 w-full sm:w-auto">
+                  <button
+                    onClick={() => {
+                      onOpenChat?.('room-universal');
+                      toast.success('Switching to Universal Hub Chat...');
+                    }}
+                    className="flex-1 sm:flex-initial px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 shadow-sm transition-all cursor-pointer active:scale-95"
+                  >
+                    <MessageSquare className="w-3.5 h-3.5" />
+                    <span>Open Lounge Chat</span>
+                  </button>
+                  {myLocation && onFocusMapLocation && (
+                    <button
+                      onClick={() => onFocusMapLocation(myLocation.latitude, myLocation.longitude)}
+                      className="px-3 py-2 bg-white/10 hover:bg-white/20 text-white text-xs font-semibold rounded-xl flex items-center gap-1.5 border border-white/20 transition-all cursor-pointer"
+                      title="View my location on map"
+                    >
+                      <MapPin className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>Live Pin</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* Live WebRTC Voice Channel Island */}
             <div className="mt-4 pt-4 border-t border-slate-100">
@@ -535,6 +953,8 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
           <p className="text-xs text-slate-500 mt-1">Create or join a room using a unique Room ID</p>
         </div>
       )}
+      </>
+    )}
 
       {/* Create Room Modal */}
       {showCreateModal && (

@@ -10,9 +10,15 @@ import { Bell, MapPin, Calendar, Plus, Trash2, Check, Clock, AlertCircle } from 
 
 interface RemindersManagerProps {
   savedPlaces?: SavedPlace[];
+  pendingReminder?: { lat: number; lng: number; title?: string } | null;
+  onClearPendingReminder?: () => void;
 }
 
-export const RemindersManager: React.FC<RemindersManagerProps> = ({ savedPlaces = [] }) => {
+export const RemindersManager: React.FC<RemindersManagerProps> = ({
+  savedPlaces = [],
+  pendingReminder = null,
+  onClearPendingReminder,
+}) => {
   const { user } = useAuth();
   const { myLocation } = useRealtime();
   const toast = useToast();
@@ -24,6 +30,12 @@ export const RemindersManager: React.FC<RemindersManagerProps> = ({ savedPlaces 
   const [dueDateTime, setDueDateTime] = useState('');
   const [isGeofenced, setIsGeofenced] = useState(false);
   const [selectedPlaceId, setSelectedPlaceId] = useState<string>('');
+  const [customLocationCoords, setCustomLocationCoords] = useState<{
+    lat: number;
+    lng: number;
+    radiusMeters: number;
+    name?: string;
+  } | null>(null);
   const [triggeredAlerts, setTriggeredAlerts] = useState<ReminderItem[]>([]);
 
   const loadReminders = async () => {
@@ -38,6 +50,26 @@ export const RemindersManager: React.FC<RemindersManagerProps> = ({ savedPlaces 
   useEffect(() => {
     loadReminders();
   }, []);
+
+  // Handle incoming reminder request triggered from map marker context menu
+  useEffect(() => {
+    if (pendingReminder) {
+      setTitle(pendingReminder.title ? `Reminder: ${pendingReminder.title}` : 'Location Reminder');
+      setDescription(`Geofence alert created from map marker`);
+      setIsGeofenced(true);
+      setSelectedPlaceId('');
+      setCustomLocationCoords({
+        lat: pendingReminder.lat,
+        lng: pendingReminder.lng,
+        radiusMeters: 150,
+        name: pendingReminder.title || 'Selected Map Location',
+      });
+      setShowAddModal(true);
+      if (onClearPendingReminder) {
+        onClearPendingReminder();
+      }
+    }
+  }, [pendingReminder, onClearPendingReminder]);
 
   // Real-time Geofence monitoring engine: runs whenever user's device location updates!
   useEffect(() => {
@@ -85,6 +117,13 @@ export const RemindersManager: React.FC<RemindersManagerProps> = ({ savedPlaces 
           radiusMeters: place.radiusMeters,
         };
       }
+    } else if (isGeofenced && customLocationCoords) {
+      locationName = customLocationCoords.name || title || 'Map Marker Point';
+      locationCoords = {
+        lat: customLocationCoords.lat,
+        lng: customLocationCoords.lng,
+        radiusMeters: customLocationCoords.radiusMeters,
+      };
     }
 
     try {
@@ -105,6 +144,7 @@ export const RemindersManager: React.FC<RemindersManagerProps> = ({ savedPlaces 
       setDueDateTime('');
       setIsGeofenced(false);
       setSelectedPlaceId('');
+      setCustomLocationCoords(null);
       toast.success('Reminder scheduled');
     } catch (err: any) {
       toast.error(err.message || 'Failed to create reminder');
@@ -282,28 +322,53 @@ export const RemindersManager: React.FC<RemindersManagerProps> = ({ savedPlaces 
                 </label>
 
                 {isGeofenced && (
-                  <div className="mt-2 p-3 bg-blue-50/60 rounded-xl border border-blue-200">
-                    <label className="block text-xs font-semibold text-blue-900 mb-1">
-                      Choose Target Location
-                    </label>
-                    {savedPlaces.length === 0 ? (
-                      <p className="text-xs text-amber-700">
-                        No saved locations found. Please save a place in "Saved Places" first.
-                      </p>
-                    ) : (
-                      <select
-                        value={selectedPlaceId}
-                        onChange={(e) => setSelectedPlaceId(e.target.value)}
-                        required={isGeofenced}
-                        className="w-full px-3 py-2 bg-white rounded-xl border border-blue-200 text-xs text-slate-800"
-                      >
-                        <option value="">Select a saved location...</option>
-                        {savedPlaces.map((p) => (
-                          <option key={p.id} value={p.id}>
-                            {p.name} ({p.radiusMeters}m radius)
-                          </option>
-                        ))}
-                      </select>
+                  <div className="mt-2 p-3 bg-blue-50/60 rounded-xl border border-blue-200 space-y-2">
+                    {customLocationCoords && (
+                      <div className="p-2.5 bg-blue-100/70 border border-blue-300/80 rounded-xl flex items-center justify-between text-xs text-blue-900">
+                        <div className="flex items-center gap-2">
+                          <MapPin className="w-4 h-4 text-blue-600 shrink-0" />
+                          <div>
+                            <span className="font-bold">{customLocationCoords.name || 'Pinned Location'}</span>
+                            <span className="block text-[10px] text-blue-700 font-mono">
+                              {customLocationCoords.lat.toFixed(5)}, {customLocationCoords.lng.toFixed(5)} ({customLocationCoords.radiusMeters}m radius)
+                            </span>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setCustomLocationCoords(null)}
+                          className="text-[10px] text-blue-700 hover:text-blue-950 font-semibold underline"
+                        >
+                          Change
+                        </button>
+                      </div>
+                    )}
+
+                    {!customLocationCoords && (
+                      <>
+                        <label className="block text-xs font-semibold text-blue-900">
+                          Choose Target Location
+                        </label>
+                        {savedPlaces.length === 0 ? (
+                          <p className="text-xs text-amber-700">
+                            No saved locations found. Please save a place in "Saved Places" first or set reminder from map markers.
+                          </p>
+                        ) : (
+                          <select
+                            value={selectedPlaceId}
+                            onChange={(e) => setSelectedPlaceId(e.target.value)}
+                            required={isGeofenced && !customLocationCoords}
+                            className="w-full px-3 py-2 bg-white rounded-xl border border-blue-200 text-xs text-slate-800"
+                          >
+                            <option value="">Select a saved location...</option>
+                            {savedPlaces.map((p) => (
+                              <option key={p.id} value={p.id}>
+                                {p.name} ({p.radiusMeters}m radius)
+                              </option>
+                            ))}
+                          </select>
+                        )}
+                      </>
                     )}
                   </div>
                 )}

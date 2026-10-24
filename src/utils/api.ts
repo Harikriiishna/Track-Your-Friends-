@@ -40,13 +40,23 @@ class ApiClient {
 
     if (!response.ok) {
       let errorMessage = 'Request failed';
+      let errorData: any = null;
       try {
-        const errorData = await response.json();
+        errorData = await response.json();
         errorMessage = errorData.error || errorData.message || errorMessage;
       } catch {
         errorMessage = `HTTP error ${response.status}: ${response.statusText}`;
       }
-      throw new Error(errorMessage);
+      const err: any = new Error(errorMessage);
+      if (errorData) {
+        err.data = errorData;
+        err.code = errorData.code;
+        err.suggestion = errorData.suggestion;
+        err.email = errorData.email;
+        err.username = errorData.username;
+        err.identifier = errorData.identifier;
+      }
+      throw err;
     }
 
     return response.json();

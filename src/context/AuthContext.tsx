@@ -9,6 +9,8 @@ interface AuthContextType {
   login: (identifier: string, password: string) => Promise<void>;
   register: (data: { email: string; username: string; fullName: string; password: string; phoneNumber?: string; avatarUrl?: string }) => Promise<void>;
   logout: () => Promise<void>;
+  demoLogin: () => Promise<void>;
+  quickResetAndLogin: (identifier: string, newPassword?: string) => Promise<void>;
   updateProfile: (updates: Partial<UserProfile>) => Promise<UserProfile>;
   updatePrivacy: (privacy: {
     locationVisibility: LocationVisibility;
@@ -73,6 +75,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setUser(null);
   };
 
+  const demoLogin = async () => {
+    const res = await api.post<{ user: UserProfile; token: string }>('/api/auth/demo-login');
+    api.setToken(res.token);
+    setToken(res.token);
+    setUser(res.user);
+  };
+
+  const quickResetAndLogin = async (identifier: string, newPassword = 'password123') => {
+    const res = await api.post<{ user: UserProfile; token: string }>('/api/auth/quick-reset', {
+      identifier,
+      newPassword,
+    });
+    api.setToken(res.token);
+    setToken(res.token);
+    setUser(res.user);
+  };
+
   const updateProfile = async (updates: Partial<UserProfile>) => {
     const res = await api.put<{ user: UserProfile }>('/api/profile/update', updates);
     setUser(res.user);
@@ -99,6 +118,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         login,
         register,
         logout,
+        demoLogin,
+        quickResetAndLogin,
         updateProfile,
         updatePrivacy,
       }}

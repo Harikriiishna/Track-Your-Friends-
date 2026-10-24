@@ -24,11 +24,14 @@ import {
   Terminal,
   Copy,
   Cpu,
+  Compass,
+  Sparkles,
 } from 'lucide-react';
 import { notifications } from '../../utils/notifications.ts';
 import { PWAInstallButton } from '../Navigation/PWAInstallButton.tsx';
 import { useToast } from '../../context/ToastContext.tsx';
 import { useTheme, GLASS_THEMES, GlassThemeId } from '../../context/ThemeContext.tsx';
+import { MARKER_COLORS, MEMBER_ICONS, getMemberIconEmoji } from '../../utils/markerStyles.ts';
 
 export const ProfilePrivacyView: React.FC = () => {
   const { user, updateProfile, updatePrivacy, logout } = useAuth();
@@ -39,6 +42,11 @@ export const ProfilePrivacyView: React.FC = () => {
   const [about, setAbout] = useState(user?.about || '');
   const [phoneNumber, setPhoneNumber] = useState(user?.phoneNumber || '');
   const [avatarUrl, setAvatarUrl] = useState(user?.avatarUrl || '');
+
+  // Marker customization states
+  const [markerColor, setMarkerColor] = useState<string>(user?.markerColor || '#0ea5e9');
+  const [markerIcon, setMarkerIcon] = useState<string>(user?.markerIcon || 'person');
+  const [markerLabel, setMarkerLabel] = useState<string>(user?.markerLabel || '');
 
   // Privacy states
   const [locVis, setLocVis] = useState<LocationVisibility>(user?.privacy?.locationVisibility || 'room_members');
@@ -109,6 +117,9 @@ export const ProfilePrivacyView: React.FC = () => {
         about,
         phoneNumber,
         avatarUrl,
+        markerColor,
+        markerIcon,
+        markerLabel,
       });
 
       await updatePrivacy({
@@ -296,6 +307,182 @@ export const ProfilePrivacyView: React.FC = () => {
                 className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
               />
             </div>
+          </div>
+        </div>
+
+        {/* Live Map Marker Personalization Card */}
+        <div className="bg-white rounded-3xl border border-slate-200 p-6 shadow-sm space-y-6">
+          <div className="flex items-start justify-between">
+            <div>
+              <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
+                <Palette className="w-4 h-4 text-sky-600" />
+                Map Marker & Family Role Styling
+              </h3>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Customize your live map marker color, role icon, and label to help family members identify you visually.
+              </p>
+            </div>
+            <span className="px-2.5 py-1 rounded-full bg-sky-50 text-sky-700 text-[10px] font-bold font-mono border border-sky-100 flex items-center gap-1">
+              <Sparkles className="w-3 h-3 text-sky-500" />
+              Live Visuals
+            </span>
+          </div>
+
+          {/* Interactive Live Marker Preview on Dark Simulated Map Canvas */}
+          <div className="p-6 rounded-2xl bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 border border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-6 relative overflow-hidden shadow-inner">
+            {/* Ambient Background Grid */}
+            <div className="absolute inset-0 bg-[radial-gradient(#334155_1px,transparent_1px)] [background-size:16px_16px] opacity-25 pointer-events-none" />
+
+            <div className="relative z-10 flex flex-col items-center">
+              <span className="text-[10px] font-mono uppercase tracking-wider text-slate-400 font-bold mb-3">
+                Live Map Appearance
+              </span>
+
+              {/* Sample Beacon Simulation */}
+              <div className="relative flex items-center justify-center w-20 h-20">
+                {/* Glowing Beam */}
+                <div
+                  className="absolute -top-4 w-24 h-24 pointer-events-none opacity-60 transition-transform duration-300"
+                  style={{
+                    background: `radial-gradient(circle at 50% 100%, ${markerColor}66 0%, ${markerColor}11 50%, transparent 75%)`,
+                    clipPath: 'polygon(50% 100%, 15% 0%, 85% 0%)',
+                  }}
+                />
+
+                {/* Pulsing Halo */}
+                <div
+                  className="absolute inset-2 rounded-full animate-ping opacity-30"
+                  style={{ backgroundColor: markerColor }}
+                />
+
+                {/* Avatar Core */}
+                <div
+                  className="relative w-12 h-12 rounded-full border-2 border-white shadow-2xl overflow-hidden bg-slate-900 transition-all duration-300 ring-4"
+                  style={{ borderColor: '#ffffff', outlineColor: markerColor, boxShadow: `0 0 20px ${markerColor}80` }}
+                >
+                  <img
+                    src={avatarUrl || user?.avatarUrl}
+                    alt="Preview"
+                    className="w-full h-full object-cover"
+                  />
+                </div>
+
+                {/* Role / Family Icon Badge Overlay */}
+                <div
+                  className="absolute -top-1 -right-1 w-6 h-6 rounded-full bg-slate-900 border-2 border-white flex items-center justify-center text-xs shadow-lg"
+                  title="Role Badge"
+                >
+                  <span>{getMemberIconEmoji(markerIcon)}</span>
+                </div>
+
+                {/* Bottom Identity Pill */}
+                <div
+                  className="absolute -bottom-3 px-2.5 py-0.5 rounded-full text-[10px] font-bold text-white shadow-lg whitespace-nowrap border border-white/20 flex items-center gap-1"
+                  style={{ backgroundColor: markerColor }}
+                >
+                  <span>{getMemberIconEmoji(markerIcon)}</span>
+                  <span>{markerLabel.trim() || fullName.split(' ')[0] || 'You'}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="relative z-10 max-w-sm space-y-2 text-center sm:text-left">
+              <h4 className="font-bold text-white text-sm">
+                {markerLabel.trim() ? `${markerLabel} (${fullName})` : fullName}
+              </h4>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                When you share location in rooms, peers will see your directional beacon pulsing with{' '}
+                <span className="font-bold" style={{ color: markerColor }}>
+                  {MARKER_COLORS.find((c) => c.hex.toLowerCase() === markerColor.toLowerCase())?.label || 'Custom Color'}
+                </span>{' '}
+                and the <span className="font-bold">{getMemberIconEmoji(markerIcon)} {MEMBER_ICONS.find((i) => i.id === markerIcon)?.label || 'Member'}</span> badge.
+              </p>
+              <div className="pt-1 flex flex-wrap items-center justify-center sm:justify-start gap-2">
+                <span className="px-2 py-0.5 rounded-md bg-white/10 text-[10px] font-mono text-slate-300">
+                  Hex: {markerColor}
+                </span>
+                <span className="px-2 py-0.5 rounded-md bg-white/10 text-[10px] font-mono text-slate-300">
+                  Role: {markerIcon}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Color Selector */}
+          <div>
+            <label className="block text-xs font-bold text-slate-800 uppercase tracking-wider mb-2 font-mono">
+              1. Marker Accent Color
+            </label>
+            <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
+              {MARKER_COLORS.map((c) => {
+                const isSelected = markerColor.toLowerCase() === c.hex.toLowerCase();
+                return (
+                  <button
+                    key={c.id}
+                    type="button"
+                    onClick={() => setMarkerColor(c.hex)}
+                    className={`p-2.5 rounded-2xl border text-left flex items-center gap-2.5 transition-all cursor-pointer ${
+                      isSelected
+                        ? 'border-slate-900 bg-slate-50 ring-2 ring-slate-900 shadow-sm'
+                        : 'border-slate-200 hover:border-slate-300 bg-white hover:bg-slate-50/50'
+                    }`}
+                  >
+                    <div
+                      className="w-5 h-5 rounded-full border border-white shadow-sm flex items-center justify-center shrink-0"
+                      style={{ backgroundColor: c.hex }}
+                    >
+                      {isSelected && <Check className="w-3 h-3 text-white" strokeWidth={3} />}
+                    </div>
+                    <span className="text-xs font-semibold text-slate-800 truncate">{c.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Member / Family Identity Icon */}
+          <div>
+            <label className="block text-xs font-bold text-slate-800 uppercase tracking-wider mb-2 font-mono">
+              2. Family Member & Role Icon
+            </label>
+            <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 gap-2">
+              {MEMBER_ICONS.map((icon) => {
+                const isSelected = markerIcon === icon.id;
+                return (
+                  <button
+                    key={icon.id}
+                    type="button"
+                    onClick={() => setMarkerIcon(icon.id)}
+                    className={`p-2.5 rounded-2xl border flex items-center gap-2 transition-all cursor-pointer ${
+                      isSelected
+                        ? 'border-slate-900 bg-slate-900 text-white shadow-md ring-2 ring-slate-900/20'
+                        : 'border-slate-200 hover:border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    <span className="text-base shrink-0">{icon.emoji}</span>
+                    <span className="text-xs font-semibold truncate">{icon.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Custom Nickname / Marker Display Tag */}
+          <div>
+            <label className="block text-xs font-bold text-slate-800 uppercase tracking-wider mb-1 font-mono">
+              3. Marker Display Label / Nickname
+            </label>
+            <p className="text-[11px] text-slate-500 mb-2">
+              Optional short text shown on your map pin (e.g. "Dad", "Mom", "Sam (Kid)", "Van #1").
+            </p>
+            <input
+              type="text"
+              maxLength={20}
+              placeholder={`e.g. ${fullName.split(' ')[0] || 'Dad'}`}
+              value={markerLabel}
+              onChange={(e) => setMarkerLabel(e.target.value)}
+              className="w-full max-w-md px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
+            />
           </div>
         </div>
 

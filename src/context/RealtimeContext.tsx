@@ -177,6 +177,13 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       case 'presence:update': {
         setUserLocations(data.userLocations);
         setOnlineUserIds(data.onlineUsers);
+        if (!myLocationRef.current && user) {
+          const mySaved = data.userLocations.find((l) => l.userId === user.id);
+          if (mySaved) {
+            setMyLocation(mySaved);
+            if (mySaved.accuracy) setGpsAccuracy(mySaved.accuracy);
+          }
+        }
         break;
       }
 
@@ -384,11 +391,20 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       setGpsError(msg);
     };
 
-    // Start high accuracy watch
+    // Immediately request high-precision position on mount
+    navigator.geolocation.getCurrentPosition(handleSuccess, (err) => {
+      console.warn('Initial high-accuracy GPS check:', err.message);
+    }, {
+      enableHighAccuracy: true,
+      timeout: 10000,
+      maximumAge: 0,
+    });
+
+    // Start continuous high accuracy watch
     watchId = navigator.geolocation.watchPosition(handleSuccess, handleError, {
       enableHighAccuracy: true,
-      maximumAge: 5000,
-      timeout: 20000,
+      maximumAge: 0,
+      timeout: 15000,
     });
 
     return () => {

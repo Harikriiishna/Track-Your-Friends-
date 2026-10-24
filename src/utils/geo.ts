@@ -56,3 +56,16 @@ export function formatTimeAgo(isoString: string): string {
   if (diffHours < 24) return `${diffHours} hr ago`;
   return new Date(isoString).toLocaleDateString();
 }
+
+// Calculate true bearing/heading between two coordinates in degrees (0 - 360)
+export function calculateBearing(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const dLon = ((lon2 - lon1) * Math.PI) / 180;
+  const lat1Rad = (lat1 * Math.PI) / 180;
+  const lat2Rad = (lat2 * Math.PI) / 180;
+  const y = Math.sin(dLon) * Math.cos(lat2Rad);
+  const x =
+    Math.cos(lat1Rad) * Math.sin(lat2Rad) -
+    Math.sin(lat1Rad) * Math.cos(lat2Rad) * Math.cos(dLon);
+  const brng = (Math.atan2(y, x) * 180) / Math.PI;
+  return (brng + 360) % 360;
+}

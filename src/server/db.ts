@@ -163,11 +163,21 @@ class Database {
     phoneNumber?: string;
     avatarUrl?: string;
   }): UserProfile {
-    const existing = this.data.users.find(
-      (u) => u.email.toLowerCase() === userData.email.toLowerCase() || u.username.toLowerCase() === userData.username.toLowerCase()
+    const cleanEmail = userData.email.trim().toLowerCase();
+    const cleanUsername = userData.username.trim();
+
+    const existingEmail = this.data.users.find(
+      (u) => u.email.toLowerCase() === cleanEmail
     );
-    if (existing) {
-      throw new Error('User with this email or username already exists');
+    if (existingEmail) {
+      throw new Error(`An account with email "${cleanEmail}" already exists. Please sign in or reset your password.`);
+    }
+
+    const existingUsername = this.data.users.find(
+      (u) => u.username.toLowerCase() === cleanUsername.toLowerCase()
+    );
+    if (existingUsername) {
+      throw new Error(`The username "${cleanUsername}" is already taken. Please choose another username.`);
     }
 
     const { hash, salt } = this.hashPassword(userData.password);
@@ -176,12 +186,12 @@ class Database {
 
     const newUser: UserRecord = {
       id: userId,
-      email: userData.email.toLowerCase(),
-      username: userData.username.trim(),
+      email: cleanEmail,
+      username: cleanUsername,
       fullName: userData.fullName.trim(),
       avatarUrl: userData.avatarUrl || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(userData.fullName)}`,
       about: 'Member of Beacon Community',
-      phoneNumber: userData.phoneNumber || '',
+      phoneNumber: userData.phoneNumber?.trim() || '',
       createdAt: new Date().toISOString(),
       isOnline: true,
       lastSeen: new Date().toISOString(),
@@ -197,6 +207,7 @@ class Database {
     };
 
     this.data.users.push(newUser);
+    this.ensureUniversalRoom(newUser.id);
     this.save();
     return this.sanitizeUser(newUser);
   }
@@ -204,6 +215,23 @@ class Database {
   public sanitizeUser(u: UserRecord): UserProfile {
     const { passwordHash, salt, ...safe } = u;
     return safe;
+  }
+
+  public directResetPassword(identifier: string, newPassword: string): UserProfile {
+    const user = this.findUserByEmailOrUsername(identifier);
+    if (!user) {
+      throw new Error(`No account found with username or email "${identifier.trim()}".`);
+    }
+    const { hash, salt } = this.hashPassword(newPassword);
+    user.passwordHash = hash;
+    user.salt = salt;
+
+    // Invalidate old sessions
+    this.data.sessions = this.data.sessions.filter((s) => s.userId !== user.id);
+
+    this.logAudit(user.id, user.fullName, 'PASSWORD_RESET_DIRECT', 'Password reset successfully');
+    this.save();
+    return this.sanitizeUser(user);
   }
 
   public findUserById(id: string): UserRecord | undefined {
@@ -310,6 +338,9 @@ class Database {
     if (updates.about !== undefined) user.about = updates.about;
     if (updates.phoneNumber !== undefined) user.phoneNumber = updates.phoneNumber;
     if (updates.avatarUrl !== undefined) user.avatarUrl = updates.avatarUrl;
+    if (updates.markerColor !== undefined) user.markerColor = updates.markerColor;
+    if (updates.markerIcon !== undefined) user.markerIcon = updates.markerIcon;
+    if (updates.markerLabel !== undefined) user.markerLabel = updates.markerLabel;
     if (updates.privacy !== undefined) {
       user.privacy = { ...user.privacy, ...updates.privacy };
     }
@@ -352,6 +383,9 @@ class Database {
       username: user.username,
       fullName: user.fullName,
       avatarUrl: user.avatarUrl,
+      markerColor: user.markerColor,
+      markerIcon: user.markerIcon,
+      markerLabel: user.markerLabel,
       latitude: coords.latitude,
       longitude: coords.longitude,
       accuracy: coords.accuracy,
@@ -690,6 +724,21 @@ class Database {
       room.isPrivate = false;
     }
 
+    // Automatically ensure every registered user is enrolled in Universal Hub
+    for (const u of this.data.users) {
+      const alreadyMember = this.data.roomMembers.some(
+        (m) => m.roomId === UNIVERSAL_ROOM_ID && m.userId === u.id
+      );
+      if (!alreadyMember) {
+        this.data.roomMembers.push({
+          roomId: UNIVERSAL_ROOM_ID,
+          userId: u.id,
+          role: u.isAdmin ? 'ADMIN' : 'MEMBER',
+          joinedAt: u.createdAt || new Date().toISOString(),
+        });
+      }
+    }
+
     if (userId) {
       const alreadyMember = this.data.roomMembers.some((m) => m.roomId === UNIVERSAL_ROOM_ID && m.userId === userId);
       if (!alreadyMember) {
@@ -702,7 +751,8 @@ class Database {
       }
     }
 
-    room.memberCount = this.data.roomMembers.filter((m) => m.roomId === UNIVERSAL_ROOM_ID).length || 1;
+    const universalMembers = this.data.roomMembers.filter((m) => m.roomId === UNIVERSAL_ROOM_ID);
+    room.memberCount = universalMembers.length || Math.max(1, this.data.users.length);
     this.save();
     return room;
   }
