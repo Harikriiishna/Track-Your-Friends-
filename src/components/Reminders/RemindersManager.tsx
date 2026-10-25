@@ -162,7 +162,7 @@ export const RemindersManager: React.FC<RemindersManagerProps> = ({
   };
 
   return (
-    <div className="flex flex-col h-full bg-slate-50 overflow-y-auto p-4 md:p-6 space-y-4">
+    <div className="flex flex-col h-full bg-slate-50 overflow-y-auto p-4 md:p-6 pb-28 space-y-4">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="font-bold text-slate-900 text-lg">Reminders & Geofences</h2>

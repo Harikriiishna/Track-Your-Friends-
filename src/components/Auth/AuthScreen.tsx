@@ -32,9 +32,10 @@ export const AuthScreen: React.FC = () => {
   const [authMode, setAuthMode] = useState<'login' | 'register' | 'reset'>('login');
 
   // Form fields
-  const [identifier, setIdentifier] = useState('');
+  const [identifier, setIdentifier] = useState(() => localStorage.getItem('beacon_saved_identifier') || '');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [rememberMe, setRememberMe] = useState(true);
   const [email, setEmail] = useState('');
   const [username, setUsername] = useState('');
   const [fullName, setFullName] = useState('');
@@ -58,6 +59,10 @@ export const AuthScreen: React.FC = () => {
     setIsLoading(true);
 
     try {
+      if (rememberMe) {
+        if (identifier) localStorage.setItem('beacon_saved_identifier', identifier.trim());
+        if (email) localStorage.setItem('beacon_saved_identifier', email.trim());
+      }
       if (authMode === 'login') {
         await login(identifier.trim(), password);
       } else if (authMode === 'register') {
@@ -560,10 +565,26 @@ export const AuthScreen: React.FC = () => {
             </>
           )}
 
+          {/* Remember me and session persistence guarantee */}
+          <div className="flex items-center justify-between pt-1">
+            <label className="flex items-center gap-2 cursor-pointer select-none text-xs text-slate-300">
+              <input
+                type="checkbox"
+                checked={rememberMe}
+                onChange={(e) => setRememberMe(e.target.checked)}
+                className="w-4 h-4 rounded bg-slate-800 border-slate-700 text-blue-500 focus:ring-blue-500 focus:ring-offset-0 cursor-pointer"
+              />
+              <span className="font-medium">Stay signed in on this device</span>
+            </label>
+            <span className="text-[10px] text-emerald-400 font-medium flex items-center gap-1">
+              <CheckCircle2 className="w-3 h-3" /> Auto-saved
+            </span>
+          </div>
+
           <button
             type="submit"
             disabled={isLoading || quickActionLoading}
-            className="w-full mt-4 py-3 bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white text-xs font-bold rounded-xl shadow-lg shadow-blue-600/30 flex items-center justify-center gap-2 transition-all cursor-pointer"
+            className="w-full mt-3 py-3 bg-blue-600 hover:bg-blue-500 active:scale-[0.98] text-white text-xs font-bold rounded-xl shadow-lg shadow-blue-600/30 flex items-center justify-center gap-2 transition-all cursor-pointer"
           >
             {isLoading ? (
               'Processing...'

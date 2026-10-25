@@ -28,6 +28,7 @@ import {
   X,
   MapPin,
   Check,
+  UserX,
 } from 'lucide-react';
 
 interface RoomsManagerProps {
@@ -59,6 +60,7 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
     joinVoiceChannel,
     leaveVoiceChannel,
     toggleMicMute,
+    sendMessage,
   } = useRealtime();
 
   const toast = useToast();
@@ -67,6 +69,7 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showJoinModal, setShowJoinModal] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [quickHubMessage, setQuickHubMessage] = useState('');
 
   // Form states
   const [newRoomName, setNewRoomName] = useState('');
@@ -301,6 +304,29 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
     }
   };
 
+  const handleKickMember = async (targetUserId: string, memberName: string) => {
+    if (!selectedRoomId) return;
+    if (!confirm(`Are you sure you want to remove ${memberName} from this room?`)) return;
+    try {
+      await api.kickRoomMember(selectedRoomId, targetUserId);
+      const res = await api.get<{ room: Room }>(`/api/rooms/${selectedRoomId}`);
+      setActiveRoomDetails(res.room);
+      toast.success(`${memberName} was removed from the room`);
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to remove member');
+    }
+  };
+
+  const handleBlockUser = async (targetUserId: string, memberName: string) => {
+    if (!confirm(`Block ${memberName}? They will not be able to message you or track your location.`)) return;
+    try {
+      await api.blockUser(targetUserId);
+      toast.success(`Blocked ${memberName}`);
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to block user');
+    }
+  };
+
   const myMembership = activeRoomDetails?.members?.find((m) => m.userId === user?.id);
   const canManageRoles = myMembership?.role === 'OWNER' || myMembership?.role === 'ADMIN';
 
@@ -396,7 +422,7 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
 
       {/* Real-time Search Results View */}
       {searchQuery.trim() ? (
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        <div className="flex-1 overflow-y-auto p-4 pb-28 space-y-4">
           <div className="flex items-center justify-between text-xs text-slate-400">
             <span>
               Search results for <strong className="text-white font-semibold">"{searchQuery}"</strong>
@@ -591,14 +617,14 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
                 onSelectRoom('room-universal');
                 if (onOpenChat) {
                   onOpenChat('room-universal');
-                  toast.success('Entering Universal Lounge...');
+                  toast.success('Opening Universal Hub Messages & Chat...');
                 }
               }}
               className="px-3.5 py-2 rounded-xl text-xs font-bold bg-white hover:bg-slate-100 text-indigo-900 shadow-md transition-all cursor-pointer flex items-center gap-1.5 active:scale-95 shrink-0"
-              title="Open Universal Chat Channels"
+              title="Message in Universal Hub"
             >
-              <MessageSquare className="w-3.5 h-3.5 text-indigo-700" />
-              <span>Enter Lounge</span>
+              <MessageSquare className="w-4 h-4 text-indigo-700" />
+              <span>Message</span>
             </button>
             <button
               onClick={() => {
@@ -653,7 +679,7 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
 
       {/* Active Room Detailed Content */}
       {activeRoomDetails ? (
-        <div className="flex-1 overflow-y-auto p-4 space-y-6">
+        <div className="flex-1 overflow-y-auto p-4 pb-28 space-y-6">
           {/* Room Banner Card */}
           <div
             className={`rounded-2xl border p-4 shadow-sm ${
@@ -701,46 +727,95 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
                   <LogOut className="w-4 h-4" />
                 </button>
               ) : (
-                <div className="px-2.5 py-1 rounded-lg bg-indigo-100/80 text-indigo-700 text-[10px] font-bold">
-                  Permanent Hub
+                <div className="flex items-center gap-2">
+                  <div className="px-2.5 py-1 rounded-lg bg-indigo-100/80 text-indigo-700 text-[10px] font-bold">
+                    Permanent Hub
+                  </div>
+                  <button
+                    onClick={() => {
+                      onOpenChat?.('room-universal');
+                      toast.success('Opening Universal Hub Messages & Chat...');
+                    }}
+                    className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-indigo-600 to-sky-600 hover:from-indigo-500 hover:to-sky-500 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer active:scale-95"
+                    title="Open Universal Hub Messages"
+                  >
+                    <MessageSquare className="w-3.5 h-3.5" />
+                    <span>Message</span>
+                  </button>
                 </div>
               )}
             </div>
 
             {/* Quick Action Suite for Universal Hub */}
             {(activeRoomDetails.isUniversal || activeRoomDetails.id === 'room-universal') && (
-              <div className="mt-4 p-3.5 rounded-2xl bg-gradient-to-r from-indigo-950 via-slate-900 to-blue-950 border border-indigo-500/30 text-white flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-md">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-xl bg-indigo-500/30 flex items-center justify-center text-indigo-300">
-                    <Globe className="w-4 h-4" />
+              <div className="mt-4 p-3.5 rounded-2xl bg-gradient-to-r from-indigo-950 via-slate-900 to-blue-950 border border-indigo-500/30 text-white space-y-3 shadow-md">
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-xl bg-indigo-500/30 flex items-center justify-center text-indigo-300">
+                      <Globe className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <span className="text-xs font-bold text-white block">Universal Lounge Communication Hub</span>
+                      <span className="text-[11px] text-indigo-200/80 block">#general · #live-locations · #announcements · #lounge</span>
+                    </div>
                   </div>
-                  <div>
-                    <span className="text-xs font-bold text-white block">Universal Lounge Communication Hub</span>
-                    <span className="text-[11px] text-indigo-200/80 block">#general · #live-locations · #announcements · #lounge</span>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 w-full sm:w-auto">
-                  <button
-                    onClick={() => {
-                      onOpenChat?.('room-universal');
-                      toast.success('Switching to Universal Hub Chat...');
-                    }}
-                    className="flex-1 sm:flex-initial px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 shadow-sm transition-all cursor-pointer active:scale-95"
-                  >
-                    <MessageSquare className="w-3.5 h-3.5" />
-                    <span>Open Lounge Chat</span>
-                  </button>
-                  {myLocation && onFocusMapLocation && (
+                  <div className="flex items-center gap-2 w-full sm:w-auto">
                     <button
-                      onClick={() => onFocusMapLocation(myLocation.latitude, myLocation.longitude)}
-                      className="px-3 py-2 bg-white/10 hover:bg-white/20 text-white text-xs font-semibold rounded-xl flex items-center gap-1.5 border border-white/20 transition-all cursor-pointer"
-                      title="View my location on map"
+                      onClick={() => {
+                        onOpenChat?.('room-universal');
+                        toast.success('Switching to Universal Hub Messages & Chat...');
+                      }}
+                      className="flex-1 sm:flex-initial px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 shadow-sm transition-all cursor-pointer active:scale-95"
+                      title="Open full conversation in Universal Hub"
                     >
-                      <MapPin className="w-3.5 h-3.5 text-emerald-400" />
-                      <span>Live Pin</span>
+                      <MessageSquare className="w-3.5 h-3.5" />
+                      <span>Message (Open Chat)</span>
                     </button>
-                  )}
+                    {myLocation && onFocusMapLocation && (
+                      <button
+                        onClick={() => onFocusMapLocation(myLocation.latitude, myLocation.longitude)}
+                        className="px-3 py-2 bg-white/10 hover:bg-white/20 text-white text-xs font-semibold rounded-xl flex items-center gap-1.5 border border-white/20 transition-all cursor-pointer"
+                        title="View my location on map"
+                      >
+                        <MapPin className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Live Pin</span>
+                      </button>
+                    )}
+                  </div>
                 </div>
+
+                {/* Inline Quick Message Composer */}
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    if (!quickHubMessage.trim()) return;
+                    sendMessage({
+                      roomId: 'room-universal',
+                      channelId: 'general',
+                      text: quickHubMessage.trim(),
+                    });
+                    setQuickHubMessage('');
+                    toast.success('Message sent to Universal Hub!');
+                  }}
+                  className="flex items-center gap-2 pt-2 border-t border-white/10"
+                >
+                  <div className="relative flex-1">
+                    <input
+                      type="text"
+                      placeholder="Send a quick message to Universal Hub..."
+                      value={quickHubMessage}
+                      onChange={(e) => setQuickHubMessage(e.target.value)}
+                      className="w-full px-3.5 py-2 rounded-xl bg-white/10 border border-white/15 text-xs text-white placeholder-indigo-200/60 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={!quickHubMessage.trim()}
+                    className="px-3 py-2 rounded-xl bg-sky-500 hover:bg-sky-400 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-bold transition-all cursor-pointer flex items-center gap-1 shrink-0"
+                  >
+                    <span>Send</span>
+                  </button>
+                </form>
               </div>
             )}
 
@@ -897,11 +972,15 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
                       {mem.userId !== user?.id && (
                         <>
                           <button
-                            onClick={() => onSelectUserForChat?.(mem.userId)}
-                            className="p-1.5 text-slate-500 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors"
-                            title="Direct Message"
+                            onClick={() => {
+                              onSelectUserForChat?.(mem.userId);
+                              toast.info(`Opening direct chat with ${mem.user.fullName}`);
+                            }}
+                            className="px-2.5 py-1.5 bg-sky-50 hover:bg-sky-100 text-sky-700 dark:bg-sky-950/50 dark:hover:bg-sky-900/60 dark:text-sky-300 rounded-xl text-xs font-semibold flex items-center gap-1.5 border border-sky-200 dark:border-sky-800/50 transition-colors cursor-pointer"
+                            title={`Direct Message ${mem.user.fullName}`}
                           >
-                            <MessageSquare className="w-4 h-4" />
+                            <MessageSquare className="w-3.5 h-3.5" />
+                            <span>Message</span>
                           </button>
 
                           {mem.user.phoneNumber && mem.user.privacy?.phoneVisibility !== 'nobody' && (
@@ -938,6 +1017,30 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
                           <option value="MEMBER">MEMBER</option>
                           <option value="GUEST">GUEST</option>
                         </select>
+                      )}
+
+                      {/* Kick member for admins/owner (cannot kick owner) */}
+                      {canManageRoles && mem.userId !== user?.id && mem.role !== 'OWNER' && (
+                        <button
+                          type="button"
+                          onClick={() => handleKickMember(mem.userId, mem.user.fullName)}
+                          className="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                          title={`Remove ${mem.user.fullName} from room`}
+                        >
+                          <LogOut className="w-3.5 h-3.5 rotate-180" />
+                        </button>
+                      )}
+
+                      {/* Block user option */}
+                      {mem.userId !== user?.id && (
+                        <button
+                          type="button"
+                          onClick={() => handleBlockUser(mem.userId, mem.user.fullName)}
+                          className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                          title={`Block ${mem.user.fullName}`}
+                        >
+                          <UserX className="w-3.5 h-3.5" />
+                        </button>
                       )}
                     </div>
                   </div>

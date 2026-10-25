@@ -24,11 +24,24 @@ export interface UserProfile {
     phoneVisibility: PhoneVisibility;
     profileVisibility: ProfileVisibility;
     showOnlineStatus: boolean;
+    locationSharingEnabled?: boolean; // Master opt-in location toggle
+    temporarySharingExpiry?: string | null; // ISO timestamp when location sharing auto-expires
+    blockedUserIds?: string[]; // Array of blocked user IDs
   };
   isAdmin?: boolean;
   markerColor?: string; // Custom hex color for live map marker
   markerIcon?: string; // Custom icon identifier e.g. person, dad, mom, kid, pet, car, etc.
   markerLabel?: string;
+}
+
+export interface UserSession {
+  token: string;
+  userId: string;
+  createdAt: string;
+  expiresAt: string;
+  userAgent?: string;
+  ip?: string;
+  isCurrent?: boolean;
 }
 
 export interface UserLocation {
@@ -47,6 +60,7 @@ export interface UserLocation {
   markerColor?: string;
   markerIcon?: string;
   markerLabel?: string;
+  isStale?: boolean;
 }
 
 export interface LocationBreadcrumb {

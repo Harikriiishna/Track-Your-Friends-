@@ -172,7 +172,7 @@ function MainApp() {
       <OfflineBanner />
 
       {/* Main Content Area: Hardware-accelerated compositor layer */}
-      <main className="flex-1 overflow-hidden relative pb-16 md:pb-0 tab-pane-container">
+      <main className="flex-1 overflow-hidden relative tab-pane-container">
         {/* Persistent Leaflet Map: Kept mounted with isolated GPU layer for zero-latency 60fps instant switching */}
         <div
           className={`tab-pane-container absolute inset-0 transition-opacity duration-200 transform-gpu-smooth ${
@@ -203,7 +203,7 @@ function MainApp() {
         {/* Rooms Tab Pane: Lazily mounted, cached in GPU compositor layer */}
         {visitedTabs.has('rooms') && (
           <div
-            className={`tab-pane-container absolute inset-0 transition-opacity duration-180 transform-gpu-smooth ${
+            className={`tab-pane-container absolute top-0 left-0 right-0 tab-pane-mobile-safe transition-opacity duration-180 transform-gpu-smooth ${
               currentTab === 'rooms'
                 ? 'opacity-100 z-10 pointer-events-auto visible animate-tab-enter'
                 : 'opacity-0 z-0 pointer-events-none invisible'
@@ -235,7 +235,7 @@ function MainApp() {
         {/* Chat Tab Pane: Lazily mounted, state/scroll preserved, zero re-render lag */}
         {visitedTabs.has('chat') && (
           <div
-            className={`tab-pane-container absolute inset-0 transition-opacity duration-180 transform-gpu-smooth ${
+            className={`tab-pane-container absolute top-0 left-0 right-0 tab-pane-mobile-safe transition-opacity duration-180 transform-gpu-smooth ${
               currentTab === 'chat'
                 ? 'opacity-100 z-10 pointer-events-auto visible animate-tab-enter'
                 : 'opacity-0 z-0 pointer-events-none invisible'
@@ -262,7 +262,7 @@ function MainApp() {
         {/* Alerts Tab Pane */}
         {visitedTabs.has('alerts') && (
           <div
-            className={`tab-pane-container absolute inset-0 transition-opacity duration-180 transform-gpu-smooth ${
+            className={`tab-pane-container absolute top-0 left-0 right-0 tab-pane-mobile-safe transition-opacity duration-180 transform-gpu-smooth ${
               currentTab === 'alerts'
                 ? 'opacity-100 z-10 pointer-events-auto visible animate-tab-enter'
                 : 'opacity-0 z-0 pointer-events-none invisible'
@@ -284,7 +284,7 @@ function MainApp() {
         {/* Saved Places Tab Pane */}
         {visitedTabs.has('saved') && (
           <div
-            className={`tab-pane-container absolute inset-0 transition-opacity duration-180 transform-gpu-smooth ${
+            className={`tab-pane-container absolute top-0 left-0 right-0 tab-pane-mobile-safe transition-opacity duration-180 transform-gpu-smooth ${
               currentTab === 'saved'
                 ? 'opacity-100 z-10 pointer-events-auto visible animate-tab-enter'
                 : 'opacity-0 z-0 pointer-events-none invisible'
@@ -304,7 +304,7 @@ function MainApp() {
         {/* Reminders Tab Pane */}
         {visitedTabs.has('reminders') && (
           <div
-            className={`tab-pane-container absolute inset-0 transition-opacity duration-180 transform-gpu-smooth ${
+            className={`tab-pane-container absolute top-0 left-0 right-0 tab-pane-mobile-safe transition-opacity duration-180 transform-gpu-smooth ${
               currentTab === 'reminders'
                 ? 'opacity-100 z-10 pointer-events-auto visible animate-tab-enter'
                 : 'opacity-0 z-0 pointer-events-none invisible'
@@ -321,7 +321,7 @@ function MainApp() {
         {/* Meetings Tab Pane */}
         {visitedTabs.has('meetings') && (
           <div
-            className={`tab-pane-container absolute inset-0 transition-opacity duration-180 transform-gpu-smooth ${
+            className={`tab-pane-container absolute top-0 left-0 right-0 tab-pane-mobile-safe transition-opacity duration-180 transform-gpu-smooth ${
               currentTab === 'meetings'
                 ? 'opacity-100 z-10 pointer-events-auto visible animate-tab-enter'
                 : 'opacity-0 z-0 pointer-events-none invisible'
@@ -334,7 +334,7 @@ function MainApp() {
         {/* Profile Tab Pane */}
         {visitedTabs.has('profile') && (
           <div
-            className={`tab-pane-container absolute inset-0 transition-opacity duration-180 transform-gpu-smooth ${
+            className={`tab-pane-container absolute top-0 left-0 right-0 tab-pane-mobile-safe transition-opacity duration-180 transform-gpu-smooth ${
               currentTab === 'profile'
                 ? 'opacity-100 z-10 pointer-events-auto visible animate-tab-enter'
                 : 'opacity-0 z-0 pointer-events-none invisible'
@@ -347,7 +347,7 @@ function MainApp() {
         {/* Admin Dashboard Pane */}
         {visitedTabs.has('admin') && (
           <div
-            className={`tab-pane-container absolute inset-0 transition-opacity duration-180 transform-gpu-smooth ${
+            className={`tab-pane-container absolute top-0 left-0 right-0 tab-pane-mobile-safe transition-opacity duration-180 transform-gpu-smooth ${
               currentTab === 'admin'
                 ? 'opacity-100 z-10 pointer-events-auto visible animate-tab-enter'
                 : 'opacity-0 z-0 pointer-events-none invisible'

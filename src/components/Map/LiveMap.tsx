@@ -30,6 +30,7 @@ import {
   Car,
   Globe,
   Map as MapIcon,
+  Mountain,
   ChevronDown,
   Check,
   CheckSquare,
@@ -46,7 +47,18 @@ import {
   Copy,
   ExternalLink,
   Share2,
+  Palette,
+  Info,
+  Radio,
 } from 'lucide-react';
+import {
+  MARKER_COLORS,
+  MEMBER_ICONS,
+  getMemberIconEmoji,
+  getLocationTypeEmoji,
+  getCustomMemberOverrides,
+  saveCustomMemberOverride,
+} from '../../utils/markerStyles.ts';
 
 export interface MarkerContextMenuTarget {
   type: 'peer' | 'self' | 'place' | 'coord';
@@ -126,7 +138,12 @@ export const LiveMap: React.FC<LiveMapProps> = ({
   const trailLayersRef = useRef<Map<string, TrailLayerGroup>>(new Map());
 
   const toast = useToast();
-  const [mapMode, setMapMode] = useState<'standard' | 'satellite' | 'traffic' | 'dark'>('standard');
+  type MapLayerMode = 'terrain' | 'satellite' | 'dark' | 'standard' | 'traffic';
+  const [mapMode, setMapMode] = useState<MapLayerMode>(() => {
+    const saved = localStorage.getItem('beacon_map_style');
+    return (saved as MapLayerMode) || 'terrain';
+  });
+  const [showLayerQuickToggle, setShowLayerQuickToggle] = useState<boolean>(true);
   const [selectedUser, setSelectedUser] = useState<UserLocation | null>(null);
   const [hasCenteredOnce, setHasCenteredOnce] = useState(false);
   const [showPermissionBanner, setShowPermissionBanner] = useState(!isGpsActive && !myLocation);
@@ -143,6 +160,19 @@ export const LiveMap: React.FC<LiveMapProps> = ({
   const [activeRouteData, setActiveRouteData] = useState<RouteData | null>(null);
   const routePolylineRef = useRef<L.Polyline | null>(null);
   const routeGlowPolylineRef = useRef<L.Polyline | null>(null);
+
+  // Google Maps Blue Dot Info Modal State
+  const [showBlueDotModal, setShowBlueDotModal] = useState<boolean>(false);
+
+  // Custom Family Marker Picker Modal State
+  const [customizingMember, setCustomizingMember] = useState<{
+    userId: string;
+    fullName: string;
+    currentColor: string;
+    currentIcon: string;
+    currentNickname: string;
+  } | null>(null);
+  const [memberOverridesVersion, setMemberOverridesVersion] = useState<number>(0);
 
   // Marker Long-Press & Context Menu State
   const [contextMenu, setContextMenu] = useState<{
@@ -476,9 +506,15 @@ export const LiveMap: React.FC<LiveMapProps> = ({
   const isHeadingUpModeRef = useRef<boolean>(false);
   isHeadingUpModeRef.current = isHeadingUpMode;
 
-  // Real-time device orientation & compass sensor listener
+  // Real-time device orientation & compass sensor listener (throttled & paused when tab inactive)
   useEffect(() => {
+    if (!isActive) return;
+
+    let lastTime = 0;
     const handleOrientation = (e: any) => {
+      const now = performance.now();
+      if (now - lastTime < 160) return; // Throttle to max ~6fps for sensor updates
+
       let rawHeading: number | null = null;
       if (e.webkitCompassHeading !== undefined) {
         rawHeading = e.webkitCompassHeading;
@@ -488,7 +524,8 @@ export const LiveMap: React.FC<LiveMapProps> = ({
 
       if (rawHeading !== null && !isNaN(rawHeading)) {
         const heading = Math.round(rawHeading);
-        if (userHeadingRef.current === null || Math.abs(userHeadingRef.current - heading) >= 1.5) {
+        if (userHeadingRef.current === null || Math.abs(userHeadingRef.current - heading) >= 3.5) {
+          lastTime = now;
           userHeadingRef.current = heading;
           setUserHeading(heading);
 
@@ -501,14 +538,14 @@ export const LiveMap: React.FC<LiveMapProps> = ({
       }
     };
 
-    window.addEventListener('deviceorientationabsolute', handleOrientation, true);
-    window.addEventListener('deviceorientation', handleOrientation, true);
+    window.addEventListener('deviceorientationabsolute', handleOrientation, { passive: true });
+    window.addEventListener('deviceorientation', handleOrientation, { passive: true });
 
     return () => {
-      window.removeEventListener('deviceorientationabsolute', handleOrientation, true);
-      window.removeEventListener('deviceorientation', handleOrientation, true);
+      window.removeEventListener('deviceorientationabsolute', handleOrientation);
+      window.removeEventListener('deviceorientation', handleOrientation);
     };
-  }, []);
+  }, [isActive]);
 
   const getCompassHeading = (deg: number): string => {
     const normalized = ((deg % 360) + 360) % 360;
@@ -828,8 +865,18 @@ export const LiveMap: React.FC<LiveMapProps> = ({
 
   const GOOGLE_MAPS_KEY = (import.meta as any).env?.VITE_GOOGLE_MAPS_API_KEY || 'AIzaSyAOVYRIgupAurZup5y1PRh8Ismb1A3lLao';
 
-  const createGoogleTileLayer = (mode: 'standard' | 'satellite' | 'traffic' | 'dark') => {
-    if (mode === 'satellite') {
+  const createGoogleTileLayer = (mode: 'standard' | 'satellite' | 'terrain' | 'traffic' | 'dark') => {
+    if (mode === 'terrain') {
+      return L.tileLayer(
+        `https://mt{s}.google.com/vt/lyrs=p&x={x}&y={y}&z={z}&scale=2&hl=en`,
+        {
+          maxZoom: 20,
+          subdomains: ['0', '1', '2', '3'],
+          detectRetina: true,
+          attribution: '&copy; Google Maps Terrain Topo HD',
+        }
+      );
+    } else if (mode === 'satellite') {
       return L.tileLayer(
         `https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}&scale=2&hl=en`,
         {
@@ -856,7 +903,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
           maxZoom: 20,
           subdomains: 'abcd',
           detectRetina: true,
-          attribution: '&copy; CARTO Dark Matter HD',
+          attribution: '&copy; Simple Night-Mode Street Map HD',
         }
       );
     } else {
@@ -891,9 +938,9 @@ export const LiveMap: React.FC<LiveMapProps> = ({
       bounceAtZoomLimits: false,
     });
 
-    const googleLayer = createGoogleTileLayer('standard').addTo(map);
+    const initialLayer = createGoogleTileLayer(mapMode).addTo(map);
 
-    tileLayerRef.current = googleLayer;
+    tileLayerRef.current = initialLayer;
     mapInstanceRef.current = map;
 
     // Track current zoom level for HUD
@@ -1251,17 +1298,26 @@ export const LiveMap: React.FC<LiveMapProps> = ({
       setHasCenteredOnce(true);
     }
 
+    // Google Maps Accuracy Range Ring:
+    // The light-blue shaded ring around the blue dot represents the accuracy range.
+    // The smaller the ring, the more precise the GPS signal is.
     if (myLocation.accuracy) {
+      const accuracyRadius = Math.max(4, myLocation.accuracy);
       if (!accuracyCircleRef.current) {
         accuracyCircleRef.current = L.circle(latLng, {
-          radius: myLocation.accuracy,
-          color: '#3b82f6',
-          fillColor: '#60a5fa',
-          fillOpacity: 0.15,
+          radius: accuracyRadius,
+          color: '#4285F4',
+          fillColor: '#4285F4',
+          fillOpacity: 0.16,
           weight: 1.5,
+          opacity: 0.5,
         }).addTo(map);
+
+        accuracyCircleRef.current.on('click', () => {
+          setShowBlueDotModal(true);
+        });
       } else {
-        animateAccuracyCircle(accuracyCircleRef.current, myLocation.latitude, myLocation.longitude, myLocation.accuracy);
+        animateAccuracyCircle(accuracyCircleRef.current, myLocation.latitude, myLocation.longitude, accuracyRadius);
       }
     }
 
@@ -1275,47 +1331,62 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         ? ((effectiveHeading - bearing) % 360 + 360) % 360
         : 0;
 
-    const avatar = user?.avatarUrl || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(user?.fullName || 'Me')}`;
+    const userColor = user?.markerColor || '#1a73e8';
+    const userIcon = user?.markerIcon || 'person';
+    const userRoleEmoji = getMemberIconEmoji(userIcon);
+    const userDisplayName = user?.markerLabel || user?.fullName?.split(' ')[0] || 'You';
+
+    // Google Maps Blue Dot Cursor:
+    // • The blue dot: Pinpoints where your device is right now.
+    // • The light-blue shaded ring around it: Represents the accuracy range.
+    // • The faint beam or arrow (if active): Indicates the direction your device is currently facing.
     const myIcon = L.divIcon({
-      className: 'beacon-my-marker',
+      className: 'beacon-google-blue-dot-marker',
       html: `
-        <div class="relative flex items-center justify-center w-16 h-16 pointer-events-none">
-          <!-- Directional Beam & Precision Arrowhead Cursor -->
-          <div class="absolute inset-0 flex items-center justify-center pointer-events-none transition-transform duration-150 ease-out" style="transform: rotate(${visualAngle}deg);">
-            <!-- Radiant 60-degree Field-of-View Cone Beam -->
-            <svg class="absolute -top-6 w-24 h-24 overflow-visible pointer-events-none opacity-85" viewBox="0 0 100 100">
+        <div class="relative flex items-center justify-center w-20 h-20 pointer-events-none cursor-pointer">
+          <!-- Faint Directional Beam & Arrowhead Pointer (Active Device Facing Direction) -->
+          <div class="absolute inset-0 flex items-center justify-center pointer-events-none transition-transform duration-200 ease-out" style="transform: rotate(${visualAngle}deg);">
+            <!-- 60-degree soft gradient cone beam projecting forward from the dot -->
+            <svg class="absolute -top-7 w-28 h-28 overflow-visible pointer-events-none opacity-85" viewBox="0 0 100 100">
               <defs>
-                <radialGradient id="beaconBeamGradient" cx="50%" cy="100%" r="95%">
-                  <stop offset="0%" stop-color="rgba(14, 165, 233, 0.55)" />
-                  <stop offset="50%" stop-color="rgba(56, 189, 248, 0.22)" />
-                  <stop offset="100%" stop-color="rgba(2, 132, 199, 0)" />
+                <radialGradient id="googleBlueDotBeam" cx="50%" cy="100%" r="90%">
+                  <stop offset="0%" stop-color="rgba(66, 133, 244, 0.6)" />
+                  <stop offset="45%" stop-color="rgba(66, 133, 244, 0.22)" />
+                  <stop offset="85%" stop-color="rgba(66, 133, 244, 0.05)" />
+                  <stop offset="100%" stop-color="rgba(66, 133, 244, 0)" />
                 </radialGradient>
               </defs>
-              <path d="M 50 95 L 18 20 A 62 62 0 0 1 82 20 Z" fill="url(#beaconBeamGradient)" />
+              <path d="M 50 95 L 14 18 A 66 66 0 0 1 86 18 Z" fill="url(#googleBlueDotBeam)" />
             </svg>
+
             <!-- Precision Arrowhead Direction Cursor -->
-            <div class="absolute -top-3 flex flex-col items-center">
-              <div class="w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-b-[11px] border-b-cyan-400 drop-shadow-[0_0_8px_rgba(34,211,238,0.95)]"></div>
+            <div class="absolute -top-3.5 flex flex-col items-center">
+              <div class="w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-b-[11px] border-b-[#1a73e8] drop-shadow-[0_0_6px_rgba(26,115,232,0.9)]"></div>
             </div>
           </div>
 
-          <!-- Pulsing Radar Halo -->
-          <div class="absolute inset-2.5 rounded-full bg-cyan-500/20 animate-ping"></div>
+          <!-- Pulsing Ambient Ripple Ring -->
+          <div class="absolute inset-4 rounded-full bg-blue-500/25 animate-ping pointer-events-none"></div>
 
-          <!-- User Avatar Core -->
-          <div class="relative w-10 h-10 rounded-full border-2 border-white shadow-xl overflow-hidden bg-slate-900 ring-2 ring-cyan-500 pointer-events-auto cursor-pointer">
-            <img src="${avatar}" class="w-full h-full object-cover" alt="Me" />
+          <!-- The Blue Dot: Crisp Google Maps Center with White Rim -->
+          <div class="relative w-8 h-8 rounded-full bg-gradient-to-tr from-[#1557b0] to-[#4285f4] border-[3px] border-white shadow-[0_2px_10px_rgba(0,0,0,0.4)] flex items-center justify-center pointer-events-auto group hover:scale-110 transition-transform">
+            ${user?.markerIcon && user.markerIcon !== 'person' ? `
+              <span class="text-xs text-white drop-shadow">${userRoleEmoji}</span>
+            ` : `
+              <div class="w-2.5 h-2.5 rounded-full bg-white shadow-xs"></div>
+            `}
           </div>
 
           <!-- Direction & Identity Badge -->
-          <div class="absolute -bottom-1.5 px-2 py-0.2 bg-gradient-to-r from-blue-600 to-cyan-600 text-[10px] text-white font-bold rounded-full shadow-md flex items-center gap-1 pointer-events-auto whitespace-nowrap">
-            <span>You</span>
-            ${effectiveHeading !== null ? `<span class="text-cyan-200 font-mono text-[9px]">· ${Math.round(effectiveHeading)}°</span>` : ''}
+          <div class="absolute -bottom-2 px-2.5 py-0.5 bg-slate-900/90 text-[10px] text-white font-bold rounded-full shadow-md border border-white/20 flex items-center gap-1 pointer-events-auto whitespace-nowrap">
+            <span class="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse"></span>
+            <span>${userDisplayName}</span>
+            ${effectiveHeading !== null ? `<span class="text-blue-300 font-mono text-[9px]">· ${Math.round(effectiveHeading)}°</span>` : ''}
           </div>
         </div>
       `,
-      iconSize: [64, 64],
-      iconAnchor: [32, 32],
+      iconSize: [80, 80],
+      iconAnchor: [40, 40],
     });
 
     const selfTarget: MarkerContextMenuTarget = {
@@ -1324,7 +1395,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
       subtitle: `Accuracy: ${formatAccuracy(myLocation.accuracy)}`,
       lat: myLocation.latitude,
       lng: myLocation.longitude,
-      avatarUrl: avatar,
+      avatarUrl: user?.avatarUrl,
       heading: effectiveHeading,
     };
 
@@ -1373,23 +1444,36 @@ export const LiveMap: React.FC<LiveMapProps> = ({
           ? ((peerHeading - bearing) % 360 + 360) % 360
           : null;
 
+      // Custom Family Member Marker Styling: check local override or user's broadcasted style
+      const overrides = getCustomMemberOverrides();
+      const peerOverride = overrides[peerLoc.userId];
+
+      const peerColor = peerOverride?.color || peerLoc.markerColor || '#10b981';
+      const peerIconId = peerOverride?.icon || peerLoc.markerIcon || 'person';
+      const peerRoleEmoji = getMemberIconEmoji(peerIconId);
+      const peerDisplayName = peerOverride?.nickname || peerLoc.fullName.split(' ')[0];
+
       const peerIcon = L.divIcon({
         className: 'beacon-peer-marker',
         html: `
-          <div class="group relative flex flex-col items-center cursor-pointer">
+          <div class="group relative flex flex-col items-center cursor-pointer hover:scale-105 transition-transform">
             <!-- Peer Heading Direction Pointer Arrow -->
             ${peerVisualAngle !== null ? `
               <div class="absolute inset-0 flex items-center justify-center pointer-events-none transition-transform duration-150" style="transform: rotate(${peerVisualAngle}deg);">
-                <div class="absolute -top-3 w-0 h-0 border-l-[5px] border-l-transparent border-r-[5px] border-r-transparent border-b-[9px] border-b-emerald-400 drop-shadow-[0_0_6px_rgba(52,211,153,0.85)]"></div>
+                <div class="absolute -top-3 w-0 h-0 border-l-[5px] border-l-transparent border-r-[5px] border-r-transparent border-b-[9px]" style="border-bottom-color: ${peerColor}; filter: drop-shadow(0 0 4px ${peerColor});"></div>
               </div>
             ` : ''}
-            <div class="relative w-10 h-10 rounded-full border-2 border-white shadow-md overflow-hidden bg-slate-800 ${
-              isOnline ? 'ring-2 ring-emerald-500' : 'ring-1 ring-slate-400'
-            }">
+            <div class="relative w-10 h-10 rounded-full border-2 border-white shadow-md overflow-hidden bg-slate-800 ring-2" style="outline-color: ${peerColor}; box-shadow: 0 0 8px ${peerColor}80;">
               <img src="${peerLoc.avatarUrl}" class="w-full h-full object-cover" alt="${peerLoc.fullName}" />
             </div>
+            ${peerIconId !== 'person' ? `
+              <div class="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-slate-900 border border-white text-[10px] flex items-center justify-center shadow">
+                <span>${peerRoleEmoji}</span>
+              </div>
+            ` : ''}
             <div class="mt-1 px-2 py-0.5 bg-slate-900/90 backdrop-blur-sm text-[10px] text-white font-medium rounded shadow flex items-center gap-1 whitespace-nowrap">
-              <span>${peerLoc.fullName.split(' ')[0]}</span>
+              <span class="w-1.5 h-1.5 rounded-full" style="background-color: ${peerColor};"></span>
+              <span>${peerRoleEmoji !== '👤' ? `${peerRoleEmoji} ` : ''}${peerDisplayName}</span>
               ${distText ? `<span class="text-slate-400">·</span><span class="text-blue-400 font-semibold">${distText}</span>` : ''}
               ${peerHeading != null ? `<span class="text-emerald-400 font-mono text-[9px]">· ${Math.round(peerHeading)}°</span>` : ''}
             </div>
@@ -1437,7 +1521,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         currentMarkers.delete(userId);
       }
     }
-  }, [userLocations, onlineUserIds, myLocation, user?.id, bearing]);
+  }, [userLocations, onlineUserIds, myLocation, user?.id, bearing, memberOverridesVersion]);
 
   // Update Saved Places Markers
   useEffect(() => {
@@ -1449,23 +1533,23 @@ export const LiveMap: React.FC<LiveMapProps> = ({
 
     savedPlaces.forEach((place) => {
       const latLng = L.latLng(place.latitude, place.longitude);
+      const colorHex = place.markerColor || '#f59e0b';
+      const iconEmoji = getLocationTypeEmoji(place.markerIcon || place.category);
+
       const placeIcon = L.divIcon({
         className: 'beacon-place-marker',
         html: `
-          <div class="flex flex-col items-center">
-            <div class="w-7 h-7 rounded-full bg-amber-500 text-white flex items-center justify-center shadow-md border-2 border-white">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/>
-                <circle cx="12" cy="10" r="3"/>
-              </svg>
+          <div class="flex flex-col items-center cursor-pointer group hover:scale-110 transition-transform">
+            <div class="w-8 h-8 rounded-2xl text-white flex items-center justify-center shadow-lg border-2 border-white text-sm" style="background-color: ${colorHex}">
+              <span>${iconEmoji}</span>
             </div>
-            <span class="mt-0.5 px-1.5 py-0.5 bg-slate-900/90 text-[10px] text-white font-medium rounded shadow whitespace-nowrap">
+            <span class="mt-0.5 px-2 py-0.5 bg-slate-900/90 text-[10px] text-white font-bold rounded shadow-md border border-white/10 whitespace-nowrap max-w-[120px] truncate">
               ${place.name}
             </span>
           </div>
         `,
-        iconSize: [28, 48],
-        iconAnchor: [14, 28],
+        iconSize: [32, 50],
+        iconAnchor: [16, 25],
       });
 
       const marker = L.marker(latLng, { icon: placeIcon }).addTo(map);
@@ -1944,7 +2028,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
           >
             <Layers className="w-4 h-4 text-sky-400" />
             <span className="text-xs font-semibold capitalize hidden xs:inline sm:inline">
-              {mapMode === 'standard' ? 'Standard' : mapMode === 'satellite' ? 'Satellite' : mapMode === 'traffic' ? 'Traffic' : 'Dark'}
+              {mapMode === 'terrain' ? 'Terrain' : mapMode === 'satellite' ? 'Satellite' : mapMode === 'dark' ? 'Night Mode' : mapMode === 'traffic' ? 'Traffic' : 'Standard'}
             </span>
             {bearing !== 0 && (
               <span className="px-1.5 py-0.2 bg-sky-500 text-white rounded-full text-[9px] font-mono font-bold">
@@ -1954,6 +2038,89 @@ export const LiveMap: React.FC<LiveMapProps> = ({
             <ChevronDown className={`w-3.5 h-3.5 text-slate-300 transition-transform duration-200 ${showMapControlsPop ? 'rotate-180' : ''}`} />
           </button>
         </div>
+
+        {/* Toggle-able Layer Controller Floating Bar: Instant 1-tap switch between Terrain, Satellite, and Night Mode */}
+        {showLayerQuickToggle && (
+          <div className="flex items-center justify-between gap-1 p-1 bg-slate-900/90 backdrop-blur-xl border border-white/15 rounded-2xl shadow-xl z-20 text-white animate-in fade-in slide-in-from-top-1 duration-150">
+            <div className="flex items-center gap-1 overflow-x-auto py-0.5 px-1 scrollbar-none">
+              <button
+                onClick={() => {
+                  setMapMode('terrain');
+                  localStorage.setItem('beacon_map_style', 'terrain');
+                  toast.info('🏔️ Terrain Topo map style enabled');
+                }}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer active:scale-95 shrink-0 ${
+                  mapMode === 'terrain'
+                    ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-md ring-1 ring-white/30'
+                    : 'text-slate-300 hover:text-white hover:bg-white/10'
+                }`}
+                title="Terrain Topo: Elevation contours & shaded mountains"
+              >
+                <Mountain className="w-3.5 h-3.5 text-emerald-300" />
+                <span>Terrain</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setMapMode('satellite');
+                  localStorage.setItem('beacon_map_style', 'satellite');
+                  toast.info('🛰️ Satellite HD imagery enabled');
+                }}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer active:scale-95 shrink-0 ${
+                  mapMode === 'satellite'
+                    ? 'bg-gradient-to-r from-sky-600 to-indigo-600 text-white shadow-md ring-1 ring-white/30'
+                    : 'text-slate-300 hover:text-white hover:bg-white/10'
+                }`}
+                title="Satellite: Aerial hybrid imagery"
+              >
+                <Globe className="w-3.5 h-3.5 text-sky-300" />
+                <span>Satellite</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setMapMode('dark');
+                  localStorage.setItem('beacon_map_style', 'dark');
+                  toast.info('🌙 Simple Night-mode street style enabled');
+                }}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer active:scale-95 shrink-0 ${
+                  mapMode === 'dark'
+                    ? 'bg-gradient-to-r from-purple-600 to-slate-800 text-white shadow-md ring-1 ring-white/30'
+                    : 'text-slate-300 hover:text-white hover:bg-white/10'
+                }`}
+                title="Night Mode: Simple high-contrast street style for night navigation"
+              >
+                <Moon className="w-3.5 h-3.5 text-purple-300" />
+                <span>Night Mode</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setMapMode('standard');
+                  localStorage.setItem('beacon_map_style', 'standard');
+                  toast.info('🗺️ Standard street map enabled');
+                }}
+                className={`px-2.5 py-1.5 rounded-xl text-xs font-medium flex items-center gap-1 transition-all cursor-pointer active:scale-95 shrink-0 ${
+                  mapMode === 'standard'
+                    ? 'bg-white/20 text-white shadow-xs font-bold'
+                    : 'text-slate-400 hover:text-white hover:bg-white/5'
+                }`}
+                title="Standard Google street map"
+              >
+                <MapIcon className="w-3.5 h-3.5 text-slate-300" />
+                <span className="hidden sm:inline">Street</span>
+              </button>
+            </div>
+
+            <button
+              onClick={() => setShowMapControlsPop(true)}
+              className="px-2 py-1.5 text-slate-400 hover:text-white rounded-xl hover:bg-white/10 transition-colors shrink-0 mr-1"
+              title="More layer options and controls"
+            >
+              <Layers className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
 
         {/* Floating Map Controls Popover Card (Pop Button Modal) */}
         {showMapControlsPop && (
@@ -1984,10 +2151,11 @@ export const LiveMap: React.FC<LiveMapProps> = ({
               </span>
               <div className="grid grid-cols-2 gap-2">
                 {[
-                  { id: 'standard', name: 'Standard HD', icon: MapIcon, desc: 'Google Street Retina' },
+                  { id: 'terrain', name: 'Terrain Topo', icon: Mountain, desc: 'Elevation & Contours' },
                   { id: 'satellite', name: 'Satellite HD', icon: Globe, desc: 'Aerial Hybrid Imagery' },
+                  { id: 'dark', name: 'Night Street', icon: Moon, desc: 'Simple Night-Mode Style' },
+                  { id: 'standard', name: 'Standard HD', icon: MapIcon, desc: 'Google Street Retina' },
                   { id: 'traffic', name: 'Live Traffic', icon: Car, desc: 'Real-time Congestion' },
-                  { id: 'dark', name: 'Dark Matter', icon: Moon, desc: 'OLED High Contrast' },
                 ].map((item) => {
                   const Icon = item.icon;
                   const isSelected = mapMode === item.id;
@@ -1996,6 +2164,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
                       key={item.id}
                       onClick={() => {
                         setMapMode(item.id as any);
+                        localStorage.setItem('beacon_map_style', item.id);
                         toast.info(`${item.name} enabled`);
                       }}
                       className={`p-2.5 rounded-2xl border text-left transition-all flex items-start gap-2.5 cursor-pointer active:scale-95 ${
@@ -2734,6 +2903,60 @@ export const LiveMap: React.FC<LiveMapProps> = ({
                 </button>
               )}
 
+              {/* Customize Family Marker Style (For Peer Markers) */}
+              {contextMenu.target.type === 'peer' && contextMenu.target.userId && (
+                <button
+                  onClick={() => {
+                    const uid = contextMenu.target.userId!;
+                    const name = contextMenu.target.title;
+                    const overrides = getCustomMemberOverrides();
+                    const current = overrides[uid];
+                    closeContextMenu();
+                    setCustomizingMember({
+                      userId: uid,
+                      fullName: name,
+                      currentColor: current?.color || '#10b981',
+                      currentIcon: current?.icon || 'person',
+                      currentNickname: current?.nickname || name.split(' ')[0],
+                    });
+                  }}
+                  className="w-full px-2.5 py-2 hover:bg-white/10 active:bg-white/15 rounded-xl flex items-center justify-between transition-colors cursor-pointer group text-left"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-7 h-7 rounded-lg bg-pink-500/20 text-pink-300 flex items-center justify-center group-hover:scale-105 transition-transform">
+                      <Palette className="w-3.5 h-3.5" />
+                    </div>
+                    <div>
+                      <span className="font-bold text-white block">Family marker style</span>
+                      <span className="text-[10px] text-slate-400 block">Set color, icon (Dad, Mom, Kid)</span>
+                    </div>
+                  </div>
+                  <span className="text-[10px] text-pink-400 font-semibold">Style</span>
+                </button>
+              )}
+
+              {/* Blue Dot Info (For Self Marker) */}
+              {contextMenu.target.type === 'self' && (
+                <button
+                  onClick={() => {
+                    closeContextMenu();
+                    setShowBlueDotModal(true);
+                  }}
+                  className="w-full px-2.5 py-2 hover:bg-white/10 active:bg-white/15 rounded-xl flex items-center justify-between transition-colors cursor-pointer group text-left"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-7 h-7 rounded-lg bg-blue-500/20 text-blue-300 flex items-center justify-center group-hover:scale-105 transition-transform">
+                      <Info className="w-3.5 h-3.5" />
+                    </div>
+                    <div>
+                      <span className="font-bold text-white block">Google Maps Blue Dot</span>
+                      <span className="text-[10px] text-slate-400 block">GPS range & facing direction</span>
+                    </div>
+                  </div>
+                  <span className="text-[10px] text-blue-400 font-semibold">Info</span>
+                </button>
+              )}
+
               {/* Set Reminder */}
               <button
                 onClick={() => {
@@ -2865,6 +3088,283 @@ export const LiveMap: React.FC<LiveMapProps> = ({
           rooms={rooms}
           selectedRoomId={selectedRoomId}
         />
+      )}
+
+      {/* Google Maps Blue Dot Location & Accuracy Modal */}
+      {showBlueDotModal && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-150">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-md w-full shadow-2xl text-white space-y-4">
+            <div className="flex items-start justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-blue-500/20 text-blue-400 border border-blue-500/30 flex items-center justify-center">
+                  <div className="w-4 h-4 rounded-full bg-[#1a73e8] border-2 border-white shadow"></div>
+                </div>
+                <div>
+                  <h3 className="font-bold text-base text-white">Your Location (Google Maps Blue Dot)</h3>
+                  <p className="text-xs text-slate-400 font-mono">Real-time Positioning & Accuracy</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowBlueDotModal(false)}
+                className="p-1.5 text-slate-400 hover:text-white rounded-xl hover:bg-white/10"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-300 leading-relaxed">
+              The blue circular cursor marks your current real-time location based on your phone's GPS, mobile network, and Wi-Fi data.
+            </p>
+
+            {/* Three Essential Google Maps Blue Dot Characteristics */}
+            <div className="space-y-2.5">
+              <div className="p-3 rounded-2xl bg-slate-800/80 border border-slate-700/60 flex items-start gap-3">
+                <div className="w-6 h-6 rounded-full bg-[#1a73e8] border-2 border-white shadow-sm flex items-center justify-center shrink-0 mt-0.5">
+                  <div className="w-1.5 h-1.5 rounded-full bg-white"></div>
+                </div>
+                <div>
+                  <h4 className="font-bold text-xs text-white">The blue dot</h4>
+                  <p className="text-xs text-slate-300 mt-0.5">
+                    Pinpoints where your device is right now.
+                  </p>
+                </div>
+              </div>
+
+              <div className="p-3 rounded-2xl bg-slate-800/80 border border-slate-700/60 flex items-start gap-3">
+                <div className="w-6 h-6 rounded-full border-2 border-[#4285F4] bg-[#4285F4]/20 flex items-center justify-center shrink-0 mt-0.5">
+                  <div className="w-2 h-2 rounded-full border border-[#4285F4]"></div>
+                </div>
+                <div>
+                  <h4 className="font-bold text-xs text-white">The light-blue shaded ring around it</h4>
+                  <p className="text-xs text-slate-300 mt-0.5">
+                    Represents the accuracy range (±{myLocation?.accuracy ? Math.round(myLocation.accuracy) : 5} meters). The smaller the ring, the more precise the GPS signal is.
+                  </p>
+                </div>
+              </div>
+
+              <div className="p-3 rounded-2xl bg-slate-800/80 border border-slate-700/60 flex items-start gap-3">
+                <div className="w-6 h-6 rounded-full bg-sky-500/20 text-sky-400 flex items-center justify-center shrink-0 mt-0.5">
+                  <Navigation className="w-3.5 h-3.5 fill-current" />
+                </div>
+                <div>
+                  <h4 className="font-bold text-xs text-white">The faint beam or arrow</h4>
+                  <p className="text-xs text-slate-300 mt-0.5">
+                    Indicates the direction your device is currently facing ({myLocation?.heading != null ? `${Math.round(myLocation.heading)}° ${getCompassHeading(myLocation.heading)}` : `${userHeading != null ? `${Math.round(userHeading)}°` : 'Compass Calibrated'}`}).
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Triangulation Sources Status */}
+            <div className="grid grid-cols-3 gap-2 pt-1 text-center font-mono">
+              <div className="p-2 rounded-xl bg-white/5 border border-white/5">
+                <span className="text-[10px] text-slate-400 block">GPS Satellites</span>
+                <span className="text-xs font-bold text-emerald-400">Locked</span>
+              </div>
+              <div className="p-2 rounded-xl bg-white/5 border border-white/5">
+                <span className="text-[10px] text-slate-400 block">Cellular Towers</span>
+                <span className="text-xs font-bold text-emerald-400">Assisting</span>
+              </div>
+              <div className="p-2 rounded-xl bg-white/5 border border-white/5">
+                <span className="text-[10px] text-slate-400 block">Wi-Fi Geodata</span>
+                <span className="text-xs font-bold text-emerald-400">Active</span>
+              </div>
+            </div>
+
+            <div className="pt-2 flex items-center gap-2 border-t border-slate-800">
+              <button
+                onClick={() => {
+                  centerOnMyLocation();
+                  setShowBlueDotModal(false);
+                }}
+                className="flex-1 py-2.5 px-3 bg-[#1a73e8] hover:bg-blue-600 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer shadow-lg active:scale-95"
+              >
+                <Crosshair className="w-3.5 h-3.5" />
+                <span>Recenter Map</span>
+              </button>
+              <button
+                onClick={() => {
+                  toast.info('Calibrate compass: hold device and move in a smooth Figure-8 pattern in the air.');
+                }}
+                className="py-2.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-xl text-xs font-semibold cursor-pointer border border-slate-700"
+              >
+                Calibrate
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Custom Family Member Marker Styling Modal */}
+      {customizingMember && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-150">
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 max-w-md w-full shadow-2xl text-white space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-start justify-between pb-2 border-b border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-2xl bg-pink-500/20 text-pink-400 border border-pink-500/30 flex items-center justify-center">
+                  <Palette className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm text-white">Family Marker Style</h3>
+                  <p className="text-xs text-slate-400">{customizingMember.fullName}</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setCustomizingMember(null)}
+                className="p-1.5 text-slate-400 hover:text-white rounded-xl hover:bg-white/10"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Live Visual Preview of Peer Marker */}
+            <div className="p-4 rounded-2xl bg-slate-950 border border-slate-800 flex items-center justify-center gap-4">
+              <div className="flex flex-col items-center">
+                <div
+                  className="relative w-12 h-12 rounded-full border-2 border-white shadow-xl overflow-hidden bg-slate-800 ring-4"
+                  style={{ outlineColor: customizingMember.currentColor, boxShadow: `0 0 16px ${customizingMember.currentColor}80` }}
+                >
+                  <img
+                    src={userLocations.find((u) => u.userId === customizingMember.userId)?.avatarUrl || ''}
+                    alt=""
+                    className="w-full h-full object-cover"
+                  />
+                </div>
+                <div
+                  className="mt-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold text-white shadow-md border border-white/20 flex items-center gap-1 whitespace-nowrap"
+                  style={{ backgroundColor: customizingMember.currentColor }}
+                >
+                  <span>{getMemberIconEmoji(customizingMember.currentIcon)}</span>
+                  <span>{customizingMember.currentNickname.trim() || customizingMember.fullName.split(' ')[0]}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Color Selector */}
+            <div>
+              <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-2 font-mono">
+                Marker Accent Color
+              </label>
+              <div className="grid grid-cols-4 sm:grid-cols-6 gap-2">
+                {MARKER_COLORS.map((c) => {
+                  const isSelected = customizingMember.currentColor.toLowerCase() === c.hex.toLowerCase();
+                  return (
+                    <button
+                      key={c.id}
+                      type="button"
+                      onClick={() =>
+                        setCustomizingMember((prev) => (prev ? { ...prev, currentColor: c.hex } : null))
+                      }
+                      className={`p-2 rounded-xl border flex flex-col items-center gap-1 transition-all cursor-pointer ${
+                        isSelected ? 'border-white ring-2 ring-white bg-white/10 shadow' : 'border-slate-800 hover:bg-slate-800'
+                      }`}
+                    >
+                      <div
+                        className="w-5 h-5 rounded-full border border-white shadow-xs flex items-center justify-center shrink-0"
+                        style={{ backgroundColor: c.hex }}
+                      >
+                        {isSelected && <Check className="w-3 h-3 text-white stroke-[3]" />}
+                      </div>
+                      <span className="text-[9px] font-medium text-slate-300 truncate max-w-full">
+                        {c.label.split(' ')[0]}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Family / Role Icon Selector */}
+            <div>
+              <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-2 font-mono">
+                Family Role / Identity Icon
+              </label>
+              <div className="grid grid-cols-3 sm:grid-cols-4 gap-1.5 max-h-36 overflow-y-auto p-1 border border-slate-800 rounded-xl">
+                {MEMBER_ICONS.map((icon) => {
+                  const isSelected = customizingMember.currentIcon === icon.id;
+                  return (
+                    <button
+                      key={icon.id}
+                      type="button"
+                      onClick={() =>
+                        setCustomizingMember((prev) => (prev ? { ...prev, currentIcon: icon.id } : null))
+                      }
+                      className={`p-2 rounded-xl text-left flex items-center gap-1.5 transition-all cursor-pointer text-xs ${
+                        isSelected ? 'bg-sky-600 text-white font-bold shadow' : 'bg-slate-800/80 hover:bg-slate-800 text-slate-300'
+                      }`}
+                    >
+                      <span className="text-base">{icon.emoji}</span>
+                      <span className="truncate text-[11px]">{icon.label.split(' ')[0]}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Custom Nickname / Display Label */}
+            <div>
+              <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1 font-mono">
+                Display Nickname / Tag
+              </label>
+              <input
+                type="text"
+                maxLength={20}
+                placeholder="e.g. Dad, Mom, Lucas, Van"
+                value={customizingMember.currentNickname}
+                onChange={(e) =>
+                  setCustomizingMember((prev) => (prev ? { ...prev, currentNickname: e.target.value } : null))
+                }
+                className="w-full px-3.5 py-2.5 rounded-xl bg-slate-800 border border-slate-700 text-sm text-white focus:outline-none focus:ring-2 focus:ring-sky-500"
+              />
+            </div>
+
+            {/* Action buttons */}
+            <div className="pt-2 flex items-center justify-between gap-2 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => {
+                  saveCustomMemberOverride(customizingMember.userId, {
+                    color: '#10b981',
+                    icon: 'person',
+                    nickname: customizingMember.fullName.split(' ')[0],
+                  });
+                  setMemberOverridesVersion((v) => v + 1);
+                  toast.success('Reset family marker style');
+                  setCustomizingMember(null);
+                }}
+                className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-white rounded-xl hover:bg-slate-800"
+              >
+                Reset
+              </button>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCustomizingMember(null)}
+                  className="px-3 py-2 text-xs font-semibold text-slate-400 hover:text-white rounded-xl hover:bg-slate-800"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    saveCustomMemberOverride(customizingMember.userId, {
+                      color: customizingMember.currentColor,
+                      icon: customizingMember.currentIcon,
+                      nickname: customizingMember.currentNickname.trim() || customizingMember.fullName.split(' ')[0],
+                    });
+                    setMemberOverridesVersion((v) => v + 1);
+                    toast.success(`Updated map style for ${customizingMember.fullName}`);
+                    setCustomizingMember(null);
+                  }}
+                  className="px-4 py-2 text-xs font-bold text-white bg-sky-600 hover:bg-sky-500 rounded-xl shadow-md cursor-pointer active:scale-95"
+                >
+                  Save Style
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

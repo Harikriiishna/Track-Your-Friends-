@@ -46,7 +46,7 @@ export interface RoomRecord extends Room {
 
 interface DatabaseSchema {
   users: UserRecord[];
-  sessions: Array<{ token: string; userId: string; createdAt: string; expiresAt: string }>;
+  sessions: Array<{ token: string; userId: string; createdAt: string; expiresAt: string; userAgent?: string; ip?: string }>;
   rooms: RoomRecord[];
   roomMembers: Array<{ roomId: string; userId: string; role: UserRole; joinedAt: string }>;
   locations: Record<string, UserLocation>; // userId -> UserLocation
@@ -139,15 +139,22 @@ class Database {
     }
   }
 
-  // Password & Token utilities
+  // Password & Token utilities (NIST SP 800-63B / OWASP compliant PBKDF2 with SHA-512)
   public hashPassword(password: string, salt = crypto.randomBytes(16).toString('hex')): { hash: string; salt: string } {
-    const hash = crypto.pbkdf2Sync(password, salt, 10000, 64, 'sha512').toString('hex');
+    const hash = crypto.pbkdf2Sync(password, salt, 100000, 64, 'sha512').toString('hex');
     return { hash, salt };
   }
 
   public verifyPassword(password: string, hash: string, salt: string): boolean {
-    const calculated = crypto.pbkdf2Sync(password, salt, 10000, 64, 'sha512').toString('hex');
-    return calculated === hash;
+    // 1. Try modern 100,000 iterations (OWASP standard)
+    const calculated100k = crypto.pbkdf2Sync(password, salt, 100000, 64, 'sha512').toString('hex');
+    if (calculated100k === hash) return true;
+
+    // 2. Fallback check for legacy 10,000 iterations for seamless account backward-compatibility
+    const calculated10k = crypto.pbkdf2Sync(password, salt, 10000, 64, 'sha512').toString('hex');
+    if (calculated10k === hash) return true;
+
+    return false;
   }
 
   public generateToken(): string {
@@ -200,6 +207,9 @@ class Database {
         phoneVisibility: 'room_members',
         profileVisibility: 'public',
         showOnlineStatus: true,
+        locationSharingEnabled: true,
+        temporarySharingExpiry: null,
+        blockedUserIds: [],
       },
       isAdmin: isFirstUser, // First registered user is automatically admin
       passwordHash: hash,
@@ -243,11 +253,11 @@ class Database {
     return this.data.users.find((u) => u.email.toLowerCase() === lower || u.username.toLowerCase() === lower);
   }
 
-  public createSession(userId: string): string {
+  public createSession(userId: string, userAgent?: string, ip?: string): string {
     const token = this.generateToken();
     const createdAt = new Date().toISOString();
-    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(); // 30 days
-    this.data.sessions.push({ token, userId, createdAt, expiresAt });
+    const expiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(); // 365 days / 1 year persistent session
+    this.data.sessions.push({ token, userId, createdAt, expiresAt, userAgent, ip });
     this.save();
     return token;
   }
@@ -267,6 +277,51 @@ class Database {
   public deleteSession(token: string) {
     this.data.sessions = this.data.sessions.filter((s) => s.token !== token);
     this.save();
+  }
+
+  public getUserSessions(userId: string, currentToken?: string) {
+    const now = new Date();
+    return this.data.sessions
+      .filter((s) => s.userId === userId && new Date(s.expiresAt) > now)
+      .map((s) => ({
+        token: s.token.slice(0, 8) + '...',
+        fullToken: s.token === currentToken ? s.token : undefined,
+        userId: s.userId,
+        createdAt: s.createdAt,
+        expiresAt: s.expiresAt,
+        userAgent: s.userAgent || 'Web / Mobile Client',
+        ip: s.ip || 'Local',
+        isCurrent: s.token === currentToken,
+      }));
+  }
+
+  public revokeOtherSessions(userId: string, currentToken: string): number {
+    const beforeCount = this.data.sessions.length;
+    this.data.sessions = this.data.sessions.filter((s) => s.userId !== userId || s.token === currentToken);
+    const removed = beforeCount - this.data.sessions.length;
+    this.logAudit(userId, this.findUserById(userId)?.fullName || 'User', 'SESSIONS_REVOKED', `Revoked ${removed} other active sessions`);
+    this.save();
+    return removed;
+  }
+
+  public revokeSession(userId: string, tokenPrefix: string): boolean {
+    const cleanPrefix = tokenPrefix.replace('...', '');
+    const beforeCount = this.data.sessions.length;
+    this.data.sessions = this.data.sessions.filter((s) => !(s.userId === userId && s.token.startsWith(cleanPrefix)));
+    const removed = beforeCount > this.data.sessions.length;
+    if (removed) {
+      this.logAudit(userId, this.findUserById(userId)?.fullName || 'User', 'SESSION_REVOKED', `Revoked device session`);
+      this.save();
+    }
+    return removed;
+  }
+
+  public revokeAllUserSessions(userId: string): number {
+    const beforeCount = this.data.sessions.length;
+    this.data.sessions = this.data.sessions.filter((s) => s.userId !== userId);
+    const removed = beforeCount - this.data.sessions.length;
+    this.save();
+    return removed;
   }
 
   public createPasswordReset(email: string): string {
@@ -378,6 +433,23 @@ class Database {
     const user = this.findUserById(userId);
     if (!user) throw new Error('User not found');
 
+    // Strict Server-Side Coordinate & Sensor Validation (OWASP & Spec Section 5)
+    if (isNaN(coords.latitude) || coords.latitude < -90 || coords.latitude > 90) {
+      throw new Error('Invalid latitude coordinates: Must be between -90 and 90');
+    }
+    if (isNaN(coords.longitude) || coords.longitude < -180 || coords.longitude > 180) {
+      throw new Error('Invalid longitude coordinates: Must be between -180 and 180');
+    }
+    if (isNaN(coords.accuracy) || coords.accuracy < 0 || coords.accuracy > 50000) {
+      throw new Error('Invalid accuracy radius');
+    }
+
+    // Auto-expiry check for temporary sharing
+    if (user.privacy.temporarySharingExpiry && new Date(user.privacy.temporarySharingExpiry) < new Date()) {
+      user.privacy.locationSharingEnabled = false;
+      user.privacy.temporarySharingExpiry = null;
+    }
+
     const loc: UserLocation = {
       userId,
       username: user.username,
@@ -386,14 +458,15 @@ class Database {
       markerColor: user.markerColor,
       markerIcon: user.markerIcon,
       markerLabel: user.markerLabel,
-      latitude: coords.latitude,
-      longitude: coords.longitude,
-      accuracy: coords.accuracy,
-      altitude: coords.altitude ?? null,
-      heading: coords.heading ?? null,
-      speed: coords.speed ?? null,
-      batteryLevel: coords.batteryLevel ?? null,
+      latitude: Number(coords.latitude.toFixed(6)),
+      longitude: Number(coords.longitude.toFixed(6)),
+      accuracy: Math.round(coords.accuracy * 10) / 10,
+      altitude: coords.altitude != null && !isNaN(coords.altitude) ? Math.round(coords.altitude) : null,
+      heading: coords.heading != null && !isNaN(coords.heading) ? Math.round(coords.heading) : null,
+      speed: coords.speed != null && !isNaN(coords.speed) ? Number(coords.speed.toFixed(1)) : null,
+      batteryLevel: coords.batteryLevel != null && !isNaN(coords.batteryLevel) ? Math.round(coords.batteryLevel) : null,
       timestamp: new Date().toISOString(),
+      isStale: false,
     };
 
     this.data.locations[userId] = loc;
@@ -405,12 +478,12 @@ class Database {
     this.data.locationHistory.push({
       id: crypto.randomUUID(),
       userId,
-      latitude: coords.latitude,
-      longitude: coords.longitude,
-      accuracy: coords.accuracy,
-      altitude: coords.altitude ?? null,
-      heading: coords.heading ?? null,
-      speed: coords.speed ?? null,
+      latitude: loc.latitude,
+      longitude: loc.longitude,
+      accuracy: loc.accuracy,
+      altitude: loc.altitude,
+      heading: loc.heading,
+      speed: loc.speed,
       timestamp: loc.timestamp,
     });
 
@@ -424,6 +497,16 @@ class Database {
 
     this.save();
     return loc;
+  }
+
+  public clearUserLocationHistory(userId: string): number {
+    if (!this.data.locationHistory) return 0;
+    const beforeCount = this.data.locationHistory.length;
+    this.data.locationHistory = this.data.locationHistory.filter((item) => item.userId !== userId);
+    const removed = beforeCount - this.data.locationHistory.length;
+    this.logAudit(userId, this.findUserById(userId)?.fullName || 'User', 'LOCATION_HISTORY_CLEARED', `Removed ${removed} breadcrumbs`);
+    this.save();
+    return removed;
   }
 
   public getLocationTrail(
@@ -547,6 +630,8 @@ class Database {
     const requestingUser = this.findUserById(requestingUserId);
     if (!requestingUser) return [];
 
+    const reqBlockedSet = new Set(requestingUser.privacy.blockedUserIds || []);
+
     // Find all rooms requestingUser belongs to
     const userRoomIds = this.data.roomMembers
       .filter((m) => m.userId === requestingUserId)
@@ -573,10 +658,13 @@ class Database {
 
     const results: UserLocation[] = [];
 
-    // Always include requesting user's own location
+    // Always include requesting user's own location if available
     if (this.data.locations[requestingUserId]) {
       results.push(this.data.locations[requestingUserId]);
     }
+
+    const nowMs = Date.now();
+    const tenMinutesMs = 10 * 60 * 1000;
 
     for (const [targetUserId, loc] of Object.entries(this.data.locations)) {
       if (targetUserId === requestingUserId) continue;
@@ -584,25 +672,46 @@ class Database {
       const targetUser = this.findUserById(targetUserId);
       if (!targetUser) continue;
 
+      // Block enforcement: If either party blocked the other, hide location
+      if (reqBlockedSet.has(targetUserId) || (targetUser.privacy.blockedUserIds || []).includes(requestingUserId)) {
+        continue;
+      }
+
+      // Opt-in check: If target has turned off location sharing, do not reveal
+      if (targetUser.privacy.locationSharingEnabled === false) {
+        continue;
+      }
+
+      // Check temporary sharing expiry
+      if (targetUser.privacy.temporarySharingExpiry && new Date(targetUser.privacy.temporarySharingExpiry) < now) {
+        targetUser.privacy.locationSharingEnabled = false;
+        targetUser.privacy.temporarySharingExpiry = null;
+        continue;
+      }
+
       const { locationVisibility } = targetUser.privacy;
 
       if (locationVisibility === 'nobody') {
         continue;
       }
 
+      // Mark stale if coordinates are older than 10 minutes
+      const isStale = nowMs - new Date(loc.timestamp).getTime() > tenMinutesMs;
+      const enrichedLoc: UserLocation = { ...loc, isStale };
+
       if (locationVisibility === 'room_members') {
         if (sharedRoomUserIds.has(targetUserId)) {
-          results.push(loc);
+          results.push(enrichedLoc);
         }
       } else if (locationVisibility === 'selected') {
         if (activeShareUserIds.has(targetUserId)) {
-          results.push(loc);
+          results.push(enrichedLoc);
         }
       } else if (locationVisibility === 'emergency_only') {
         // Only visible if user has an active emergency alert
         const hasEmergency = this.data.emergencyAlerts.some((a) => a.senderId === targetUserId && a.status === 'active');
         if (hasEmergency && sharedRoomUserIds.has(targetUserId)) {
-          results.push(loc);
+          results.push(enrichedLoc);
         }
       }
     }
@@ -700,7 +809,39 @@ class Database {
     this.save();
   }
 
+  public kickMember(adminUserId: string, roomId: string, targetUserId: string) {
+    if (adminUserId === targetUserId) throw new Error('Cannot kick yourself. Use Leave Room instead.');
+
+    const adminMembership = this.data.roomMembers.find((m) => m.roomId === roomId && m.userId === adminUserId);
+    if (!adminMembership || (adminMembership.role !== 'OWNER' && adminMembership.role !== 'ADMIN')) {
+      throw new Error('Only room owners or administrators can remove members');
+    }
+
+    const targetMembership = this.data.roomMembers.find((m) => m.roomId === roomId && m.userId === targetUserId);
+    if (!targetMembership) throw new Error('Target user is not a member of this room');
+
+    if (targetMembership.role === 'OWNER') {
+      throw new Error('Cannot remove the room owner');
+    }
+
+    if (adminMembership.role === 'ADMIN' && targetMembership.role === 'ADMIN') {
+      throw new Error('Administrators cannot remove other administrators');
+    }
+
+    this.data.roomMembers = this.data.roomMembers.filter((m) => !(m.roomId === roomId && m.userId === targetUserId));
+    const room = this.data.rooms.find((r) => r.id === roomId);
+    if (room) {
+      room.memberCount = this.data.roomMembers.filter((m) => m.roomId === roomId).length;
+    }
+    this.logAudit(adminUserId, this.findUserById(adminUserId)?.fullName || 'Admin', 'ROOM_MEMBER_REMOVED', `Removed user ${targetUserId} from room ${roomId}`);
+    this.save();
+  }
+
   public updateMemberRole(adminUserId: string, roomId: string, targetUserId: string, newRole: UserRole) {
+    if (adminUserId === targetUserId) {
+      throw new Error('Security policy: You cannot change your own role (privilege self-escalation prevented)');
+    }
+
     const adminMembership = this.data.roomMembers.find((m) => m.roomId === roomId && m.userId === adminUserId);
     if (!adminMembership || (adminMembership.role !== 'OWNER' && adminMembership.role !== 'ADMIN')) {
       throw new Error('Only room owners or administrators can change roles');
@@ -709,8 +850,49 @@ class Database {
     const targetMembership = this.data.roomMembers.find((m) => m.roomId === roomId && m.userId === targetUserId);
     if (!targetMembership) throw new Error('Member not found in room');
 
+    // Only OWNER can assign OWNER or ADMIN
+    if ((newRole === 'OWNER' || newRole === 'ADMIN') && adminMembership.role !== 'OWNER') {
+      throw new Error('Only the room owner can appoint administrators or transfer ownership');
+    }
+
     targetMembership.role = newRole;
+    this.logAudit(adminUserId, this.findUserById(adminUserId)?.fullName || 'Admin', 'ROOM_ROLE_CHANGED', `Changed user ${targetUserId} role to ${newRole} in room ${roomId}`);
     this.save();
+  }
+
+  public blockUser(userId: string, targetUserId: string) {
+    if (userId === targetUserId) throw new Error('Cannot block yourself');
+    const user = this.findUserById(userId);
+    if (!user) throw new Error('User not found');
+
+    if (!user.privacy.blockedUserIds) {
+      user.privacy.blockedUserIds = [];
+    }
+    if (!user.privacy.blockedUserIds.includes(targetUserId)) {
+      user.privacy.blockedUserIds.push(targetUserId);
+    }
+    this.logAudit(userId, user.fullName, 'USER_BLOCKED', `Blocked user ${targetUserId}`);
+    this.save();
+  }
+
+  public unblockUser(userId: string, targetUserId: string) {
+    const user = this.findUserById(userId);
+    if (!user) throw new Error('User not found');
+
+    if (user.privacy.blockedUserIds) {
+      user.privacy.blockedUserIds = user.privacy.blockedUserIds.filter((id) => id !== targetUserId);
+    }
+    this.logAudit(userId, user.fullName, 'USER_UNBLOCKED', `Unblocked user ${targetUserId}`);
+    this.save();
+  }
+
+  public getBlockedUsers(userId: string): UserProfile[] {
+    const user = this.findUserById(userId);
+    if (!user || !user.privacy.blockedUserIds) return [];
+    return user.privacy.blockedUserIds
+      .map((id) => this.findUserById(id))
+      .filter((u): u is UserRecord => !!u)
+      .map((u) => this.sanitizeUser(u));
   }
 
   public ensureUniversalRoom(userId?: string): RoomRecord {
@@ -854,6 +1036,41 @@ class Database {
     const sender = this.findUserById(data.senderId);
     if (!sender) throw new Error('Sender not found');
 
+    // Input sanitization against XSS (Spec Section 8)
+    const sanitizedText = data.text
+      ? data.text
+          .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+          .replace(/<iframe\b[^<]*(?:(?!<\/iframe>)<[^<]*)*<\/iframe>/gi, '')
+          .trim()
+      : '';
+
+    if (!sanitizedText && (!data.attachments || data.attachments.length === 0)) {
+      throw new Error('Cannot send an empty message');
+    }
+
+    // Role and membership check for rooms
+    if (data.roomId) {
+      const isUniversal = data.roomId === UNIVERSAL_ROOM_ID;
+      const mem = this.data.roomMembers.find((m) => m.roomId === data.roomId && m.userId === data.senderId);
+      if (!mem && !isUniversal) {
+        throw new Error('Access denied: You must be a member of this room to send messages');
+      }
+      if (mem?.role === 'GUEST') {
+        throw new Error('Guests have read-only access to this room');
+      }
+    }
+
+    // Block check for direct messages
+    if (data.recipientId) {
+      const recipient = this.findUserById(data.recipientId);
+      if (recipient?.privacy.blockedUserIds?.includes(data.senderId)) {
+        throw new Error('Unable to send message to this user');
+      }
+      if (sender.privacy.blockedUserIds?.includes(data.recipientId)) {
+        throw new Error('You have blocked this user. Unblock in Privacy settings to communicate.');
+      }
+    }
+
     let replyToText: string | undefined = undefined;
     let replyToSender: string | undefined = undefined;
     if (data.replyToId) {
@@ -872,7 +1089,7 @@ class Database {
       senderId: data.senderId,
       senderName: sender.fullName,
       senderAvatar: sender.avatarUrl,
-      text: data.text,
+      text: sanitizedText,
       attachments: data.attachments || [],
       replyToId: data.replyToId,
       replyToText,
@@ -888,7 +1105,16 @@ class Database {
     return message;
   }
 
-  public getRoomMessages(roomId: string, limit = 50): ChatMessage[] {
+  public getRoomMessages(roomId: string, requestingUserId?: string, limit = 50): ChatMessage[] {
+    if (requestingUserId) {
+      const isUniversal = roomId === UNIVERSAL_ROOM_ID;
+      const isMember = this.data.roomMembers.some((m) => m.roomId === roomId && m.userId === requestingUserId);
+      const user = this.findUserById(requestingUserId);
+      if (!isMember && !isUniversal && !user?.isAdmin) {
+        throw new Error('Access denied: You are not a member of this private room');
+      }
+    }
+
     return this.data.messages
       .filter((m) => m.roomId === roomId && !m.isDeleted)
       .slice(-limit);

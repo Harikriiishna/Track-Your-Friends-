@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { useRealtime } from '../../context/RealtimeContext.tsx';
 import { useTheme } from '../../context/ThemeContext.tsx';
@@ -42,6 +42,7 @@ import {
   Phone,
   ChevronDown,
   Navigation,
+  UserX,
 } from 'lucide-react';
 
 interface ChatViewProps {
@@ -74,6 +75,109 @@ const VOICE_CHANNELS = [
 ];
 
 const QUICK_EMOJIS = ['👍', '❤️', '📍', '🔥', '🚀', '😂', '👀', '🤝', '⚡', '🎉'];
+
+export interface DisplayChatMessage {
+  id: string;
+  senderId?: string;
+  sender?: string;
+  senderName: string;
+  senderAvatar?: string;
+  role?: string;
+  text: string;
+  timestamp: string;
+  isSelf: boolean;
+  channelId?: string;
+  attachments?: any[];
+  replyToId?: string;
+  replyToText?: string;
+  replyToSender?: string;
+  reactions?: Record<string, string[]>;
+  createdAt?: string;
+  isEdited?: boolean;
+}
+
+const INITIAL_CHANNEL_MESSAGES: Record<string, DisplayChatMessage[]> = {
+  general: [
+    {
+      id: 'seed-gen-1',
+      senderId: 'mesh-node',
+      sender: 'Beacon Mesh Node',
+      senderName: 'Beacon Mesh Node',
+      senderAvatar: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&w=128&q=80',
+      role: 'MODERATOR',
+      text: 'Encrypted decentralized mesh relay connected. All active room peers are synchronized.',
+      timestamp: '10:15 AM',
+      isSelf: false,
+      channelId: 'general',
+    },
+    {
+      id: 'seed-gen-2',
+      senderId: 'alex-rivera',
+      sender: 'Alex Rivera',
+      senderName: 'Alex Rivera',
+      senderAvatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=128&q=80',
+      role: 'MEMBER',
+      text: 'Hey everyone! GPS signal is locked in with ±5m accuracy today. Live map tracking is working smoothly.',
+      timestamp: '10:18 AM',
+      isSelf: false,
+      channelId: 'general',
+    },
+    {
+      id: 'seed-gen-3',
+      senderId: 'sarah-chen',
+      sender: 'Sarah Chen',
+      senderName: 'Sarah Chen',
+      senderAvatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=128&q=80',
+      role: 'MEMBER',
+      text: 'Confirmed, coordinates are syncing in real time across the mesh.',
+      timestamp: '10:20 AM',
+      isSelf: false,
+      channelId: 'general',
+    },
+  ],
+  'live-locations': [
+    {
+      id: 'seed-loc-1',
+      senderId: 'alex-rivera',
+      sender: 'Alex Rivera',
+      senderName: 'Alex Rivera',
+      senderAvatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=128&q=80',
+      role: 'MEMBER',
+      text: '📍 Live Location Shared: 13.04412° N, 77.72380° W (Accuracy: ±5.2m)',
+      timestamp: '10:21 AM',
+      isSelf: false,
+      channelId: 'live-locations',
+    },
+  ],
+  announcements: [
+    {
+      id: 'seed-ann-1',
+      senderId: 'mesh-node',
+      sender: 'Beacon Safety Monitor',
+      senderName: 'Beacon Safety Monitor',
+      senderAvatar: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&w=128&q=80',
+      role: 'ADMIN',
+      text: '🛡️ Beacon Security Core v1.0 active: OWASP PBKDF2 hashing, object-level RBAC & ephemeral breadcrumb expiration active.',
+      timestamp: '09:00 AM',
+      isSelf: false,
+      channelId: 'announcements',
+    },
+  ],
+  lounge: [
+    {
+      id: 'seed-lou-1',
+      senderId: 'sarah-chen',
+      sender: 'Sarah Chen',
+      senderName: 'Sarah Chen',
+      senderAvatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=128&q=80',
+      role: 'MEMBER',
+      text: 'Joined voice channel #lounge if anyone wants to test audio.',
+      timestamp: '10:25 AM',
+      isSelf: false,
+      channelId: 'lounge',
+    },
+  ],
+};
 
 export const ChatView: React.FC<ChatViewProps> = ({
   userRooms = [],
@@ -141,8 +245,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
   // UI state
   const [roomDetails, setRoomDetails] = useState<Room | null>(null);
+  const [channelMessages, setChannelMessages] = useState<Record<string, DisplayChatMessage[]>>(INITIAL_CHANNEL_MESSAGES);
   const [inputVal, setInputVal] = useState('');
-  const [replyTarget, setReplyTarget] = useState<ChatMessage | null>(null);
+  const [replyTarget, setReplyTarget] = useState<ChatMessage | DisplayChatMessage | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState('');
   const [isRecording, setIsRecording] = useState(false);
@@ -200,24 +305,55 @@ export const ChatView: React.FC<ChatViewProps> = ({
     loadHistory();
   }, [effectiveRoomId, effectiveRecipientId]);
 
-  // Scroll to bottom on new messages
-  const allMessages = chatMessages[conversationKey] || [];
+  // Merge local channel state with incoming real-time socket messages
+  const activeChannelMessages: DisplayChatMessage[] = useMemo(() => {
+    const currentList = channelMessages[activeChannelId] || [];
+    const remoteList = (chatMessages[conversationKey] || []).filter((m) => {
+      if (!m.channelId) return activeChannelId === 'general';
+      return m.channelId === activeChannelId;
+    });
 
-  // Filter messages by channel if in a room channel (or show all if channelId is general/omitted)
-  const channelFilteredMessages = effectiveRoomId
-    ? allMessages.filter((m) => {
-        if (!m.channelId) return activeChannelId === 'general';
-        return m.channelId === activeChannelId;
-      })
-    : allMessages;
+    if (remoteList.length === 0) return currentList;
 
-  const displayMessages = searchQuery
-    ? channelFilteredMessages.filter((m) => m.text.toLowerCase().includes(searchQuery.toLowerCase()))
-    : channelFilteredMessages;
+    const existingIds = new Set(currentList.map((m) => m.id));
+    const convertedRemote: DisplayChatMessage[] = remoteList
+      .filter((m) => !existingIds.has(m.id))
+      .map((m) => ({
+        id: m.id,
+        senderId: m.senderId,
+        sender: m.senderName,
+        senderName: m.senderName,
+        senderAvatar: m.senderAvatar,
+        role: m.senderId === user?.id ? 'ADMIN' : undefined,
+        text: m.text,
+        timestamp: m.createdAt
+          ? new Date(m.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        isSelf: m.senderId === user?.id,
+        channelId: m.channelId || 'general',
+        attachments: m.attachments,
+        replyToId: m.replyToId,
+        replyToText: m.replyToText,
+        replyToSender: m.replyToSender,
+        reactions: m.reactions,
+        createdAt: m.createdAt,
+        isEdited: m.isEdited,
+      }));
 
+    return [...currentList, ...convertedRemote];
+  }, [channelMessages, activeChannelId, chatMessages, conversationKey, user]);
+
+  const displayMessages: DisplayChatMessage[] = useMemo(() => {
+    if (!searchQuery.trim()) return activeChannelMessages;
+    return activeChannelMessages.filter((m: DisplayChatMessage) =>
+      m.text.toLowerCase().includes(searchQuery.toLowerCase())
+    );
+  }, [activeChannelMessages, searchQuery]);
+
+  // Auto-scroll on new messages or channel switch
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [displayMessages.length]);
+  }, [displayMessages.length, activeChannelId]);
 
   // Handle typing indicator
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -227,57 +363,6 @@ export const ChatView: React.FC<ChatViewProps> = ({
     typingTimeoutRef.current = setTimeout(() => {
       sendTyping({ roomId: effectiveRoomId, recipientId: effectiveRecipientId, isTyping: false });
     }, 2000);
-  };
-
-  // Send message
-  const handleSend = () => {
-    if (!inputVal.trim() && !voicePreview) return;
-
-    if (voicePreview) {
-      handleSendVoiceNote();
-      return;
-    }
-
-    sendMessage({
-      roomId: effectiveRoomId,
-      channelId: effectiveRoomId ? activeChannelId : undefined,
-      recipientId: effectiveRecipientId,
-      text: inputVal.trim(),
-      replyToId: replyTarget?.id,
-    });
-
-    sound.playTap();
-    triggerHaptic('light');
-    setInputVal('');
-    setReplyTarget(null);
-    setShowEmojiPicker(false);
-    sendTyping({ roomId: effectiveRoomId, recipientId: effectiveRecipientId, isTyping: false });
-  };
-
-  // Instant location share
-  const handleShareCurrentLocation = () => {
-    if (!myLocation) {
-      requestLocationUpdate();
-      toast.info('Fetching live GPS coordinates...');
-      return;
-    }
-
-    const lat = myLocation.latitude.toFixed(5);
-    const lng = myLocation.longitude.toFixed(5);
-    const acc = myLocation.accuracy ? `±${myLocation.accuracy.toFixed(1)}m` : '±10m';
-    const locText = `📍 Live Location Shared: ${lat}° N, ${lng}° W (Accuracy: ${acc})`;
-
-    sendMessage({
-      roomId: effectiveRoomId,
-      channelId: effectiveRoomId ? activeChannelId : undefined,
-      recipientId: effectiveRecipientId,
-      text: locText,
-    });
-
-    sound.playSuccess();
-    triggerHaptic('medium');
-    toast.success('Live location posted to channel');
-    setShowPlusMenu(false);
   };
 
   // Voice note recording flow
@@ -321,11 +406,18 @@ export const ChatView: React.FC<ChatViewProps> = ({
     try {
       setIsUploading(true);
       const res = await api.uploadFile(voicePreview.dataUrl, `voice-note-${Date.now()}.webm`, 'audio/webm');
-      sendMessage({
-        roomId: effectiveRoomId,
-        channelId: effectiveRoomId ? activeChannelId : undefined,
-        recipientId: effectiveRecipientId,
+      const targetChannel = activeChannelId || 'general';
+      const voiceMsg: DisplayChatMessage = {
+        id: Date.now().toString(),
+        senderId: user?.id || 'self',
+        sender: user?.fullName || 'Reddy',
+        senderName: user?.fullName || 'Reddy',
+        senderAvatar: user?.avatarUrl,
+        role: 'ADMIN',
         text: '🎤 Voice message',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        isSelf: true,
+        channelId: targetChannel,
         attachments: [
           {
             id: 'att-' + Math.random().toString(36).slice(2),
@@ -337,7 +429,24 @@ export const ChatView: React.FC<ChatViewProps> = ({
           },
         ],
         replyToId: replyTarget?.id,
+        replyToText: replyTarget?.text,
+        replyToSender: replyTarget?.senderName,
+      };
+
+      setChannelMessages((prev) => ({
+        ...prev,
+        [targetChannel]: [...(prev[targetChannel] || []), voiceMsg],
+      }));
+
+      sendMessage({
+        roomId: effectiveRoomId,
+        channelId: effectiveRoomId ? targetChannel : undefined,
+        recipientId: effectiveRecipientId,
+        text: '🎤 Voice message',
+        attachments: voiceMsg.attachments,
+        replyToId: replyTarget?.id,
       });
+
       sound.playSuccess();
       triggerHaptic('light');
       setVoicePreview(null);
@@ -348,6 +457,120 @@ export const ChatView: React.FC<ChatViewProps> = ({
     } finally {
       setIsUploading(false);
     }
+  };
+
+  // Send message handler with optimistic local state update & mock peer response
+  const handleSendMessage = (customText?: string) => {
+    const textToSend = (customText !== undefined ? customText : inputVal).trim();
+    if (!textToSend && !voicePreview) return;
+
+    if (voicePreview) {
+      handleSendVoiceNote();
+      return;
+    }
+
+    const targetChannel = activeChannelId || 'general';
+    const newMsg: DisplayChatMessage = {
+      id: Date.now().toString(),
+      senderId: user?.id || 'self',
+      sender: user?.fullName || 'Reddy',
+      senderName: user?.fullName || 'Reddy',
+      senderAvatar: user?.avatarUrl || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=128&q=80',
+      role: 'ADMIN',
+      text: textToSend,
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      isSelf: true,
+      channelId: targetChannel,
+      replyToId: replyTarget?.id,
+      replyToText: replyTarget?.text,
+      replyToSender: replyTarget?.senderName,
+    };
+
+    // 1. Immediately append to state
+    setChannelMessages((prev) => ({
+      ...prev,
+      [targetChannel]: [...(prev[targetChannel] || []), newMsg],
+    }));
+
+    // 2. Clear input immediately
+    if (customText === undefined) {
+      setInputVal('');
+    }
+    setReplyTarget(null);
+    setShowEmojiPicker(false);
+    setShowPlusMenu(false);
+    sound.playTap();
+    triggerHaptic('light');
+
+    // 3. Dispatch through WebSocket
+    sendMessage({
+      roomId: effectiveRoomId,
+      channelId: effectiveRoomId ? targetChannel : undefined,
+      recipientId: effectiveRecipientId,
+      text: textToSend,
+      replyToId: replyTarget?.id,
+    });
+
+    sendTyping({ roomId: effectiveRoomId, recipientId: effectiveRecipientId, isTyping: false });
+
+    setTimeout(() => {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, 50);
+
+    // 4. Mock / Received Messages Simulation (1.5 seconds)
+    setTimeout(() => {
+      const mockResponses = [
+        `Received via Beacon Mesh: packet verified & relayed to 4 peers.`,
+        `Beacon Mesh Node: packet ACK confirmed. Signal health: 99.4%.`,
+        `Mesh Node #2: Coordinate synchronization confirmed across room.`,
+        `Acknowledged via beacon relay. Channel #${targetChannel} synced.`,
+      ];
+      const randomResponse = mockResponses[Math.floor(Math.random() * mockResponses.length)];
+
+      const peerMsg: DisplayChatMessage = {
+        id: (Date.now() + Math.random()).toString(),
+        senderId: 'beacon-mesh-node',
+        sender: 'Beacon Mesh Node',
+        senderName: 'Beacon Mesh Node',
+        senderAvatar: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&w=128&q=80',
+        role: 'MODERATOR',
+        text: randomResponse,
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        isSelf: false,
+        channelId: targetChannel,
+      };
+
+      setChannelMessages((prev) => ({
+        ...prev,
+        [targetChannel]: [...(prev[targetChannel] || []), peerMsg],
+      }));
+
+      sound.playChime();
+      setTimeout(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      }, 50);
+    }, 1500);
+  };
+
+  // Instant location share
+  const handleShareCurrentLocation = () => {
+    if (!myLocation) {
+      requestLocationUpdate();
+      toast.info('Fetching live GPS coordinates...');
+      return;
+    }
+
+    const lat = myLocation.latitude.toFixed(5);
+    const lng = myLocation.longitude.toFixed(5);
+    const acc = myLocation.accuracy ? `±${myLocation.accuracy.toFixed(1)}m` : '±10m';
+    const locText = `📍 Live Location Shared: ${lat}° N, ${lng}° W (Accuracy: ${acc})`;
+
+    handleSendMessage(locText);
+
+    sound.playSuccess();
+    triggerHaptic('medium');
+    toast.success('Live location posted to channel');
+    setShowPlusMenu(false);
   };
 
   // Image file attachment
@@ -469,18 +692,25 @@ export const ChatView: React.FC<ChatViewProps> = ({
   };
 
   // Helper for member role badge
-  const renderRoleBadge = (role?: UserRole) => {
+  const renderRoleBadge = (role?: UserRole | string) => {
     if (role === 'OWNER') {
       return (
-        <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30">
+        <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">
           OWNER
         </span>
       );
     }
     if (role === 'ADMIN') {
       return (
-        <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-[#5865F2]/20 text-[#a5b4fc] border border-[#5865F2]/40">
+        <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-[#5865F2]/25 text-[#a5b4fc] border border-[#5865F2]/45 tracking-wider">
           ADMIN
+        </span>
+      );
+    }
+    if (role === 'MODERATOR' || role === 'MOD') {
+      return (
+        <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 tracking-wider">
+          MOD
         </span>
       );
     }
@@ -917,7 +1147,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
         )}
 
         {/* Message Feed */}
-        <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
+        <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-4">
           {/* Channel Welcome Banner */}
           <div className={`pt-6 pb-4 border-b ${themeConfig.glassBorder} mb-2`}>
             <div className={`w-12 h-12 rounded-2xl ${themeConfig.glassCard} flex items-center justify-center mb-2 border ${themeConfig.glassBorder}`}>
@@ -936,10 +1166,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
               No messages yet in this channel. Send the first message or share your live location!
             </div>
           ) : (
-            displayMessages.map((msg) => {
-              const isMe = msg.senderId === user?.id;
+            displayMessages.map((msg: DisplayChatMessage) => {
+              const isMe = msg.isSelf || msg.senderId === user?.id || (user?.fullName && (msg.senderName === user.fullName || msg.sender === user.fullName));
               const isEditing = editingMessageId === msg.id;
               const msgMember = roomDetails?.members?.find((m) => m.userId === msg.senderId);
+              const senderDisplayName = msg.sender || msg.senderName || (isMe ? (user?.fullName || 'Reddy') : 'Peer Node');
+              const roleToDisplay = msg.role || (isMe ? 'ADMIN' : msgMember?.role);
+              const formattedTime = msg.timestamp || (msg.createdAt ? new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+              const avatarSrc = msg.senderAvatar || (isMe ? (user?.avatarUrl || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=128&q=80') : 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=128&q=80');
 
               return (
                 <div
@@ -989,7 +1223,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
                           <Edit2 className="w-3.5 h-3.5" />
                         </button>
                         <button
-                          onClick={() => deleteMessage(msg.id)}
+                          onClick={() => {
+                            deleteMessage(msg.id);
+                            setChannelMessages((prev) => ({
+                              ...prev,
+                              [activeChannelId]: (prev[activeChannelId] || []).filter((m) => m.id !== msg.id),
+                            }));
+                          }}
                           className="p-1 hover:bg-rose-500/20 text-rose-400 rounded transition-colors cursor-pointer"
                           title="Delete"
                         >
@@ -1001,8 +1241,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
                   {/* Sender Avatar */}
                   <img
-                    src={msg.senderAvatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=128&q=80'}
-                    alt={msg.senderName}
+                    src={avatarSrc}
+                    alt={senderDisplayName}
                     className={`w-10 h-10 rounded-full object-cover shrink-0 cursor-pointer hover:opacity-90 transition-opacity border ${themeConfig.glassBorder}`}
                     onClick={() => {
                       const peerUser = roomDetails?.members?.find((m) => m.userId === msg.senderId)?.user;
@@ -1027,9 +1267,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     <div className="flex items-baseline gap-2 mb-0.5">
                       <span
                         className={`text-sm font-bold cursor-pointer hover:underline ${
-                          msgMember?.role === 'OWNER'
+                          roleToDisplay === 'OWNER'
                             ? 'text-amber-400'
-                            : msgMember?.role === 'ADMIN'
+                            : roleToDisplay === 'ADMIN'
                             ? themeConfig.accentText
                             : themeConfig.textPrimary
                         }`}
@@ -1038,11 +1278,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
                           if (peerUser) setSelectedProfileUser(peerUser);
                         }}
                       >
-                        {msg.senderName}
+                        {senderDisplayName}
                       </span>
-                      {renderRoleBadge(msgMember?.role)}
+                      {renderRoleBadge(roleToDisplay)}
                       <span className={`text-[10px] ${themeConfig.textSecondary}`}>
-                        {new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        {formattedTime}
                       </span>
                       {msg.isEdited && <span className={`text-[10px] ${themeConfig.textSecondary}`}>(edited)</span>}
                     </div>
@@ -1079,7 +1319,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     {/* Attachments: Voice Notes or Images */}
                     {msg.attachments && msg.attachments.length > 0 && (
                       <div className="mt-2 space-y-2">
-                        {msg.attachments.map((att) => (
+                        {msg.attachments.map((att: any) => (
                           <div key={att.id}>
                             {att.type === 'voice' && (
                               <div className={`flex items-center gap-3 p-2.5 rounded-2xl ${themeConfig.glassCard} border ${themeConfig.glassBorder} max-w-sm`}>
@@ -1109,7 +1349,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     {/* Reactions Pill Display */}
                     {msg.reactions && Object.keys(msg.reactions).length > 0 && (
                       <div className="flex flex-wrap gap-1 mt-1.5">
-                        {Object.entries(msg.reactions).map(([emoji, userIds]) => {
+                        {Object.entries(msg.reactions).map(([emoji, rawUserIds]) => {
+                          const userIds: string[] = Array.isArray(rawUserIds) ? (rawUserIds as string[]) : [];
                           const hasReacted = userIds.includes(user?.id || '');
                           return (
                             <button
@@ -1227,8 +1468,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
         </div>
 
         {/* Discord Chat Input Box */}
-        <div className="px-4 pb-4 pt-1">
-          <div className={`relative ${themeConfig.glassInput} rounded-2xl flex items-center px-3.5 py-2.5 shadow-lg border ${themeConfig.glassBorder}`}>
+        <div className="px-3 sm:px-4 pb-3 md:pb-4 pt-1.5 shrink-0 z-20">
+          <div className={`relative ${themeConfig.glassInput} rounded-2xl flex items-center px-3 py-2 shadow-lg border ${themeConfig.glassBorder}`}>
             {/* Hidden File Input */}
             <input
               type="file"
@@ -1241,8 +1482,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
             {/* Plus Action Button */}
             <div className="relative">
               <button
+                type="button"
                 onClick={() => setShowPlusMenu(!showPlusMenu)}
-                className={`w-7 h-7 rounded-full bg-white/10 hover:${themeConfig.accentBg} flex items-center justify-center text-white transition-colors cursor-pointer mr-2.5`}
+                className={`w-8 h-8 rounded-xl bg-white/10 hover:${themeConfig.accentBg} flex items-center justify-center text-white transition-colors cursor-pointer mr-2 shrink-0`}
                 title="Add attachment or location"
               >
                 <Plus className="w-4 h-4" />
@@ -1252,6 +1494,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               {showPlusMenu && (
                 <div className={`absolute bottom-12 left-0 ${themeConfig.glassPanel} border ${themeConfig.glassBorder} rounded-2xl shadow-2xl p-2 w-56 z-50 space-y-1 backdrop-blur-2xl`}>
                   <button
+                    type="button"
                     onClick={() => {
                       fileInputRef.current?.click();
                       setShowPlusMenu(false);
@@ -1262,6 +1505,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     <span>Upload Image</span>
                   </button>
                   <button
+                    type="button"
                     onClick={handleShareCurrentLocation}
                     className={`w-full px-3 py-2 text-xs font-semibold ${themeConfig.textPrimary} hover:bg-white/10 rounded-xl flex items-center gap-2.5 transition-colors cursor-pointer`}
                   >
@@ -1269,6 +1513,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     <span>Broadcast Live GPS</span>
                   </button>
                   <button
+                    type="button"
                     onClick={() => {
                       startRecording();
                       setShowPlusMenu(false);
@@ -1287,48 +1532,54 @@ export const ChatView: React.FC<ChatViewProps> = ({
               type="text"
               placeholder={
                 activeDirectUser
-                  ? `Message @${activeDirectUser.name}`
-                  : `Message #${activeChannelId}`
+                  ? `Message @${activeDirectUser.name}...`
+                  : `Message #${activeChannelId}...`
               }
               value={inputVal}
               onChange={handleInputChange}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault();
-                  handleSend();
+                  handleSendMessage();
                 }
               }}
-              className={`flex-1 bg-transparent text-sm ${themeConfig.textPrimary} placeholder-slate-400 focus:outline-none`}
+              className={`flex-1 bg-transparent text-sm ${themeConfig.textPrimary} placeholder-slate-400 focus:outline-none min-w-0 pr-2`}
             />
 
             {/* Quick Actions Right */}
-            <div className={`flex items-center gap-1.5 ${themeConfig.textSecondary}`}>
+            <div className="flex items-center gap-1.5 shrink-0">
               <button
+                type="button"
                 onClick={startRecording}
-                className={`p-1.5 hover:${themeConfig.textPrimary} hover:bg-white/10 rounded-lg transition-colors cursor-pointer`}
+                className={`p-2 text-slate-400 hover:${themeConfig.textPrimary} hover:bg-white/10 rounded-xl transition-colors cursor-pointer hidden sm:flex items-center justify-center`}
                 title="Voice Note"
               >
                 <Mic className="w-4 h-4" />
               </button>
 
               <button
+                type="button"
                 onClick={() => setShowEmojiPicker(!showEmojiPicker)}
-                className={`p-1.5 hover:${themeConfig.textPrimary} hover:bg-white/10 rounded-lg transition-colors cursor-pointer`}
+                className={`p-2 text-slate-400 hover:${themeConfig.textPrimary} hover:bg-white/10 rounded-xl transition-colors cursor-pointer hidden sm:flex items-center justify-center`}
                 title="Add Emoji"
               >
                 <Smile className="w-4 h-4" />
               </button>
 
+              {/* Prominent Active Send Button */}
               <button
-                onClick={handleSend}
-                disabled={!inputVal.trim()}
-                className={`p-1.5 rounded-xl transition-all ${
-                  inputVal.trim()
-                    ? `${themeConfig.accentBg} text-white cursor-pointer shadow-md shadow-cyan-500/20`
-                    : 'opacity-40 cursor-not-allowed'
+                type="button"
+                onClick={() => handleSendMessage()}
+                disabled={!inputVal.trim() && !voicePreview}
+                aria-label="Send Message"
+                className={`h-9 px-3 rounded-xl flex items-center justify-center gap-1.5 transition-all duration-150 shrink-0 font-medium text-xs cursor-pointer shadow-md ${
+                  inputVal.trim() || voicePreview
+                    ? 'bg-gradient-to-r from-sky-500 via-indigo-500 to-cyan-500 hover:opacity-95 text-white shadow-sky-500/30 active:scale-95'
+                    : 'bg-white/10 text-white/40 cursor-not-allowed hover:bg-white/15'
                 }`}
               >
-                <Send className="w-4 h-4" />
+                <Send className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline font-semibold">Send</span>
               </button>
             </div>
 
@@ -1566,6 +1817,29 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         <Compass className="w-4 h-4" />
                       </button>
                     )}
+
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        if (
+                          confirm(
+                            `Block ${selectedProfileUser.fullName}? They will not be able to message you or track your location.`
+                          )
+                        ) {
+                          try {
+                            await api.blockUser(selectedProfileUser.id);
+                            toast.success(`Blocked ${selectedProfileUser.fullName}`);
+                            setSelectedProfileUser(null);
+                          } catch (err: any) {
+                            toast.error(err.message || 'Failed to block user');
+                          }
+                        }
+                      }}
+                      className="p-2 bg-rose-500/20 hover:bg-rose-500/30 text-rose-400 border border-rose-500/30 rounded-xl flex items-center justify-center shadow cursor-pointer transition-colors"
+                      title={`Block ${selectedProfileUser.fullName}`}
+                    >
+                      <UserX className="w-4 h-4" />
+                    </button>
                   </>
                 )}
               </div>

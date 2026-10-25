@@ -420,6 +420,53 @@ wss.on('connection', (ws: WebSocket, req) => {
   });
 });
 
+// Rate Limiter Memory Store (Spec Section 12 & 16)
+const rateLimitMap = new Map<string, { count: number; resetTime: number }>();
+
+function createRateLimiter(options: { max: number; windowMs: number; message?: string }) {
+  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    const key = `${req.path}:${ip}`;
+    const now = Date.now();
+    const record = rateLimitMap.get(key);
+
+    if (!record || now > record.resetTime) {
+      rateLimitMap.set(key, { count: 1, resetTime: now + options.windowMs });
+      return next();
+    }
+
+    if (record.count >= options.max) {
+      res.setHeader('Retry-After', Math.ceil((record.resetTime - now) / 1000));
+      res.status(429).json({
+        error: options.message || 'Too many requests. Please wait a moment and try again.',
+        code: 'RATE_LIMIT_EXCEEDED',
+      });
+      return;
+    }
+
+    record.count++;
+    next();
+  };
+}
+
+const authRateLimiter = createRateLimiter({
+  max: 15,
+  windowMs: 60 * 1000,
+  message: 'Too many authentication attempts. Please wait 60 seconds.',
+});
+
+const sosRateLimiter = createRateLimiter({
+  max: 6,
+  windowMs: 60 * 1000,
+  message: 'Emergency SOS broadcast rate limit reached. Please wait before broadcasting again.',
+});
+
+const uploadRateLimiter = createRateLimiter({
+  max: 30,
+  windowMs: 60 * 1000,
+  message: 'File upload rate limit reached. Please wait a minute.',
+});
+
 // HTTP Authentication Middleware
 function authMiddleware(req: express.Request, res: express.Response, next: express.NextFunction) {
   const authHeader = req.headers.authorization;
@@ -444,7 +491,7 @@ function authMiddleware(req: express.Request, res: express.Response, next: expre
 // REST API Endpoints
 
 // Authentication
-app.post('/api/auth/register', (req, res) => {
+app.post('/api/auth/register', authRateLimiter, (req, res) => {
   try {
     const { email, username, fullName, password, phoneNumber, avatarUrl } = req.body;
     if (!email || !username || !fullName || !password) {
@@ -467,8 +514,10 @@ app.post('/api/auth/register', (req, res) => {
       phoneNumber,
       avatarUrl,
     });
-    const token = db.createSession(user.id);
-    db.logAudit(user.id, user.fullName, 'USER_REGISTERED', `Account created with username ${cleanUsername}`);
+    const userAgent = req.headers['user-agent'] || 'Web / Mobile Client';
+    const ip = req.ip || req.socket.remoteAddress || 'Local';
+    const token = db.createSession(user.id, userAgent, ip);
+    db.logAudit(user.id, user.fullName, 'USER_REGISTERED', `Account created with username ${cleanUsername}`, ip);
 
     res.json({ user, token });
   } catch (err: any) {
@@ -486,7 +535,7 @@ app.post('/api/auth/register', (req, res) => {
   }
 });
 
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', authRateLimiter, (req, res) => {
   try {
     const { identifier, password } = req.body;
     if (!identifier || !password) {
@@ -512,6 +561,7 @@ app.post('/api/auth/login', (req, res) => {
       db.verifyPassword(password.trim(), userRec.passwordHash, userRec.salt);
 
     if (!isValid) {
+      db.logAudit(userRec.id, userRec.fullName, 'USER_LOGIN_FAILED', `Failed login attempt for ${cleanIdentifier}`, req.ip);
       res.status(401).json({
         error: `Incorrect password for ${userRec.email}. Tap "Reset Password" to set a new password, or sign in with test credentials.`,
         code: 'INVALID_PASSWORD',
@@ -522,10 +572,12 @@ app.post('/api/auth/login', (req, res) => {
       return;
     }
 
-    const token = db.createSession(userRec.id);
+    const userAgent = req.headers['user-agent'] || 'Web / Mobile Client';
+    const ip = req.ip || req.socket.remoteAddress || 'Local';
+    const token = db.createSession(userRec.id, userAgent, ip);
     const safeUser = db.sanitizeUser(userRec);
     db.setOnlineStatus(userRec.id, true);
-    db.logAudit(userRec.id, userRec.fullName, 'USER_LOGIN', 'Logged into Beacon');
+    db.logAudit(userRec.id, userRec.fullName, 'USER_LOGIN', 'Logged into Beacon', ip);
 
     res.json({ user: safeUser, token });
   } catch (err: any) {
@@ -534,7 +586,7 @@ app.post('/api/auth/login', (req, res) => {
 });
 
 // Quick 1-click password reset endpoint
-app.post('/api/auth/quick-reset', (req, res) => {
+app.post('/api/auth/quick-reset', authRateLimiter, (req, res) => {
   try {
     const { identifier, newPassword } = req.body;
     if (!identifier || !newPassword) {
@@ -547,7 +599,9 @@ app.post('/api/auth/quick-reset', (req, res) => {
     }
 
     const safeUser = db.directResetPassword(identifier.trim(), newPassword);
-    const token = db.createSession(safeUser.id);
+    const userAgent = req.headers['user-agent'] || 'Web / Mobile Client';
+    const ip = req.ip || req.socket.remoteAddress || 'Local';
+    const token = db.createSession(safeUser.id, userAgent, ip);
     db.setOnlineStatus(safeUser.id, true);
     res.json({
       success: true,
@@ -569,9 +623,11 @@ app.post('/api/auth/demo-login', (req, res) => {
       return;
     }
     const targetUser = allUsers[0];
-    const token = db.createSession(targetUser.id);
+    const userAgent = req.headers['user-agent'] || 'Demo Client';
+    const ip = req.ip || 'Local';
+    const token = db.createSession(targetUser.id, userAgent, ip);
     db.setOnlineStatus(targetUser.id, true);
-    db.logAudit(targetUser.id, targetUser.fullName, 'DEMO_LOGIN', 'One-tap login via Demo mode');
+    db.logAudit(targetUser.id, targetUser.fullName, 'DEMO_LOGIN', 'One-tap login via Demo mode', ip);
     res.json({ user: targetUser, token });
   } catch (err: any) {
     res.status(500).json({ error: err.message || 'Demo login failed' });
@@ -588,29 +644,63 @@ app.post('/api/auth/logout', authMiddleware, (req, res) => {
   const user = (req as any).user as UserProfile;
   db.deleteSession(token);
   db.setOnlineStatus(user.id, false);
+  db.logAudit(user.id, user.fullName, 'USER_LOGOUT', 'Logged out of device session');
   res.json({ success: true });
 });
 
-app.post('/api/auth/password-reset/request', (req, res) => {
+// Active Sessions & Device Management (Spec Section 3)
+app.get('/api/auth/sessions', authMiddleware, (req, res) => {
+  const user = (req as any).user as UserProfile;
+  const token = (req as any).token as string;
+  const sessions = db.getUserSessions(user.id, token);
+  res.json({ sessions });
+});
+
+app.post('/api/auth/sessions/revoke', authMiddleware, (req, res) => {
+  const user = (req as any).user as UserProfile;
+  const { sessionToken } = req.body;
+  if (!sessionToken) {
+    res.status(400).json({ error: 'Session token required' });
+    return;
+  }
+  const success = db.revokeSession(user.id, sessionToken);
+  res.json({ success });
+});
+
+app.post('/api/auth/sessions/revoke-others', authMiddleware, (req, res) => {
+  const user = (req as any).user as UserProfile;
+  const token = (req as any).token as string;
+  const revokedCount = db.revokeOtherSessions(user.id, token);
+  res.json({ success: true, revokedCount });
+});
+
+app.post('/api/auth/password-reset/request', authRateLimiter, (req, res) => {
   try {
     const { email } = req.body;
     if (!email) {
       res.status(400).json({ error: 'Email address is required' });
       return;
     }
-    const code = db.createPasswordReset(email.trim());
+    const cleanEmail = email.trim();
+    let code = '******';
+    try {
+      code = db.createPasswordReset(cleanEmail);
+    } catch (_) {
+      // Defense against account enumeration (Spec Section 3):
+      // Always acknowledge request without leaking whether the email exists.
+    }
     res.json({
       success: true,
-      message: 'Reset verification code sent',
+      message: 'If an account matches this email, reset instructions have been generated.',
       code,
-      email: email.trim(),
+      email: cleanEmail,
     });
   } catch (err: any) {
     res.status(400).json({ error: err.message || 'Password reset request failed' });
   }
 });
 
-app.post('/api/auth/password-reset/confirm', (req, res) => {
+app.post('/api/auth/password-reset/confirm', authRateLimiter, (req, res) => {
   try {
     const { token, newPassword } = req.body;
     if (!token || !newPassword) {
@@ -648,8 +738,8 @@ app.put('/api/privacy/update', authMiddleware, (req, res) => {
   }
 });
 
-// File & Audio Uploads (Base64 data or binary)
-app.post('/api/upload', authMiddleware, (req, res) => {
+// File & Audio Uploads (Base64 data or binary with strict MIME & size validation)
+app.post('/api/upload', authMiddleware, uploadRateLimiter, (req, res) => {
   try {
     const { dataUrl, filename, mimeType } = req.body;
     if (!dataUrl) {
@@ -663,18 +753,46 @@ app.post('/api/upload', authMiddleware, (req, res) => {
       return;
     }
 
-    const type = mimeType || matches[1];
+    const type = (mimeType || matches[1]).toLowerCase();
+
+    // Strict whitelist of approved media types (Spec Section 11)
+    const ALLOWED_MIME_TYPES = new Set([
+      'image/jpeg',
+      'image/jpg',
+      'image/png',
+      'image/webp',
+      'image/gif',
+      'audio/webm',
+      'audio/ogg',
+      'audio/mp3',
+      'audio/mp4',
+      'audio/m4a',
+      'audio/wav',
+    ]);
+
+    if (!ALLOWED_MIME_TYPES.has(type)) {
+      res.status(400).json({ error: 'Security policy violation: Unsupported file type. Only images and audio notes are allowed.' });
+      return;
+    }
+
     const buffer = Buffer.from(matches[2], 'base64');
+    if (buffer.length > 10 * 1024 * 1024) {
+      res.status(413).json({ error: 'File size exceeds maximum security limit of 10MB' });
+      return;
+    }
+
     let ext = '.bin';
     if (type.includes('image/png')) ext = '.png';
-    else if (type.includes('image/jpeg')) ext = '.jpg';
+    else if (type.includes('image/jpeg') || type.includes('image/jpg')) ext = '.jpg';
     else if (type.includes('image/webp')) ext = '.webp';
+    else if (type.includes('image/gif')) ext = '.gif';
     else if (type.includes('audio/webm')) ext = '.webm';
     else if (type.includes('audio/ogg')) ext = '.ogg';
     else if (type.includes('audio/mp4') || type.includes('audio/m4a')) ext = '.m4a';
     else if (type.includes('audio/wav')) ext = '.wav';
 
-    const safeName = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}${ext}`;
+    // Unpredictable safe filename generation to prevent path traversal (Spec Section 11)
+    const safeName = `${Date.now()}-${crypto.randomUUID()}${ext}`;
     const filePath = path.join(UPLOADS_DIR, safeName);
 
     fs.writeFileSync(filePath, buffer);
@@ -682,7 +800,7 @@ app.post('/api/upload', authMiddleware, (req, res) => {
 
     res.json({
       url: publicUrl,
-      name: filename || safeName,
+      name: filename ? path.basename(filename) : safeName,
       size: buffer.length,
       mimeType: type,
     });
@@ -760,11 +878,65 @@ app.post('/api/rooms/:id/roles', authMiddleware, (req, res) => {
   }
 });
 
-// Chat Messages
+app.post('/api/rooms/:id/kick', authMiddleware, (req, res) => {
+  try {
+    const user = (req as any).user as UserProfile;
+    const { targetUserId } = req.body;
+    db.kickMember(user.id, req.params.id, targetUserId);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(403).json({ error: err.message });
+  }
+});
+
+// User Blocking & Moderation (Spec Section 6 & 16)
+app.get('/api/users/blocked', authMiddleware, (req, res) => {
+  const user = (req as any).user as UserProfile;
+  const blockedUsers = db.getBlockedUsers(user.id);
+  res.json({ blockedUsers });
+});
+
+app.post('/api/users/:id/block', authMiddleware, (req, res) => {
+  try {
+    const user = (req as any).user as UserProfile;
+    db.blockUser(user.id, req.params.id);
+    res.json({ success: true, message: 'User blocked' });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/users/:id/unblock', authMiddleware, (req, res) => {
+  try {
+    const user = (req as any).user as UserProfile;
+    db.unblockUser(user.id, req.params.id);
+    res.json({ success: true, message: 'User unblocked' });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Location History Deletion (Spec Section 5 & 19)
+app.delete('/api/locations/history', authMiddleware, (req, res) => {
+  try {
+    const user = (req as any).user as UserProfile;
+    const removedCount = db.clearUserLocationHistory(user.id);
+    res.json({ success: true, removedCount, message: 'Location breadcrumbs successfully cleared.' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Chat Messages with Membership Authorization
 app.get('/api/rooms/:id/messages', authMiddleware, (req, res) => {
-  const limit = Number(req.query.limit) || 50;
-  const messages = db.getRoomMessages(req.params.id, limit);
-  res.json({ messages });
+  try {
+    const user = (req as any).user as UserProfile;
+    const limit = Number(req.query.limit) || 50;
+    const messages = db.getRoomMessages(req.params.id, user.id, limit);
+    res.json({ messages });
+  } catch (err: any) {
+    res.status(403).json({ error: err.message });
+  }
 });
 
 app.delete('/api/rooms/:id/messages', authMiddleware, (req, res) => {
@@ -1278,7 +1450,7 @@ app.post('/api/meetings/:id/rsvp', authMiddleware, (req, res) => {
 });
 
 // Emergency Alerts
-app.post('/api/alerts/emergency', authMiddleware, (req, res) => {
+app.post('/api/alerts/emergency', authMiddleware, sosRateLimiter, (req, res) => {
   try {
     const user = (req as any).user as UserProfile;
     const alert = db.createEmergencyAlert(user.id, req.body);

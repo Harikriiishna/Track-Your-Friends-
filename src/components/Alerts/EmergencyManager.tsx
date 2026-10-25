@@ -74,7 +74,7 @@ export const EmergencyManager: React.FC<EmergencyManagerProps> = ({
   };
 
   return (
-    <div className="flex flex-col h-full bg-slate-50 overflow-y-auto p-4 md:p-6 space-y-6">
+    <div className="flex flex-col h-full bg-slate-50 overflow-y-auto p-4 md:p-6 pb-28 space-y-6">
       {/* Top Banner & SOS Trigger */}
       <div className="bg-gradient-to-r from-rose-950 via-rose-900 to-slate-900 text-white rounded-3xl p-6 shadow-xl relative overflow-hidden">
         <div className="relative z-10 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
