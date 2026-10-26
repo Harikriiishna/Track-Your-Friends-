@@ -421,9 +421,11 @@ class Database {
   public updateLocation(
     userId: string,
     coords: {
-      latitude: number;
-      longitude: number;
-      accuracy: number;
+      geog?: string;
+      accuracy_m?: number;
+      latitude?: number;
+      longitude?: number;
+      accuracy?: number;
       altitude?: number | null;
       heading?: number | null;
       speed?: number | null;
@@ -433,15 +435,29 @@ class Database {
     const user = this.findUserById(userId);
     if (!user) throw new Error('User not found');
 
-    // Strict Server-Side Coordinate & Sensor Validation (OWASP & Spec Section 5)
-    if (isNaN(coords.latitude) || coords.latitude < -90 || coords.latitude > 90) {
+    let parsedLat = Number(coords.latitude);
+    let parsedLng = Number(coords.longitude);
+
+    // Parse PostGIS / WKT format: SRID=4326;POINT(longitude latitude)
+    if (typeof coords.geog === 'string') {
+      const m = coords.geog.match(/POINT\s*\(\s*([+-]?\d+(?:\.\d+)?)\s+([+-]?\d+(?:\.\d+)?)\s*\)/i);
+      if (m) {
+        parsedLng = Number(m[1]);
+        parsedLat = Number(m[2]);
+      }
+    }
+
+    const parsedAccuracy = Number(coords.accuracy_m ?? coords.accuracy);
+
+    // Strict Server-Side Coordinate & Sensor Validation (Step 3b & 3c: MAX_ACCURACY_M = 100)
+    if (!Number.isFinite(parsedLat) || parsedLat < -90 || parsedLat > 90) {
       throw new Error('Invalid latitude coordinates: Must be between -90 and 90');
     }
-    if (isNaN(coords.longitude) || coords.longitude < -180 || coords.longitude > 180) {
+    if (!Number.isFinite(parsedLng) || parsedLng < -180 || parsedLng > 180) {
       throw new Error('Invalid longitude coordinates: Must be between -180 and 180');
     }
-    if (isNaN(coords.accuracy) || coords.accuracy < 0 || coords.accuracy > 50000) {
-      throw new Error('Invalid accuracy radius');
+    if (!Number.isFinite(parsedAccuracy) || parsedAccuracy <= 0 || parsedAccuracy > 100) {
+      throw new Error('Rejected coarse location fix: accuracy_m must be > 0 and <= 100 meters');
     }
 
     // Auto-expiry check for temporary sharing
@@ -450,6 +466,8 @@ class Database {
       user.privacy.temporarySharingExpiry = null;
     }
 
+    const serverNowIso = new Date().toISOString();
+    const geogWkt = `SRID=4326;POINT(${parsedLng} ${parsedLat})`;
     const loc: UserLocation = {
       userId,
       username: user.username,
@@ -458,14 +476,19 @@ class Database {
       markerColor: user.markerColor,
       markerIcon: user.markerIcon,
       markerLabel: user.markerLabel,
-      latitude: Number(coords.latitude.toFixed(6)),
-      longitude: Number(coords.longitude.toFixed(6)),
-      accuracy: Math.round(coords.accuracy * 10) / 10,
+      latitude: parsedLat,
+      longitude: parsedLng,
+      accuracy: parsedAccuracy,
+      lat: parsedLat,
+      lng: parsedLng,
+      accuracy_m: parsedAccuracy,
+      geog: geogWkt,
+      updated_at: serverNowIso,
       altitude: coords.altitude != null && !isNaN(coords.altitude) ? Math.round(coords.altitude) : null,
       heading: coords.heading != null && !isNaN(coords.heading) ? Math.round(coords.heading) : null,
       speed: coords.speed != null && !isNaN(coords.speed) ? Number(coords.speed.toFixed(1)) : null,
       batteryLevel: coords.batteryLevel != null && !isNaN(coords.batteryLevel) ? Math.round(coords.batteryLevel) : null,
-      timestamp: new Date().toISOString(),
+      timestamp: serverNowIso,
       isStale: false,
     };
 
@@ -537,7 +560,7 @@ class Database {
       this.data.locationHistory = [];
     }
 
-    let userPoints: LocationBreadcrumb[] = this.data.locationHistory
+    const userPoints: LocationBreadcrumb[] = this.data.locationHistory
       .filter((p) => p.userId === targetUserId && new Date(p.timestamp).getTime() >= startTimeMs)
       .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
       .map((p) => ({
@@ -550,46 +573,6 @@ class Database {
         timestamp: p.timestamp,
       }));
 
-    // If target has an active location and points are sparse,
-    // synthesize a realistic preceding breadcrumb path trailing back over the window
-    // so testing and map visualization immediately renders a rich, authentic trail
-    const currentLoc = this.data.locations[targetUserId];
-    if (currentLoc && userPoints.length < 5) {
-      const baseLat = currentLoc.latitude;
-      const baseLng = currentLoc.longitude;
-      const sampleCount = 8;
-      const generated: LocationBreadcrumb[] = [];
-
-      for (let i = sampleCount; i >= 1; i--) {
-        const timeOffset = (windowMs * (i / (sampleCount + 1)));
-        const pointTime = new Date(now - timeOffset).toISOString();
-        const progress = (sampleCount - i) / sampleCount;
-        const latOffset = (Math.sin(i * 0.7) * 0.0015 - 0.002 * (1 - progress));
-        const lngOffset = (Math.cos(i * 0.5) * 0.0018 + 0.0025 * (1 - progress));
-
-        generated.push({
-          latitude: Number((baseLat + latOffset).toFixed(6)),
-          longitude: Number((baseLng + lngOffset).toFixed(6)),
-          accuracy: Number((currentLoc.accuracy + (i % 3) * 1.5).toFixed(1)),
-          speed: Number((1.2 + Math.sin(i) * 0.6).toFixed(1)),
-          heading: (i * 45) % 360,
-          altitude: currentLoc.altitude,
-          timestamp: pointTime,
-        });
-      }
-
-      generated.push({
-        latitude: currentLoc.latitude,
-        longitude: currentLoc.longitude,
-        accuracy: currentLoc.accuracy,
-        speed: currentLoc.speed,
-        heading: currentLoc.heading,
-        altitude: currentLoc.altitude,
-        timestamp: currentLoc.timestamp,
-      });
-
-      userPoints = generated;
-    }
 
     // Calculate total path distance in meters using Haversine
     let totalDistanceMeters = 0;
@@ -657,17 +640,31 @@ class Database {
     }
 
     const results: UserLocation[] = [];
-
-    // Always include requesting user's own location if available
-    if (this.data.locations[requestingUserId]) {
-      results.push(this.data.locations[requestingUserId]);
-    }
-
     const nowMs = Date.now();
-    const tenMinutesMs = 10 * 60 * 1000;
+    const twoMinutesMs = 2 * 60 * 1000;
+
+    // Only include requesting user's own location if it was updated within the last 2 minutes and accuracy <= 100m
+    const ownLoc = this.data.locations[requestingUserId];
+    if (
+      ownLoc &&
+      Number.isFinite(ownLoc.accuracy) &&
+      ownLoc.accuracy <= 100 &&
+      nowMs - new Date(ownLoc.timestamp).getTime() <= twoMinutesMs
+    ) {
+      results.push({
+        ...ownLoc,
+        lat: ownLoc.latitude,
+        lng: ownLoc.longitude,
+        accuracy_m: ownLoc.accuracy,
+        geog: `SRID=4326;POINT(${ownLoc.longitude} ${ownLoc.latitude})`,
+        updated_at: ownLoc.timestamp,
+        isStale: false,
+      });
+    }
 
     for (const [targetUserId, loc] of Object.entries(this.data.locations)) {
       if (targetUserId === requestingUserId) continue;
+      if (!Number.isFinite(loc.accuracy) || loc.accuracy > 100) continue;
 
       const targetUser = this.findUserById(targetUserId);
       if (!targetUser) continue;
@@ -695,9 +692,17 @@ class Database {
         continue;
       }
 
-      // Mark stale if coordinates are older than 10 minutes
-      const isStale = nowMs - new Date(loc.timestamp).getTime() > tenMinutesMs;
-      const enrichedLoc: UserLocation = { ...loc, isStale };
+      // Step 3g: "Live" label only when the SERVER's updated_at is under 2 minutes old
+      const isStale = nowMs - new Date(loc.timestamp).getTime() >= twoMinutesMs;
+      const enrichedLoc: UserLocation = {
+        ...loc,
+        lat: loc.latitude,
+        lng: loc.longitude,
+        accuracy_m: loc.accuracy,
+        geog: `SRID=4326;POINT(${loc.longitude} ${loc.latitude})`,
+        updated_at: loc.timestamp,
+        isStale,
+      };
 
       if (locationVisibility === 'room_members') {
         if (sharedRoomUserIds.has(targetUserId)) {

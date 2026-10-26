@@ -133,9 +133,19 @@ class LocalBackendEngine {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
+        const now = Date.now();
+        const freshLocations: Record<string, UserLocation> = {};
+        if (parsed.locations && typeof parsed.locations === 'object') {
+          for (const [uid, loc] of Object.entries(parsed.locations as Record<string, UserLocation>)) {
+            if (loc && loc.timestamp && now - new Date(loc.timestamp).getTime() <= 60 * 1000) {
+              freshLocations[uid] = loc;
+            }
+          }
+        }
         return {
           ...this.getInitialSchema(),
           ...parsed,
+          locations: freshLocations,
         };
       }
     } catch (e) {
@@ -1089,6 +1099,26 @@ class LocalBackendEngine {
 
     if (method === 'POST' && pathname === '/api/locations/update') {
       if (!currentUser) throw this.createError('Unauthorized', 401);
+      let parsedLat = Number(body.latitude);
+      let parsedLng = Number(body.longitude);
+      if (typeof body.geog === 'string') {
+        const m = body.geog.match(/POINT\s*\(\s*([+-]?\d+(?:\.\d+)?)\s+([+-]?\d+(?:\.\d+)?)\s*\)/i);
+        if (m) {
+          parsedLng = Number(m[1]);
+          parsedLat = Number(m[2]);
+        }
+      }
+      const parsedAcc = Number(body.accuracy_m ?? body.accuracy);
+      if (!Number.isFinite(parsedLat) || parsedLat < -90 || parsedLat > 90) {
+        throw this.createError('Invalid latitude', 400);
+      }
+      if (!Number.isFinite(parsedLng) || parsedLng < -180 || parsedLng > 180) {
+        throw this.createError('Invalid longitude', 400);
+      }
+      if (!Number.isFinite(parsedAcc) || parsedAcc <= 0 || parsedAcc > 100) {
+        throw this.createError('Rejected coarse location fix: accuracy_m must be <= 100m', 400);
+      }
+      const serverNowIso = new Date().toISOString();
       const loc: UserLocation = {
         userId: currentUser.id,
         username: currentUser.username,
@@ -1097,14 +1127,19 @@ class LocalBackendEngine {
         markerColor: currentUser.markerColor,
         markerIcon: currentUser.markerIcon,
         markerLabel: currentUser.markerLabel,
-        latitude: Number(body.latitude),
-        longitude: Number(body.longitude),
-        accuracy: Number(body.accuracy || 10),
+        latitude: parsedLat,
+        longitude: parsedLng,
+        accuracy: parsedAcc,
+        lat: parsedLat,
+        lng: parsedLng,
+        accuracy_m: parsedAcc,
+        geog: `SRID=4326;POINT(${parsedLng} ${parsedLat})`,
+        updated_at: serverNowIso,
         altitude: body.altitude != null ? Number(body.altitude) : null,
         heading: body.heading != null ? Number(body.heading) : null,
         speed: body.speed != null ? Number(body.speed) : null,
         batteryLevel: body.batteryLevel != null ? Number(body.batteryLevel) : null,
-        timestamp: new Date().toISOString(),
+        timestamp: serverNowIso,
         isStale: false,
       };
       this.data.locations[currentUser.id] = loc;
@@ -1124,7 +1159,25 @@ class LocalBackendEngine {
     }
 
     if (method === 'GET' && pathname === '/api/locations/live') {
-      return { locations: Object.values(this.data.locations) } as unknown as T;
+      const nowMs = Date.now();
+      const twoMinutesMs = 2 * 60 * 1000;
+      const validLocations = Object.values(this.data.locations)
+        .filter(
+          (l) =>
+            Number.isFinite(l.accuracy) &&
+            l.accuracy <= 100 &&
+            (l.userId !== currentUser?.id || nowMs - new Date(l.timestamp).getTime() <= twoMinutesMs)
+        )
+        .map((l) => ({
+          ...l,
+          lat: l.latitude,
+          lng: l.longitude,
+          accuracy_m: l.accuracy,
+          geog: `SRID=4326;POINT(${l.longitude} ${l.latitude})`,
+          updated_at: l.timestamp,
+          isStale: nowMs - new Date(l.timestamp).getTime() >= twoMinutesMs,
+        }));
+      return { locations: validLocations } as unknown as T;
     }
 
     const trailMatch = pathname.match(/^\/api\/locations\/trail\/([^/]+)$/);

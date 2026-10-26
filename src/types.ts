@@ -36,6 +36,7 @@ export interface UserProfile {
 
 export interface UserSession {
   token: string;
+  fullToken?: string;
   userId: string;
   createdAt: string;
   expiresAt: string;
@@ -52,6 +53,11 @@ export interface UserLocation {
   latitude: number;
   longitude: number;
   accuracy: number; // in meters (e.g. 8.5)
+  lat?: number;
+  lng?: number;
+  accuracy_m?: number;
+  geog?: string;
+  updated_at?: string;
   altitude?: number | null;
   heading?: number | null;
   speed?: number | null;
@@ -271,7 +277,7 @@ export interface AuditLog {
 // WebSocket Signaling & Realtime Events
 export type WsClientMessage =
   | { type: 'auth'; token: string }
-  | { type: 'location:update'; location: { latitude: number; longitude: number; accuracy: number; altitude?: number | null; heading?: number | null; speed?: number | null; batteryLevel?: number | null } }
+  | { type: 'location:update'; location: { geog?: string; accuracy_m?: number; latitude: number; longitude: number; accuracy: number; altitude?: number | null; heading?: number | null; speed?: number | null; batteryLevel?: number | null } }
   | { type: 'room:join'; roomId: string }
   | { type: 'room:leave'; roomId: string }
   | { type: 'chat:message'; roomId?: string; channelId?: string; recipientId?: string; text: string; attachments?: MessageAttachment[]; replyToId?: string; clientMsgId?: string }

@@ -3,13 +3,22 @@ package com.beacon.mesh;
 import android.Manifest;
 import android.annotation.SuppressLint;
 import android.content.Context;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
+import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
 import android.os.Looper;
+import android.provider.Settings;
+import android.webkit.GeolocationPermissions;
 import android.webkit.JavascriptInterface;
+import android.webkit.PermissionRequest;
+import android.webkit.ValueCallback;
+import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 
@@ -26,12 +35,20 @@ public class MainActivity extends BridgeActivity {
     private LocationManager locationManager;
     private volatile Location latestNativeLocation;
     private boolean isListeningNativeLocation = false;
+    private boolean isRequestingLocationPermission = false;
+    private boolean hasRequestedOnStartup = false;
+    private GeolocationPermissions.Callback pendingGeoCallback = null;
+    private String pendingGeoOrigin = null;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     private final LocationListener nativeLocationListener = new LocationListener() {
         @Override
         public void onLocationChanged(@NonNull Location location) {
-            latestNativeLocation = location;
-            dispatchNativeLocationToWebView(location);
+            if (!isLocationFresh(location, 30000L)) {
+                return;
+            }
+            latestNativeLocation = selectNewerAccurateLocation(location, latestNativeLocation);
+            dispatchNativeLocationToWebView(latestNativeLocation != null ? latestNativeLocation : location);
         }
 
         @Override
@@ -59,15 +76,51 @@ public class MainActivity extends BridgeActivity {
             settings.setGeolocationEnabled(true);
             settings.setJavaScriptEnabled(true);
             settings.setDomStorageEnabled(true);
+            settings.setDatabaseEnabled(true);
+
             try {
                 webView.addJavascriptInterface(new AndroidLocationBridge(), "AndroidLocationBridge");
             } catch (Exception ignored) {}
+
+            final WebChromeClient existingClient = webView.getWebChromeClient();
+            webView.setWebChromeClient(new WebChromeClient() {
+                @Override
+                public void onGeolocationPermissionsShowPrompt(String origin, GeolocationPermissions.Callback callback) {
+                    if (hasLocationPermission()) {
+                        callback.invoke(origin, true, false);
+                        startNativeLocationUpdates();
+                    } else {
+                        pendingGeoOrigin = origin;
+                        pendingGeoCallback = callback;
+                        requestLocationPermissionsNative(false);
+                    }
+                }
+
+                @Override
+                public void onPermissionRequest(final PermissionRequest request) {
+                    if (existingClient != null) {
+                        existingClient.onPermissionRequest(request);
+                    } else {
+                        request.grant(request.getResources());
+                    }
+                }
+
+                @Override
+                public boolean onShowFileChooser(
+                        WebView webView,
+                        ValueCallback<Uri[]> filePathCallback,
+                        FileChooserParams fileChooserParams
+                ) {
+                    if (existingClient != null) {
+                        return existingClient.onShowFileChooser(webView, filePathCallback, fileChooserParams);
+                    }
+                    return super.onShowFileChooser(webView, filePathCallback, fileChooserParams);
+                }
+            });
         }
 
         if (hasLocationPermission()) {
             startNativeLocationUpdates();
-        } else {
-            requestLocationPermissionsNative();
         }
     }
 
@@ -75,8 +128,17 @@ public class MainActivity extends BridgeActivity {
     public void onResume() {
         super.onResume();
         if (hasLocationPermission()) {
+            isRequestingLocationPermission = false;
             startNativeLocationUpdates();
             notifyWebViewPermissionGranted();
+        } else if (!hasRequestedOnStartup && !isRequestingLocationPermission) {
+            hasRequestedOnStartup = true;
+            // Delay slightly until Activity window is focused and visible so Android never drops the prompt
+            mainHandler.postDelayed(() -> {
+                if (!hasLocationPermission() && !isRequestingLocationPermission) {
+                    requestLocationPermissionsNative(false);
+                }
+            }, 450);
         }
     }
 
@@ -94,17 +156,80 @@ public class MainActivity extends BridgeActivity {
         return fine || coarse;
     }
 
-    private void requestLocationPermissionsNative() {
-        if (!hasLocationPermission()) {
-            ActivityCompat.requestPermissions(
-                    this,
-                    new String[]{
-                            Manifest.permission.ACCESS_FINE_LOCATION,
-                            Manifest.permission.ACCESS_COARSE_LOCATION
-                    },
-                    LOCATION_PERMISSION_REQUEST_CODE
-            );
+    private boolean isLocationServicesEnabled() {
+        if (locationManager == null) return false;
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                return locationManager.isLocationEnabled();
+            }
+            return locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)
+                    || locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER);
+        } catch (Exception e) {
+            return true;
         }
+    }
+
+    private void requestLocationPermissionsNative(boolean userInitiated) {
+        if (hasLocationPermission()) {
+            isRequestingLocationPermission = false;
+            if (pendingGeoCallback != null && pendingGeoOrigin != null) {
+                pendingGeoCallback.invoke(pendingGeoOrigin, true, false);
+                pendingGeoCallback = null;
+                pendingGeoOrigin = null;
+            }
+            startNativeLocationUpdates();
+            notifyWebViewPermissionGranted();
+            return;
+        }
+
+        // Guard against concurrent requestPermissions calls which cause Android OS to cancel the dialog
+        if (isRequestingLocationPermission) {
+            return;
+        }
+
+        isRequestingLocationPermission = true;
+        ActivityCompat.requestPermissions(
+                this,
+                new String[]{
+                        Manifest.permission.ACCESS_FINE_LOCATION,
+                        Manifest.permission.ACCESS_COARSE_LOCATION
+                },
+                LOCATION_PERMISSION_REQUEST_CODE
+        );
+    }
+
+    private boolean isLocationFresh(Location loc, long maxAgeMs) {
+        if (loc == null) return false;
+        try {
+            long ageNanos = android.os.SystemClock.elapsedRealtimeNanos() - loc.getElapsedRealtimeNanos();
+            if (ageNanos >= 0) {
+                return (ageNanos / 1_000_000L) <= maxAgeMs;
+            }
+        } catch (Exception ignored) {}
+        long ageMs = System.currentTimeMillis() - loc.getTime();
+        return ageMs >= -5000L && ageMs <= maxAgeMs;
+    }
+
+    private Location selectNewerAccurateLocation(Location incoming, Location currentBest) {
+        if (incoming == null) return currentBest;
+        if (currentBest == null || !isLocationFresh(currentBest, 15000L)) {
+            return incoming;
+        }
+        long timeDelta = incoming.getTime() - currentBest.getTime();
+        // If incoming is from a coarse network provider (> 80m) right after a sharp GPS lock (<= 25m), keep the sharp GPS lock
+        if (timeDelta >= 0 && timeDelta < 8000L
+                && currentBest.hasAccuracy() && incoming.hasAccuracy()
+                && currentBest.getAccuracy() <= 25.0f && incoming.getAccuracy() > 80.0f) {
+            return currentBest;
+        }
+        // Always accept newer or equal-time location fixes so moving users never stay stuck at a previous spot
+        if (timeDelta >= -1000L) {
+            return incoming;
+        }
+        if (incoming.hasAccuracy() && currentBest.hasAccuracy() && incoming.getAccuracy() < currentBest.getAccuracy()) {
+            return incoming;
+        }
+        return currentBest;
     }
 
     @SuppressLint("MissingPermission")
@@ -112,39 +237,109 @@ public class MainActivity extends BridgeActivity {
         if (!hasLocationPermission() || locationManager == null) return;
 
         try {
+            if (!isLocationFresh(latestNativeLocation, 10000L)) {
+                latestNativeLocation = null;
+            }
+
             Location gpsLoc = null;
             Location netLoc = null;
-            Location passiveLoc = null;
+            Location fusedLoc = null;
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                try {
+                    if (locationManager.isProviderEnabled(LocationManager.FUSED_PROVIDER)) {
+                        Location cand = locationManager.getLastKnownLocation(LocationManager.FUSED_PROVIDER);
+                        if (isLocationFresh(cand, 10000L)) {
+                            fusedLoc = cand;
+                        }
+                        if (!isListeningNativeLocation) {
+                            locationManager.requestLocationUpdates(
+                                    LocationManager.FUSED_PROVIDER,
+                                    1000L,
+                                    0.0f,
+                                    nativeLocationListener,
+                                    Looper.getMainLooper()
+                            );
+                        }
+                        locationManager.getCurrentLocation(
+                                LocationManager.FUSED_PROVIDER,
+                                null,
+                                ContextCompat.getMainExecutor(this),
+                                loc -> {
+                                    if (loc != null) {
+                                        latestNativeLocation = selectNewerAccurateLocation(loc, latestNativeLocation);
+                                        dispatchNativeLocationToWebView(latestNativeLocation);
+                                    }
+                                }
+                        );
+                    }
+                } catch (Exception ignored) {}
+            }
 
             if (locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)) {
-                gpsLoc = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
+                Location cand = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
+                if (isLocationFresh(cand, 10000L)) {
+                    gpsLoc = cand;
+                }
                 if (!isListeningNativeLocation) {
                     locationManager.requestLocationUpdates(
                             LocationManager.GPS_PROVIDER,
-                            3000L,
-                            2.0f,
+                            1000L,
+                            0.0f,
                             nativeLocationListener,
                             Looper.getMainLooper()
                     );
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    try {
+                        locationManager.getCurrentLocation(
+                                LocationManager.GPS_PROVIDER,
+                                null,
+                                ContextCompat.getMainExecutor(this),
+                                loc -> {
+                                    if (loc != null) {
+                                        latestNativeLocation = selectNewerAccurateLocation(loc, latestNativeLocation);
+                                        dispatchNativeLocationToWebView(latestNativeLocation);
+                                    }
+                                }
+                        );
+                    } catch (Exception ignored) {}
                 }
             }
             if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
-                netLoc = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER);
+                Location cand = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER);
+                if (isLocationFresh(cand, 10000L)) {
+                    netLoc = cand;
+                }
                 if (!isListeningNativeLocation) {
                     locationManager.requestLocationUpdates(
                             LocationManager.NETWORK_PROVIDER,
-                            5000L,
-                            5.0f,
+                            2000L,
+                            0.0f,
                             nativeLocationListener,
                             Looper.getMainLooper()
                     );
                 }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    try {
+                        locationManager.getCurrentLocation(
+                                LocationManager.NETWORK_PROVIDER,
+                                null,
+                                ContextCompat.getMainExecutor(this),
+                                loc -> {
+                                    if (loc != null) {
+                                        latestNativeLocation = selectNewerAccurateLocation(loc, latestNativeLocation);
+                                        dispatchNativeLocationToWebView(latestNativeLocation);
+                                    }
+                                }
+                        );
+                    } catch (Exception ignored) {}
+                }
             }
-            passiveLoc = locationManager.getLastKnownLocation(LocationManager.PASSIVE_PROVIDER);
             isListeningNativeLocation = true;
 
-            Location best = chooseBestLocation(gpsLoc, netLoc, passiveLoc);
-            if (best != null) {
+            Location best = chooseBestLocation(gpsLoc, fusedLoc, netLoc);
+            if (best != null && isLocationFresh(best, 10000L)) {
                 latestNativeLocation = best;
                 dispatchNativeLocationToWebView(best);
             }
@@ -161,16 +356,10 @@ public class MainActivity extends BridgeActivity {
     }
 
     private Location chooseBestLocation(Location... candidates) {
-        Location best = latestNativeLocation;
+        Location best = isLocationFresh(latestNativeLocation, 10000L) ? latestNativeLocation : null;
         for (Location loc : candidates) {
-            if (loc == null) continue;
-            if (best == null) {
-                best = loc;
-            } else if (loc.getTime() > best.getTime() + 30000) {
-                best = loc;
-            } else if (loc.hasAccuracy() && best.hasAccuracy() && loc.getAccuracy() < best.getAccuracy()) {
-                best = loc;
-            }
+            if (!isLocationFresh(loc, 10000L)) continue;
+            best = selectNewerAccurateLocation(loc, best);
         }
         return best;
     }
@@ -222,13 +411,46 @@ public class MainActivity extends BridgeActivity {
         });
     }
 
+    private void notifyWebViewPermissionDenied(boolean permanentlyDenied) {
+        if (this.bridge == null || this.bridge.getWebView() == null) return;
+        runOnUiThread(() -> {
+            try {
+                if (this.bridge != null && this.bridge.getWebView() != null) {
+                    this.bridge.getWebView().evaluateJavascript(
+                            "window.dispatchEvent(new CustomEvent('beacon:permission-denied', { detail: { permanentlyDenied: "
+                                    + (permanentlyDenied ? "true" : "false") + " } }));",
+                            null
+                    );
+                }
+            } catch (Exception ignored) {}
+        });
+    }
+
     @Override
     public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == LOCATION_PERMISSION_REQUEST_CODE) {
+            isRequestingLocationPermission = false;
             if (hasLocationPermission()) {
+                if (pendingGeoCallback != null && pendingGeoOrigin != null) {
+                    pendingGeoCallback.invoke(pendingGeoOrigin, true, false);
+                    pendingGeoCallback = null;
+                    pendingGeoOrigin = null;
+                }
                 startNativeLocationUpdates();
                 notifyWebViewPermissionGranted();
+            } else if (grantResults.length > 0) {
+                if (pendingGeoCallback != null && pendingGeoOrigin != null) {
+                    pendingGeoCallback.invoke(pendingGeoOrigin, false, false);
+                    pendingGeoCallback = null;
+                    pendingGeoOrigin = null;
+                }
+                boolean showRationale = ActivityCompat.shouldShowRequestPermissionRationale(
+                        this, Manifest.permission.ACCESS_FINE_LOCATION
+                ) || ActivityCompat.shouldShowRequestPermissionRationale(
+                        this, Manifest.permission.ACCESS_COARSE_LOCATION
+                );
+                notifyWebViewPermissionDenied(!showRationale);
             }
         }
     }
@@ -240,14 +462,56 @@ public class MainActivity extends BridgeActivity {
         }
 
         @JavascriptInterface
+        public boolean isLocationEnabled() {
+            return MainActivity.this.isLocationServicesEnabled();
+        }
+
+        @JavascriptInterface
         public void requestLocationPermission() {
             runOnUiThread(() -> {
                 if (MainActivity.this.hasLocationPermission()) {
                     startNativeLocationUpdates();
                     notifyWebViewPermissionGranted();
                 } else {
-                    requestLocationPermissionsNative();
+                    requestLocationPermissionsNative(true);
                 }
+            });
+        }
+
+        @JavascriptInterface
+        public void requestFreshLocation() {
+            runOnUiThread(() -> {
+                if (MainActivity.this.hasLocationPermission()) {
+                    latestNativeLocation = null;
+                    stopNativeLocationUpdates();
+                    startNativeLocationUpdates();
+                } else {
+                    requestLocationPermissionsNative(true);
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void openAppLocationSettings() {
+            runOnUiThread(() -> {
+                try {
+                    Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                    Uri uri = Uri.fromParts("package", getPackageName(), null);
+                    intent.setData(uri);
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    startActivity(intent);
+                } catch (Exception ignored) {}
+            });
+        }
+
+        @JavascriptInterface
+        public void openLocationServicesSettings() {
+            runOnUiThread(() -> {
+                try {
+                    Intent intent = new Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS);
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    startActivity(intent);
+                } catch (Exception ignored) {}
             });
         }
 
@@ -256,24 +520,9 @@ public class MainActivity extends BridgeActivity {
             if (!MainActivity.this.hasLocationPermission()) {
                 return "";
             }
-            if (latestNativeLocation != null) {
+            if (isLocationFresh(latestNativeLocation, 10000L)) {
                 return locationToJsonString(latestNativeLocation);
             }
-            try {
-                if (locationManager != null) {
-                    @SuppressLint("MissingPermission")
-                    Location gps = locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER);
-                    @SuppressLint("MissingPermission")
-                    Location net = locationManager.getLastKnownLocation(LocationManager.NETWORK_PROVIDER);
-                    @SuppressLint("MissingPermission")
-                    Location passive = locationManager.getLastKnownLocation(LocationManager.PASSIVE_PROVIDER);
-                    Location best = chooseBestLocation(gps, net, passive);
-                    if (best != null) {
-                        latestNativeLocation = best;
-                        return locationToJsonString(best);
-                    }
-                }
-            } catch (Exception ignored) {}
             return "";
         }
     }

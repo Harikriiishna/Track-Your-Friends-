@@ -45,6 +45,8 @@ export default defineConfig(() => {
         },
         workbox: {
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
+          globIgnores: ['**/assets/aistudio/**'],
+          maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
           navigateFallbackDenylist: [/^\/api\//, /^\/uploads\//, /^\/ws/],
           cleanupOutdatedCaches: true,
         },
@@ -56,7 +58,7 @@ export default defineConfig(() => {
     ],
     resolve: {
       alias: {
-        '@': path.resolve(__dirname, '.'),
+        '@': path.resolve(import.meta.dirname || __dirname, '.'),
       },
     },
     server: {

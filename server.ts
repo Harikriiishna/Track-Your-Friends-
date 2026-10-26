@@ -1071,20 +1071,24 @@ app.delete('/api/messages/:id', authMiddleware, (req, res) => {
 app.post('/api/locations/update', authMiddleware, (req, res) => {
   try {
     const user = (req as any).user as UserProfile;
-    const { latitude, longitude, accuracy, altitude, heading, speed, batteryLevel } = req.body;
-    if (latitude === undefined || longitude === undefined || accuracy === undefined) {
-      res.status(400).json({ error: 'Missing coordinates or accuracy' });
+    const { geog, accuracy_m, latitude, longitude, accuracy, altitude, heading, speed, batteryLevel } = req.body;
+    const hasCoords = (latitude !== undefined && longitude !== undefined) || typeof geog === 'string';
+    const hasAccuracy = accuracy_m !== undefined || accuracy !== undefined;
+    if (!hasCoords || !hasAccuracy) {
+      res.status(400).json({ error: 'Missing coordinates (geog or latitude/longitude) or accuracy_m' });
       return;
     }
 
     const loc = db.updateLocation(user.id, {
-      latitude: Number(latitude),
-      longitude: Number(longitude),
-      accuracy: Number(accuracy),
-      altitude: altitude !== undefined ? Number(altitude) : null,
-      heading: heading !== undefined ? Number(heading) : null,
-      speed: speed !== undefined ? Number(speed) : null,
-      batteryLevel: batteryLevel !== undefined ? Number(batteryLevel) : null,
+      geog: typeof geog === 'string' ? geog : undefined,
+      accuracy_m: accuracy_m !== undefined ? Number(accuracy_m) : undefined,
+      latitude: latitude !== undefined ? Number(latitude) : undefined,
+      longitude: longitude !== undefined ? Number(longitude) : undefined,
+      accuracy: accuracy !== undefined ? Number(accuracy) : undefined,
+      altitude: altitude !== undefined && altitude !== null ? Number(altitude) : null,
+      heading: heading !== undefined && heading !== null ? Number(heading) : null,
+      speed: speed !== undefined && speed !== null ? Number(speed) : null,
+      batteryLevel: batteryLevel !== undefined && batteryLevel !== null ? Number(batteryLevel) : null,
     });
 
     broadcastToAuthorizedPeers(user.id, { type: 'location:broadcast', location: loc });

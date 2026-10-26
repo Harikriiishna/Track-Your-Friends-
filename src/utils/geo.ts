@@ -45,6 +45,51 @@ export function formatAccuracy(accuracyMeters: number): string {
   return `±${rounded} m`;
 }
 
+// Threshold in meters above which GPS signal strength is considered low
+export const LOW_GPS_ACCURACY_THRESHOLD_METERS = 25;
+
+export interface GpsSignalInfo {
+  isLowSignal: boolean;
+  level: 'high' | 'low' | 'very_low';
+  label: string;
+  circleColor: string;
+  badgeBgClass: string;
+  badgeTextClass: string;
+}
+
+// Evaluate GPS signal strength based on reported accuracy radius (in meters)
+export function getGpsSignalInfo(accuracyMeters?: number | null): GpsSignalInfo {
+  const acc = typeof accuracyMeters === 'number' && !isNaN(accuracyMeters) ? accuracyMeters : 0;
+  if (acc > 60) {
+    return {
+      isLowSignal: true,
+      level: 'very_low',
+      label: 'Poor GPS Signal',
+      circleColor: '#f43f5e', // rose-500
+      badgeBgClass: 'bg-rose-500/20 border-rose-500/40',
+      badgeTextClass: 'text-rose-400',
+    };
+  }
+  if (acc > LOW_GPS_ACCURACY_THRESHOLD_METERS) {
+    return {
+      isLowSignal: true,
+      level: 'low',
+      label: 'Low GPS Signal',
+      circleColor: '#f59e0b', // amber-500
+      badgeBgClass: 'bg-amber-500/20 border-amber-500/40',
+      badgeTextClass: 'text-amber-400',
+    };
+  }
+  return {
+    isLowSignal: false,
+    level: 'high',
+    label: 'Strong GPS',
+    circleColor: '#4285F4', // Google blue
+    badgeBgClass: 'bg-emerald-500/20 border-emerald-500/40',
+    badgeTextClass: 'text-emerald-400',
+  };
+}
+
 // Time ago helper for last updated timestamps
 export function formatTimeAgo(isoString: string): string {
   const diffSec = Math.floor((Date.now() - new Date(isoString).getTime()) / 1000);

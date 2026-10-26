@@ -10,7 +10,7 @@
       "phoneNumber": "",
       "createdAt": "2026-10-26T08:46:03.025Z",
       "isOnline": false,
-      "lastSeen": "2026-10-26T08:51:04.733Z",
+      "lastSeen": "2026-10-26T14:08:50.878Z",
       "privacy": {
         "locationVisibility": "room_members",
         "phoneVisibility": "room_members",
@@ -44,7 +44,7 @@
       "ownerId": "system",
       "hasPassword": false,
       "createdAt": "2026-01-01T00:00:00.000Z",
-      "memberCount": 1,
+      "memberCount": 2,
       "isPrivate": false,
       "isUniversal": true
     },
@@ -73,23 +73,7 @@
       "joinedAt": "2026-10-26T08:56:20.039Z"
     }
   ],
-  "locations": {
-    "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0": {
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "username": "Reddy",
-      "fullName": "Reddy",
-      "avatarUrl": "https://api.dicebear.com/7.x/initials/svg?seed=Reddy",
-      "latitude": 13.044389,
-      "longitude": 77.72117,
-      "accuracy": 25.4,
-      "altitude": 809,
-      "heading": null,
-      "speed": null,
-      "batteryLevel": null,
-      "timestamp": "2026-10-26T08:46:04.732Z",
-      "isStale": false
-    }
-  },
+  "locations": {},
   "savedPlaces": [],
   "messages": [],
   "reminders": [],
@@ -109,17 +93,5 @@
     }
   ],
   "passwordResets": [],
-  "locationHistory": [
-    {
-      "id": "70079892-d252-49f8-9afb-3e4798d876ad",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.044389,
-      "longitude": 77.72117,
-      "accuracy": 25.4,
-      "altitude": 809,
-      "heading": null,
-      "speed": null,
-      "timestamp": "2026-10-26T08:46:04.732Z"
-    }
-  ]
+  "locationHistory": []
 }

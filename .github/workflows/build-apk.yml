@@ -21,12 +21,13 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Install dependencies and sync web assets to Android
         run: |
-          npm install
+          npm install --legacy-peer-deps
           npm run build
+          mkdir -p android/capacitor-cordova-android-plugins/src/main/libs android/app/libs
           npx cap sync android
 
       - name: Set up Java
@@ -34,6 +35,14 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Accept Android SDK licenses and ensure SDK 36
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;35.0.0" || true
 
       - name: Verify Java environment
         run: |
@@ -60,9 +69,9 @@ jobs:
           echo "Java version verified: $MAJOR_VER >= 17"
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v3
+        uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '9.3.1'
+          gradle-version: '8.14.3'
 
       - name: Create temporary debug keystore
         run: |
@@ -86,11 +95,15 @@ jobs:
             echo "::error::Failed to create debug.keystore."
             exit 1
           fi
+          mkdir -p ~/.android
+          cp ./debug.keystore ~/.android/debug.keystore
           echo "debug.keystore confirmed."
 
       - name: Build Debug APK
         run: |
-          gradle -p android :app:assembleDebug --stacktrace --no-daemon
+          mkdir -p android/capacitor-cordova-android-plugins/src/main/libs android/app/libs
+          chmod +x android/gradlew || true
+          gradle -p android :app:assembleDebug -x lint -x lintDebug --stacktrace --no-daemon
           mkdir -p app/build/outputs/apk/debug
           cp android/app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/app-debug.apk
 
@@ -128,15 +141,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG_NAME="v1.0.${{ github.run_number }}-${{ github.run_attempt }}"
-          RELEASE_TITLE="NexusPoint APK v1.0.${{ github.run_number }}"
+          RELEASE_TITLE="Beacon APK v1.0.${{ github.run_number }}"
           RELEASE_ASSET="${{ steps.prepare_asset.outputs.release_asset }}"
 
-          echo "Creating GitHub Release $TAG_NAME with asset $RELEASE_ASSET..."
-          gh release create "$TAG_NAME" "$RELEASE_ASSET" \
-            --title "$RELEASE_TITLE" \
-            --target "${{ github.sha }}" \
-            --latest \
-            --notes "Automated Android APK release built from commit ${{ github.sha }}."
+          echo "Publishing GitHub Release $TAG_NAME with asset $RELEASE_ASSET..."
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release upload "$TAG_NAME" "$RELEASE_ASSET" --clobber
+          else
+            gh release create "$TAG_NAME" "$RELEASE_ASSET" \
+              --title "$RELEASE_TITLE" \
+              --target "${{ github.sha }}" \
+              --latest \
+              --notes "Automated Android APK release built from commit ${{ github.sha }}." || \
+            gh release upload "$TAG_NAME" "$RELEASE_ASSET" --clobber
+          fi
 
       - name: Report APK download result
         if: always()

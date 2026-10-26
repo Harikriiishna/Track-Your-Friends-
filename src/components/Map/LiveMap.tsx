@@ -3,7 +3,7 @@ import L from 'leaflet';
 import { useRealtime } from '../../context/RealtimeContext.tsx';
 import { useAuth } from '../../context/AuthContext.tsx';
 import type { UserLocation, SavedPlace, UserPathTrail, Room, PlaceResult, RouteData } from '../../types.ts';
-import { calculateDistanceMeters, formatDistance, formatAccuracy, formatTimeAgo } from '../../utils/geo.ts';
+import { calculateDistanceMeters, formatDistance, formatAccuracy, formatTimeAgo, getGpsSignalInfo } from '../../utils/geo.ts';
 import { api } from '../../utils/api.ts';
 import { useToast } from '../../context/ToastContext.tsx';
 import { useTheme } from '../../context/ThemeContext.tsx';
@@ -115,22 +115,43 @@ export const LiveMap: React.FC<LiveMapProps> = ({
   focusCoords = null,
 }) => {
   const { user } = useAuth();
-  const { themeConfig } = useTheme();
+  const { themeConfig, isLiteMode } = useTheme();
+  const isLiteModeRef = useRef<boolean>(isLiteMode);
+  isLiteModeRef.current = isLiteMode;
   const {
     myLocation,
     userLocations,
     gpsAccuracy,
     isGpsActive,
     gpsError,
+    locationStatus,
+    debugTelemetry,
+    setDebugMarkerLatLng,
+    simulatePositionFix,
     requestLocationUpdate,
+    setManualLocation,
     onlineUserIds,
   } = useRealtime();
+
+  const [isDebugMode] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return new URLSearchParams(window.location.search).get('debug') === '1';
+  });
+  const [debugNowMs, setDebugNowMs] = useState<number>(() => Date.now());
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setDebugNowMs(Date.now());
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
 
   const mapUid = useRef(Math.random().toString(36).slice(2, 8)).current;
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
   const tileLayerRef = useRef<L.TileLayer | null>(null);
   const userMarkersRef = useRef<Map<string, L.Marker>>(new Map());
+  const userAccuracyCirclesRef = useRef<Map<string, L.Circle>>(new Map());
   const myMarkerRef = useRef<L.Marker | null>(null);
   const accuracyCircleRef = useRef<L.Circle | null>(null);
   const savedPlacesMarkersRef = useRef<L.Marker[]>([]);
@@ -161,7 +182,9 @@ export const LiveMap: React.FC<LiveMapProps> = ({
   const [showLayerQuickToggle, setShowLayerQuickToggle] = useState<boolean>(true);
   const [selectedUser, setSelectedUser] = useState<UserLocation | null>(null);
   const [hasCenteredOnce, setHasCenteredOnce] = useState(false);
-  const [showPermissionBanner, setShowPermissionBanner] = useState(false);
+  const hasCenteredOnRealGpsRef = useRef(false);
+  const bestCenteredAccuracyRef = useRef<number>(Infinity);
+  const pendingCenterOnNextFixRef = useRef(false);
 
   // Multi-user Breadcrumb Trail State
   const [activeTrails, setActiveTrails] = useState<Record<string, UserPathTrail>>({});
@@ -987,66 +1010,74 @@ export const LiveMap: React.FC<LiveMapProps> = ({
   const GOOGLE_MAPS_KEY = (import.meta as any).env?.VITE_GOOGLE_MAPS_API_KEY || 'AIzaSyAOVYRIgupAurZup5y1PRh8Ismb1A3lLao';
 
   const createGoogleTileLayer = (mode: 'standard' | 'satellite' | 'terrain' | 'traffic') => {
+    const lite = isLiteModeRef.current;
+    const scaleParam = lite ? '1' : '2';
+    const commonOpts: L.TileLayerOptions = {
+      subdomains: ['0', '1', '2', '3'],
+      detectRetina: !lite,
+      keepBuffer: lite ? 1 : 2,
+      updateWhenIdle: lite,
+      updateWhenZooming: !lite,
+    };
+
     if (mode === 'terrain') {
       return L.tileLayer(
-        `https://mt{s}.google.com/vt/lyrs=p&x={x}&y={y}&z={z}&scale=2&hl=en`,
+        `https://mt{s}.google.com/vt/lyrs=p&x={x}&y={y}&z={z}&scale=${scaleParam}&hl=en`,
         {
+          ...commonOpts,
           maxZoom: 20,
-          subdomains: ['0', '1', '2', '3'],
-          detectRetina: true,
           attribution: '&copy; Google Maps Terrain Topo HD',
         }
       );
     } else if (mode === 'satellite') {
       return L.tileLayer(
-        `https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}&scale=2&hl=en`,
+        `https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}&scale=${scaleParam}&hl=en`,
         {
+          ...commonOpts,
           maxZoom: 21,
-          subdomains: ['0', '1', '2', '3'],
-          detectRetina: true,
           attribution: '&copy; Google Maps Satellite HD',
         }
       );
     } else if (mode === 'traffic') {
       return L.tileLayer(
-        `https://mt{s}.google.com/vt/lyrs=m,traffic&x={x}&y={y}&z={z}&scale=2&hl=en`,
+        `https://mt{s}.google.com/vt/lyrs=m,traffic&x={x}&y={y}&z={z}&scale=${scaleParam}&hl=en`,
         {
+          ...commonOpts,
           maxZoom: 21,
-          subdomains: ['0', '1', '2', '3'],
-          detectRetina: true,
           attribution: '&copy; Google Maps Live Traffic HD',
         }
       );
     } else {
-      // High-Clarity Crisp Retina Google Street Map
       return L.tileLayer(
-        `https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}&scale=2&hl=en`,
+        `https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}&scale=${scaleParam}&hl=en`,
         {
+          ...commonOpts,
           maxZoom: 21,
-          subdomains: ['0', '1', '2', '3'],
-          detectRetina: true,
           attribution: '&copy; Google Maps HD',
         }
       );
     }
   };
 
-  // Initialize Leaflet Map
+  // Initialize Leaflet Map (no hard-coded location coordinates; world view until a valid fix arrives)
   useEffect(() => {
     if (!mapContainerRef.current || mapInstanceRef.current) return;
 
-    // Use current user's recorded location or immediate GPS instead of foreign default
-    const initialLat = myLocation ? myLocation.latitude : 13.043625;
-    const initialLng = myLocation ? myLocation.longitude : 77.723065;
+    const initialCenter: [number, number] = myLocation
+      ? [myLocation.latitude, myLocation.longitude]
+      : [0, 0];
 
     const map = L.map(mapContainerRef.current, {
-      center: [initialLat, initialLng],
-      zoom: 16,
+      center: initialCenter,
+      zoom: myLocation ? 16 : 2,
       zoomControl: false,
-      zoomSnap: 0.1, // Smooth fractional zoom steps for pinch gestures
+      preferCanvas: true,
+      zoomSnap: 0.1,
       zoomDelta: 0.5,
-      touchZoom: false, // Handled concurrently with two-finger rotation in our gesture handler
+      touchZoom: false,
       bounceAtZoomLimits: false,
+      fadeAnimation: !isLiteModeRef.current,
+      markerZoomAnimation: !isLiteModeRef.current,
     });
 
     const initialLayer = createGoogleTileLayer(mapMode).addTo(map);
@@ -1298,10 +1329,53 @@ export const LiveMap: React.FC<LiveMapProps> = ({
 
     const nextLayer = createGoogleTileLayer(mapMode).addTo(map);
     tileLayerRef.current = nextLayer;
-  }, [mapMode]);
+  }, [mapMode, isLiteMode]);
+
+  // Listen for real GPS fix events so the map centers on the user's real accurate location
+  useEffect(() => {
+    const onGpsFix = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (!detail || typeof detail.latitude !== 'number' || typeof detail.longitude !== 'number') return;
+      const map = mapInstanceRef.current;
+      if (!map) return;
+
+      const isReal = detail.isRealGps !== false;
+      const fixAcc = typeof detail.accuracy === 'number' && detail.accuracy > 0 ? detail.accuracy : 100;
+      const isSignificantUpgrade =
+        !focusCoords &&
+        fixAcc < bestCenteredAccuracyRef.current * 0.65 &&
+        bestCenteredAccuracyRef.current > 35;
+
+      const shouldCenter =
+        detail.forceCenter ||
+        pendingCenterOnNextFixRef.current ||
+        (!hasCenteredOnce && !focusCoords) ||
+        (isReal && !hasCenteredOnRealGpsRef.current && !focusCoords) ||
+        isSignificantUpgrade;
+
+      if (shouldCenter) {
+        if (isReal) {
+          hasCenteredOnRealGpsRef.current = true;
+        }
+        bestCenteredAccuracyRef.current = Math.min(bestCenteredAccuracyRef.current, fixAcc);
+        pendingCenterOnNextFixRef.current = false;
+        setHasCenteredOnce(true);
+        const targetZoom = Math.max(map.getZoom(), fixAcc <= 80 ? 17 : 16);
+        if (isLiteModeRef.current) {
+          map.setView([detail.latitude, detail.longitude], targetZoom, { animate: false });
+        } else {
+          map.flyTo([detail.latitude, detail.longitude], targetZoom, { animate: true, duration: 0.85 });
+        }
+      }
+    };
+
+    window.addEventListener('beacon:gps-fix', onGpsFix);
+    return () => window.removeEventListener('beacon:gps-fix', onGpsFix);
+  }, [focusCoords, hasCenteredOnce]);
 
   // Smooth Marker Animation Infrastructure
   const markerAnimationFramesRef = useRef<Map<string, number>>(new Map());
+  const peerCircleAnimationFramesRef = useRef<Map<string, number>>(new Map());
   const accuracyCircleFrameRef = useRef<number | null>(null);
 
   const animateMarkerPosition = (
@@ -1311,12 +1385,19 @@ export const LiveMap: React.FC<LiveMapProps> = ({
     key: string,
     duration = 850
   ) => {
+    if (isLiteModeRef.current) {
+      marker.setLatLng([targetLat, targetLng]);
+      return;
+    }
+
     const currentLatLng = marker.getLatLng();
     const startLat = currentLatLng.lat;
     const startLng = currentLatLng.lng;
 
-    // Negligible movement threshold (< ~0.3 meters)
-    if (Math.abs(targetLat - startLat) < 0.000003 && Math.abs(targetLng - startLng) < 0.000003) {
+    // Negligible movement threshold (< ~0.3 meters) or large jump (> ~5km) -> snap directly
+    const dLat = Math.abs(targetLat - startLat);
+    const dLng = Math.abs(targetLng - startLng);
+    if ((dLat < 0.000003 && dLng < 0.000003) || dLat > 0.05 || dLng > 0.05) {
       marker.setLatLng([targetLat, targetLng]);
       return;
     }
@@ -1359,10 +1440,22 @@ export const LiveMap: React.FC<LiveMapProps> = ({
     targetRadius: number,
     duration = 850
   ) => {
+    if (isLiteModeRef.current) {
+      circle.setLatLng([targetLat, targetLng]);
+      circle.setRadius(targetRadius);
+      return;
+    }
+
     const currentLatLng = circle.getLatLng();
     const startLat = currentLatLng.lat;
     const startLng = currentLatLng.lng;
     const startRadius = circle.getRadius();
+
+    if (Math.abs(targetLat - startLat) > 0.05 || Math.abs(targetLng - startLng) > 0.05) {
+      circle.setLatLng([targetLat, targetLng]);
+      circle.setRadius(targetRadius);
+      return;
+    }
 
     if (accuracyCircleFrameRef.current !== null) {
       cancelAnimationFrame(accuracyCircleFrameRef.current);
@@ -1396,51 +1489,153 @@ export const LiveMap: React.FC<LiveMapProps> = ({
     accuracyCircleFrameRef.current = requestAnimationFrame(step);
   };
 
+  const animatePeerAccuracyCircle = (
+    circle: L.Circle,
+    targetLat: number,
+    targetLng: number,
+    targetRadius: number,
+    key: string,
+    duration = 850
+  ) => {
+    if (isLiteModeRef.current) {
+      circle.setLatLng([targetLat, targetLng]);
+      circle.setRadius(targetRadius);
+      return;
+    }
+
+    const currentLatLng = circle.getLatLng();
+    const startLat = currentLatLng.lat;
+    const startLng = currentLatLng.lng;
+    const startRadius = circle.getRadius();
+
+    if (peerCircleAnimationFramesRef.current.has(key)) {
+      cancelAnimationFrame(peerCircleAnimationFramesRef.current.get(key)!);
+      peerCircleAnimationFramesRef.current.delete(key);
+    }
+
+    const startTime = performance.now();
+    const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
+
+    const step = (now: number) => {
+      const elapsed = now - startTime;
+      const progress = Math.min(1, elapsed / duration);
+      const ease = easeOutCubic(progress);
+
+      const nextLat = startLat + (targetLat - startLat) * ease;
+      const nextLng = startLng + (targetLng - startLng) * ease;
+      const nextRadius = startRadius + (targetRadius - startRadius) * ease;
+
+      circle.setLatLng([nextLat, nextLng]);
+      circle.setRadius(nextRadius);
+
+      if (progress < 1) {
+        const frameId = requestAnimationFrame(step);
+        peerCircleAnimationFramesRef.current.set(key, frameId);
+      } else {
+        circle.setLatLng([targetLat, targetLng]);
+        circle.setRadius(targetRadius);
+        peerCircleAnimationFramesRef.current.delete(key);
+      }
+    };
+
+    const firstFrame = requestAnimationFrame(step);
+    peerCircleAnimationFramesRef.current.set(key, firstFrame);
+  };
+
   // Cleanup marker animation frames on unmount
   useEffect(() => {
     return () => {
       markerAnimationFramesRef.current.forEach((frameId) => cancelAnimationFrame(frameId));
       markerAnimationFramesRef.current.clear();
+      peerCircleAnimationFramesRef.current.forEach((frameId) => cancelAnimationFrame(frameId));
+      peerCircleAnimationFramesRef.current.clear();
       if (accuracyCircleFrameRef.current !== null) {
         cancelAnimationFrame(accuracyCircleFrameRef.current);
       }
     };
   }, []);
 
-  // Update Current User GPS Marker & Accuracy Circle
+  // Update Current User GPS Marker & Accuracy Circle (Steps 3d, 3e, 3g)
   useEffect(() => {
     const map = mapInstanceRef.current;
-    if (!map || !myLocation) return;
+    if (!map) return;
 
-    const latLng = L.latLng(myLocation.latitude, myLocation.longitude);
-    setShowPermissionBanner(false);
-
-    if (!hasCenteredOnce) {
-      map.setView(latLng, 16);
-      setHasCenteredOnce(true);
+    if (!myLocation || !Number.isFinite(myLocation.latitude) || !Number.isFinite(myLocation.longitude)) {
+      if (myMarkerRef.current) {
+        map.removeLayer(myMarkerRef.current);
+        myMarkerRef.current = null;
+      }
+      if (accuracyCircleRef.current) {
+        map.removeLayer(accuracyCircleRef.current);
+        accuracyCircleRef.current = null;
+      }
+      setDebugMarkerLatLng(null);
+      return;
     }
 
-    // Google Maps Accuracy Range Ring:
-    // The light-blue shaded ring around the blue dot represents the accuracy range.
-    // The smaller the ring, the more precise the GPS signal is.
-    if (myLocation.accuracy) {
-      const accuracyRadius = Math.max(4, myLocation.accuracy);
+    const markerCoords: [number, number] = [myLocation.latitude, myLocation.longitude];
+    const latLng = L.latLng(markerCoords[0], markerCoords[1]);
+    setDebugMarkerLatLng(markerCoords);
+
+    const currentAcc = Number(myLocation.accuracy_m ?? myLocation.accuracy);
+
+    if (!hasCenteredOnce) {
+      map.setView(latLng, currentAcc <= 100 ? 17 : 15);
+      setHasCenteredOnce(true);
+      bestCenteredAccuracyRef.current = currentAcc;
+      hasCenteredOnRealGpsRef.current = true;
+    } else if (
+      (!hasCenteredOnRealGpsRef.current && currentAcc <= 100 && !focusCoords) ||
+      (!focusCoords && currentAcc < bestCenteredAccuracyRef.current * 0.65 && bestCenteredAccuracyRef.current > 35)
+    ) {
+      hasCenteredOnRealGpsRef.current = true;
+      bestCenteredAccuracyRef.current = Math.min(bestCenteredAccuracyRef.current, currentAcc);
+      if (isLiteModeRef.current) {
+        map.setView(latLng, 17, { animate: false });
+      } else {
+        map.flyTo(latLng, 17, { animate: true, duration: 0.9 });
+      }
+    }
+
+    const selfSignalInfo = getGpsSignalInfo(currentAcc);
+    const serverUpdatedIso = myLocation.updated_at || myLocation.timestamp;
+    const serverAgeMs = serverUpdatedIso ? Date.now() - Date.parse(serverUpdatedIso) : Infinity;
+    const isServerLive = Number.isFinite(serverAgeMs) && serverAgeMs < 120000; // Step 3g: under 2 minutes old
+
+    // Step 3e: Draw an accuracy circle (radius = accuracy_m meters) around each marker so users see the real uncertainty.
+    if (Number.isFinite(currentAcc) && currentAcc > 0) {
+      const accuracyRadius = currentAcc; // Exact accuracy_m in meters (never fabricated or clamped)
+      const circleStyle: L.PathOptions = {
+        color: selfSignalInfo.circleColor,
+        fillColor: selfSignalInfo.circleColor,
+        fillOpacity: selfSignalInfo.isLowSignal ? 0.2 : 0.16,
+        weight: selfSignalInfo.isLowSignal ? 2.2 : 1.5,
+        opacity: selfSignalInfo.isLowSignal ? 0.85 : 0.6,
+        dashArray: selfSignalInfo.isLowSignal ? '6, 6' : undefined,
+      };
+
       if (!accuracyCircleRef.current) {
-        accuracyCircleRef.current = L.circle(latLng, {
+        accuracyCircleRef.current = L.circle(markerCoords, {
           radius: accuracyRadius,
-          color: '#4285F4',
-          fillColor: '#4285F4',
-          fillOpacity: 0.16,
-          weight: 1.5,
-          opacity: 0.5,
+          ...circleStyle,
         }).addTo(map);
 
         accuracyCircleRef.current.on('click', () => {
           setShowBlueDotModal(true);
         });
       } else {
-        animateAccuracyCircle(accuracyCircleRef.current, myLocation.latitude, myLocation.longitude, accuracyRadius);
+        accuracyCircleRef.current.setStyle(circleStyle);
+        animateAccuracyCircle(accuracyCircleRef.current, markerCoords[0], markerCoords[1], accuracyRadius);
       }
+
+      accuracyCircleRef.current.unbindTooltip();
+      accuracyCircleRef.current.bindTooltip(
+        `<div class="font-sans text-xs">
+          <span class="font-bold text-slate-900">Your Location${isServerLive ? ' · Live' : ''}</span><br/>
+          <span class="text-slate-600">Accuracy ±${Math.round(currentAcc)} m</span>
+        </div>`,
+        { direction: 'top', sticky: true }
+      );
     }
 
     const effectiveHeading =
@@ -1453,22 +1648,15 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         ? ((effectiveHeading - bearing) % 360 + 360) % 360
         : 0;
 
-    const userColor = user?.markerColor || '#1a73e8';
     const userIcon = user?.markerIcon || 'person';
     const userRoleEmoji = getMemberIconEmoji(userIcon);
     const userDisplayName = user?.markerLabel || user?.fullName?.split(' ')[0] || 'You';
 
-    // Google Maps Blue Dot Cursor:
-    // • The blue dot: Pinpoints where your device is right now.
-    // • The light-blue shaded ring around it: Represents the accuracy range.
-    // • The faint beam or arrow (if active): Indicates the direction your device is currently facing.
     const myIcon = L.divIcon({
       className: 'beacon-google-blue-dot-marker',
       html: `
         <div class="relative flex items-center justify-center w-20 h-20 pointer-events-none cursor-pointer">
-          <!-- Faint Directional Beam & Arrowhead Pointer (Active Device Facing Direction) -->
           <div class="absolute inset-0 flex items-center justify-center pointer-events-none transition-transform duration-200 ease-out" style="transform: rotate(${visualAngle}deg);">
-            <!-- 60-degree soft gradient cone beam projecting forward from the dot -->
             <svg class="absolute -top-7 w-28 h-28 overflow-visible pointer-events-none opacity-85" viewBox="0 0 100 100">
               <defs>
                 <radialGradient id="googleBlueDotBeam" cx="50%" cy="100%" r="90%">
@@ -1480,18 +1668,14 @@ export const LiveMap: React.FC<LiveMapProps> = ({
               </defs>
               <path d="M 50 95 L 14 18 A 66 66 0 0 1 86 18 Z" fill="url(#googleBlueDotBeam)" />
             </svg>
-
-            <!-- Precision Arrowhead Direction Cursor -->
             <div class="absolute -top-3.5 flex flex-col items-center">
               <div class="w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-b-[11px] border-b-[#1a73e8] drop-shadow-[0_0_6px_rgba(26,115,232,0.9)]"></div>
             </div>
           </div>
 
-          <!-- Pulsing Ambient Ripple Ring -->
-          <div class="absolute inset-4 rounded-full bg-blue-500/25 animate-ping pointer-events-none"></div>
+          <div class="absolute inset-3 rounded-full ${selfSignalInfo.isLowSignal ? 'bg-amber-500/35 border border-amber-400/70 border-dashed' : 'bg-blue-500/25'} animate-ping pointer-events-none"></div>
 
-          <!-- The Blue Dot: Crisp Google Maps Center with White Rim -->
-          <div class="relative w-8 h-8 rounded-full bg-gradient-to-tr from-[#1557b0] to-[#4285f4] border-[3px] border-white shadow-[0_2px_10px_rgba(0,0,0,0.4)] flex items-center justify-center pointer-events-auto group hover:scale-110 transition-transform">
+          <div class="relative w-8 h-8 rounded-full bg-gradient-to-tr from-[#1557b0] to-[#4285f4] border-[3px] ${selfSignalInfo.isLowSignal ? 'border-amber-300' : 'border-white'} shadow-[0_2px_10px_rgba(0,0,0,0.4)] flex items-center justify-center pointer-events-auto group hover:scale-110 transition-transform">
             ${user?.markerIcon && user.markerIcon !== 'person' ? `
               <span class="text-xs text-white drop-shadow">${userRoleEmoji}</span>
             ` : `
@@ -1499,10 +1683,12 @@ export const LiveMap: React.FC<LiveMapProps> = ({
             `}
           </div>
 
-          <!-- Direction & Identity Badge -->
-          <div class="absolute -bottom-2 px-2.5 py-0.5 bg-slate-900/90 text-[10px] text-white font-bold rounded-full shadow-md border border-white/20 flex items-center gap-1 pointer-events-auto whitespace-nowrap">
-            <span class="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse"></span>
+          <!-- Direction, Accuracy ±X m & Server-Verified Live Badge -->
+          <div class="absolute -bottom-2 px-2.5 py-0.5 bg-slate-900/90 text-[10px] text-white font-bold rounded-full shadow-md border ${selfSignalInfo.isLowSignal ? 'border-amber-400/60' : 'border-white/20'} flex items-center gap-1 pointer-events-auto whitespace-nowrap">
+            <span class="w-1.5 h-1.5 rounded-full ${isServerLive ? 'bg-emerald-400 animate-pulse' : 'bg-slate-400'}"></span>
             <span>${userDisplayName}</span>
+            ${isServerLive ? `<span class="text-emerald-300 font-mono text-[9px]">· Live</span>` : ''}
+            <span class="text-sky-300 font-mono text-[9px]">· Accuracy ±${Math.round(currentAcc)} m</span>
             ${effectiveHeading !== null ? `<span class="text-blue-300 font-mono text-[9px]">· ${Math.round(effectiveHeading)}°</span>` : ''}
           </div>
         </div>
@@ -1514,40 +1700,61 @@ export const LiveMap: React.FC<LiveMapProps> = ({
     const selfTarget: MarkerContextMenuTarget = {
       type: 'self',
       title: `${user?.fullName || 'You'} (Your Location)`,
-      subtitle: `Accuracy: ${formatAccuracy(myLocation.accuracy)}`,
-      lat: myLocation.latitude,
-      lng: myLocation.longitude,
+      subtitle: `Accuracy ±${Math.round(currentAcc)} m${isServerLive ? ' · Live' : ''}`,
+      lat: markerCoords[0],
+      lng: markerCoords[1],
       avatarUrl: user?.avatarUrl,
       heading: effectiveHeading,
     };
 
     if (!myMarkerRef.current) {
-      myMarkerRef.current = L.marker(latLng, { icon: myIcon, zIndexOffset: 1000 }).addTo(map);
+      // Step 3d: Leaflet L.marker([lat, lng])
+      myMarkerRef.current = L.marker(markerCoords, {
+        icon: myIcon,
+        zIndexOffset: 1000,
+        draggable: true,
+      }).addTo(map);
       myMarkerRef.current.on('click', () => {
         setSelectedUser(myLocation);
       });
+      myMarkerRef.current.on('dragend', () => {
+        const marker = myMarkerRef.current;
+        if (!marker) return;
+        const pos = marker.getLatLng();
+        setManualLocation(pos.lat, pos.lng, 5);
+        toast.success(`Location calibrated to (${pos.lat.toFixed(5)}, ${pos.lng.toFixed(5)} · Accuracy ±5 m)`);
+      });
       attachMarkerLongPress(myMarkerRef.current, selfTarget);
     } else {
-      animateMarkerPosition(myMarkerRef.current, myLocation.latitude, myLocation.longitude, 'my_marker');
+      animateMarkerPosition(myMarkerRef.current, markerCoords[0], markerCoords[1], 'my_marker');
       myMarkerRef.current.setIcon(myIcon);
       attachMarkerLongPress(myMarkerRef.current, selfTarget);
     }
-  }, [myLocation, user?.avatarUrl, user?.fullName, hasCenteredOnce, userHeading, bearing]);
+  }, [myLocation, user?.avatarUrl, user?.fullName, hasCenteredOnce, userHeading, bearing, debugNowMs]);
 
-  // Update Peer Map Markers with Fluid Smooth Interpolation & Heading Cursors
+  // Update Peer Map Markers & Accuracy Circles (Steps 3d, 3e, 3g)
   useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map) return;
 
     const currentMarkers = userMarkersRef.current;
+    const currentCircles = userAccuracyCirclesRef.current;
     const activePeerIds = new Set<string>();
 
     for (const peerLoc of displayedUserLocations) {
       if (peerLoc.userId === user?.id) continue;
+      if (!Number.isFinite(peerLoc.latitude) || !Number.isFinite(peerLoc.longitude)) continue;
+      const peerAcc = Number(peerLoc.accuracy_m ?? peerLoc.accuracy);
+      if (!Number.isFinite(peerAcc) || peerAcc <= 0 || peerAcc > 100) continue;
+
       activePeerIds.add(peerLoc.userId);
 
-      const latLng = L.latLng(peerLoc.latitude, peerLoc.longitude);
+      const peerCoords: [number, number] = [peerLoc.latitude, peerLoc.longitude];
       const isOnline = onlineUserIds.includes(peerLoc.userId);
+      const peerSignalInfo = getGpsSignalInfo(peerAcc);
+      const peerUpdatedIso = peerLoc.updated_at || peerLoc.timestamp;
+      const peerAgeMs = peerUpdatedIso ? Date.now() - Date.parse(peerUpdatedIso) : Infinity;
+      const isPeerLive = Number.isFinite(peerAgeMs) && peerAgeMs < 120000; // Step 3g: under 2 minutes old
 
       let distText = '';
       if (myLocation) {
@@ -1566,7 +1773,6 @@ export const LiveMap: React.FC<LiveMapProps> = ({
           ? ((peerHeading - bearing) % 360 + 360) % 360
           : null;
 
-      // Custom Family Member Marker Styling: check local override or user's broadcasted style
       const overrides = getCustomMemberOverrides();
       const peerOverride = overrides[peerLoc.userId];
 
@@ -1575,11 +1781,53 @@ export const LiveMap: React.FC<LiveMapProps> = ({
       const peerRoleEmoji = getMemberIconEmoji(peerIconId);
       const peerDisplayName = peerOverride?.nickname || peerLoc.fullName.split(' ')[0];
 
+      // Step 3e: Draw an accuracy circle (radius = accuracy_m meters) around EACH marker so users see real uncertainty
+      const radiusMeters = peerAcc;
+      const circleStyle: L.PathOptions = {
+        color: peerSignalInfo.isLowSignal ? peerSignalInfo.circleColor : peerColor,
+        fillColor: peerSignalInfo.isLowSignal ? peerSignalInfo.circleColor : peerColor,
+        fillOpacity: 0.15,
+        weight: 1.8,
+        opacity: 0.75,
+        dashArray: peerSignalInfo.isLowSignal ? '6, 6' : undefined,
+      };
+
+      const tooltipHtml = `<div class="font-sans text-xs">
+        <span class="font-bold text-slate-900">${peerLoc.fullName}${isPeerLive ? ' · Live' : ''}</span><br/>
+        <span class="font-semibold text-slate-700">Accuracy ±${Math.round(peerAcc)} m</span>
+      </div>`;
+
+      if (!currentCircles.has(peerLoc.userId)) {
+        const accCircle = L.circle(peerCoords, {
+          radius: radiusMeters,
+          ...circleStyle,
+        }).addTo(map);
+        accCircle.bindTooltip(tooltipHtml, { direction: 'top', sticky: true });
+        accCircle.on('click', () => {
+          setSelectedUser(peerLoc);
+        });
+        currentCircles.set(peerLoc.userId, accCircle);
+      } else {
+        const existingCircle = currentCircles.get(peerLoc.userId)!;
+        existingCircle.setStyle(circleStyle);
+        existingCircle.unbindTooltip();
+        existingCircle.bindTooltip(tooltipHtml, { direction: 'top', sticky: true });
+        animatePeerAccuracyCircle(
+          existingCircle,
+          peerCoords[0],
+          peerCoords[1],
+          radiusMeters,
+          peerLoc.userId
+        );
+      }
+
       const peerIcon = L.divIcon({
         className: 'beacon-peer-marker',
         html: `
           <div class="group relative flex flex-col items-center cursor-pointer hover:scale-105 transition-transform">
-            <!-- Peer Heading Direction Pointer Arrow -->
+            ${peerSignalInfo.isLowSignal ? `
+              <div class="absolute -inset-2 rounded-full border-2 border-dashed animate-pulse pointer-events-none" style="border-color: ${peerSignalInfo.circleColor}; background-color: ${peerSignalInfo.circleColor}22;"></div>
+            ` : ''}
             ${peerVisualAngle !== null ? `
               <div class="absolute inset-0 flex items-center justify-center pointer-events-none transition-transform duration-150" style="transform: rotate(${peerVisualAngle}deg);">
                 <div class="absolute -top-3 w-0 h-0 border-l-[5px] border-l-transparent border-r-[5px] border-r-transparent border-b-[9px]" style="border-bottom-color: ${peerColor}; filter: drop-shadow(0 0 4px ${peerColor});"></div>
@@ -1593,10 +1841,12 @@ export const LiveMap: React.FC<LiveMapProps> = ({
                 <span>${peerRoleEmoji}</span>
               </div>
             ` : ''}
-            <div class="mt-1 px-2 py-0.5 bg-slate-900/90 backdrop-blur-sm text-[10px] text-white font-medium rounded shadow flex items-center gap-1 whitespace-nowrap">
-              <span class="w-1.5 h-1.5 rounded-full" style="background-color: ${peerColor};"></span>
+            <div class="mt-1 px-2 py-0.5 bg-slate-900/90 backdrop-blur-sm text-[10px] text-white font-medium rounded shadow flex items-center gap-1 whitespace-nowrap ${peerSignalInfo.isLowSignal ? 'border border-amber-400/50' : ''}">
+              <span class="w-1.5 h-1.5 rounded-full" style="background-color: ${isPeerLive ? '#10b981' : '#94a3b8'};"></span>
               <span>${peerRoleEmoji !== '👤' ? `${peerRoleEmoji} ` : ''}${peerDisplayName}</span>
+              ${isPeerLive ? `<span class="text-emerald-300 font-mono text-[9px]">· Live</span>` : ''}
               ${distText ? `<span class="text-slate-400">·</span><span class="text-blue-400 font-semibold">${distText}</span>` : ''}
+              <span class="text-sky-300 font-mono text-[9px]">· Accuracy ±${Math.round(peerAcc)} m</span>
               ${peerHeading != null ? `<span class="text-emerald-400 font-mono text-[9px]">· ${Math.round(peerHeading)}°</span>` : ''}
             </div>
           </div>
@@ -1609,9 +1859,9 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         type: 'peer',
         userId: peerLoc.userId,
         title: peerLoc.fullName,
-        subtitle: `@${peerLoc.username}${distText ? ` · ${distText}` : ''}`,
-        lat: peerLoc.latitude,
-        lng: peerLoc.longitude,
+        subtitle: `@${peerLoc.username}${distText ? ` · ${distText}` : ''} · Accuracy ±${Math.round(peerAcc)} m`,
+        lat: peerCoords[0],
+        lng: peerCoords[1],
         avatarUrl: peerLoc.avatarUrl,
         isOnline,
         distanceText: distText,
@@ -1619,7 +1869,8 @@ export const LiveMap: React.FC<LiveMapProps> = ({
       };
 
       if (!currentMarkers.has(peerLoc.userId)) {
-        const marker = L.marker(latLng, { icon: peerIcon }).addTo(map);
+        // Step 3d: Leaflet L.marker([lat, lng])
+        const marker = L.marker(peerCoords, { icon: peerIcon }).addTo(map);
         marker.on('click', () => {
           setSelectedUser(peerLoc);
         });
@@ -1627,7 +1878,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         currentMarkers.set(peerLoc.userId, marker);
       } else {
         const existingMarker = currentMarkers.get(peerLoc.userId)!;
-        animateMarkerPosition(existingMarker, peerLoc.latitude, peerLoc.longitude, peerLoc.userId);
+        animateMarkerPosition(existingMarker, peerCoords[0], peerCoords[1], peerLoc.userId);
         existingMarker.setIcon(peerIcon);
         attachMarkerLongPress(existingMarker, peerTarget);
       }
@@ -1643,7 +1894,18 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         currentMarkers.delete(userId);
       }
     }
-  }, [displayedUserLocations, onlineUserIds, myLocation, user?.id, bearing, memberOverridesVersion]);
+
+    for (const [userId, circle] of currentCircles.entries()) {
+      if (!activePeerIds.has(userId)) {
+        if (peerCircleAnimationFramesRef.current.has(userId)) {
+          cancelAnimationFrame(peerCircleAnimationFramesRef.current.get(userId)!);
+          peerCircleAnimationFramesRef.current.delete(userId);
+        }
+        map.removeLayer(circle);
+        currentCircles.delete(userId);
+      }
+    }
+  }, [displayedUserLocations, onlineUserIds, myLocation, user?.id, bearing, memberOverridesVersion, debugNowMs]);
 
   // Update Saved Places Markers
   useEffect(() => {
@@ -1995,17 +2257,30 @@ export const LiveMap: React.FC<LiveMapProps> = ({
   };
 
   const centerOnMyLocation = () => {
+    pendingCenterOnNextFixRef.current = true;
     requestLocationUpdate();
-    if (mapInstanceRef.current) {
-      const targetLat = myLocation ? myLocation.latitude : 13.043625;
-      const targetLng = myLocation ? myLocation.longitude : 77.723065;
-      mapInstanceRef.current.flyTo([targetLat, targetLng], 18, {
-        animate: true,
-        duration: 0.9,
-      });
-      toast.success(`Centered on your location (±${gpsAccuracy ? Math.round(gpsAccuracy) : 12}m)`);
+    if (mapInstanceRef.current && myLocation) {
+      if (isLiteModeRef.current) {
+        mapInstanceRef.current.setView([myLocation.latitude, myLocation.longitude], 18, { animate: false });
+      } else {
+        mapInstanceRef.current.flyTo([myLocation.latitude, myLocation.longitude], 18, {
+          animate: true,
+          duration: 0.85,
+        });
+      }
+      const acc = Math.round(Number(myLocation.accuracy_m ?? myLocation.accuracy));
+      toast.success(
+        `Centered on your live location (${myLocation.latitude.toFixed(5)}, ${myLocation.longitude.toFixed(5)} · Accuracy ±${acc} m)`
+      );
+    } else {
+      toast.info(locationStatus || 'Waiting for location');
     }
   };
+
+  const fixAgeSeconds =
+    debugTelemetry.rawFix?.timestamp != null
+      ? Math.max(0, (debugNowMs - debugTelemetry.rawFix.timestamp) / 1000).toFixed(1)
+      : null;
 
   return (
     <div
@@ -2031,6 +2306,152 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         <div ref={mapContainerRef} className="w-full h-full z-0" />
       </div>
 
+      {/* STEP 1: Live Geolocation Debug Panel (Temporary, hidden behind ?debug=1) */}
+      {isDebugMode && (
+        <div
+          data-testid="location-debug-panel"
+          className="absolute bottom-20 left-4 z-40 w-[350px] max-w-[calc(100vw-2rem)] bg-slate-950/95 backdrop-blur-md text-slate-100 border border-sky-500/50 rounded-2xl p-3 shadow-2xl font-mono text-[11px] space-y-2 pointer-events-auto"
+        >
+          <div className="flex items-center justify-between border-b border-slate-800 pb-1.5">
+            <span className="font-bold text-sky-400 uppercase tracking-wider text-xs">
+              GPS Debug Panel (?debug=1)
+            </span>
+            <span className="px-1.5 py-0.5 rounded bg-slate-800 text-[10px] text-emerald-300">
+              {locationStatus}
+            </span>
+          </div>
+
+          <div className="space-y-1 text-[10.5px]">
+            <div className="bg-slate-900/90 p-1.5 rounded border border-slate-800">
+              <div className="text-slate-400 font-semibold">1. Raw Fix (navigator.geolocation):</div>
+              {debugTelemetry.rawFix ? (
+                <div className="text-white">
+                  lat: <span className="text-sky-300">{debugTelemetry.rawFix.latitude}</span>, lng:{' '}
+                  <span className="text-sky-300">{debugTelemetry.rawFix.longitude}</span>
+                  <br />
+                  accuracy:{' '}
+                  <span
+                    className={
+                      (debugTelemetry.rawFix.accuracy ?? 999) > 100
+                        ? 'text-rose-400 font-bold'
+                        : 'text-emerald-300'
+                    }
+                  >
+                    {debugTelemetry.rawFix.accuracy != null
+                      ? `${debugTelemetry.rawFix.accuracy} m`
+                      : 'null'}
+                  </span>{' '}
+                  | ts: {debugTelemetry.rawFix.timestamp}
+                  <br />
+                  age (Date.now() - timestamp):{' '}
+                  <span className="text-amber-300">{fixAgeSeconds}s</span> (
+                  {Math.max(0, debugNowMs - debugTelemetry.rawFix.timestamp)} ms)
+                </div>
+              ) : (
+                <div className="text-slate-500">Waiting for location...</div>
+              )}
+            </div>
+
+            <div className="bg-slate-900/90 p-1.5 rounded border border-slate-800">
+              <div className="text-slate-400 font-semibold">2. Sent to Database:</div>
+              {debugTelemetry.sentToDb ? (
+                <div className="text-white break-all">
+                  geog: <span className="text-emerald-300">{debugTelemetry.sentToDb.geog}</span>
+                  <br />
+                  accuracy_m: <span className="text-emerald-300">{debugTelemetry.sentToDb.accuracy_m}</span>{' '}
+                  | lat: {debugTelemetry.sentToDb.latitude}, lng: {debugTelemetry.sentToDb.longitude}
+                </div>
+              ) : (
+                <div className="text-slate-500">None sent (rejected or waiting)</div>
+              )}
+            </div>
+
+            <div className="bg-slate-900/90 p-1.5 rounded border border-slate-800">
+              <div className="text-slate-400 font-semibold">3. Read Back from Database:</div>
+              {debugTelemetry.readFromDb ? (
+                <div className="text-white break-all">
+                  lat: <span className="text-sky-300">{debugTelemetry.readFromDb.lat}</span>, lng:{' '}
+                  <span className="text-sky-300">{debugTelemetry.readFromDb.lng}</span>, accuracy_m:{' '}
+                  <span className="text-sky-300">{debugTelemetry.readFromDb.accuracy_m}</span>
+                  <br />
+                  updated_at: <span className="text-slate-300">{debugTelemetry.readFromDb.updated_at}</span>
+                </div>
+              ) : (
+                <div className="text-slate-500">No DB record read back yet</div>
+              )}
+            </div>
+
+            <div className="bg-slate-900/90 p-1.5 rounded border border-slate-800">
+              <div className="text-slate-400 font-semibold">4. [lat, lng] Passed to Map Marker:</div>
+              {debugTelemetry.markerLatLng ? (
+                <div className="text-emerald-300 font-bold">
+                  [{debugTelemetry.markerLatLng[0]}, {debugTelemetry.markerLatLng[1]}]
+                </div>
+              ) : (
+                <div className="text-amber-300">null (Waiting for location — no marker rendered)</div>
+              )}
+            </div>
+
+            <div className="bg-slate-900/90 p-1.5 rounded border border-slate-800">
+              <div className="text-slate-400 font-semibold">5. Last Geolocation Error:</div>
+              {debugTelemetry.lastGeoError ? (
+                <div className="text-rose-400">
+                  code {debugTelemetry.lastGeoError.code}: {debugTelemetry.lastGeoError.message}
+                </div>
+              ) : (
+                <div className="text-slate-500">None</div>
+              )}
+            </div>
+          </div>
+
+          {/* Step 4 Quick Verification Sensor Buttons */}
+          <div className="pt-1 border-t border-slate-800 flex flex-wrap gap-1">
+            <button
+              type="button"
+              onClick={() =>
+                simulatePositionFix({
+                  latitude: 48.8584,
+                  longitude: 2.2945,
+                  accuracy: 12,
+                  timestamp: Date.now(),
+                })
+              }
+              className="px-2 py-1 rounded bg-sky-600 hover:bg-sky-500 text-white text-[10px] font-bold cursor-pointer"
+            >
+              Test 48.8584, 2.2945 (±12m)
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                simulatePositionFix({
+                  latitude: -33.8688,
+                  longitude: -70.6693,
+                  accuracy: 15,
+                  timestamp: Date.now(),
+                })
+              }
+              className="px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-bold cursor-pointer"
+            >
+              Test -33.8688, -70.6693
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                simulatePositionFix({
+                  latitude: 37.7749,
+                  longitude: -122.4194,
+                  accuracy: 250,
+                  timestamp: Date.now(),
+                })
+              }
+              className="px-2 py-1 rounded bg-rose-700 hover:bg-rose-600 text-white text-[10px] font-bold cursor-pointer"
+            >
+              Test Coarse ±250m (Reject)
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Floating Gesture & Bearing HUD - clean bottom-right placement above compass cluster */}
       {(isGesturing || bearing !== 0) && (
         <div className="absolute bottom-56 right-4 z-20 bg-slate-900/90 backdrop-blur-md text-white px-3 py-1.5 rounded-2xl shadow-xl border border-slate-700/80 flex items-center gap-2 text-xs font-mono animate-in fade-in duration-150">
@@ -2054,6 +2475,34 @@ export const LiveMap: React.FC<LiveMapProps> = ({
 
       {/* Top Floating Bar: Address Search, Navigation HUD & Quick Pop Button */}
       <div className="absolute top-4 left-4 right-4 md:right-auto md:w-[460px] z-30 flex flex-col gap-2">
+        {/* Waiting for Location / Geolocation Error Status Banner (No fake/default marker) */}
+        {(!myLocation || gpsError || locationStatus !== 'Live') && (
+          <div className="p-3 rounded-2xl bg-slate-900/95 backdrop-blur-xl border border-amber-500/40 shadow-2xl text-white flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <div className="w-8 h-8 rounded-xl bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0">
+                <AlertCircle className="w-4 h-4" />
+              </div>
+              <div className="min-w-0">
+                <div className="font-bold text-xs text-white">
+                  {!myLocation ? 'Waiting for location' : locationStatus}
+                </div>
+                {(gpsError || locationStatus !== 'Waiting for location') && (
+                  <p className="text-[11px] text-amber-300 leading-snug mt-0.5">
+                    {gpsError || locationStatus}
+                  </p>
+                )}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={requestLocationUpdate}
+              className="px-2.5 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-[11px] font-bold shrink-0 cursor-pointer active:scale-95 transition-all"
+            >
+              Retry GPS
+            </button>
+          </div>
+        )}
+
         {/* Room Map Mode Banner & Room Members Roster Bar */}
         {roomOnlyMode && (
           <div className="p-2.5 rounded-2xl bg-slate-900/95 backdrop-blur-xl border border-sky-500/40 shadow-2xl text-white space-y-2 animate-in fade-in slide-in-from-top-1 duration-150">
@@ -2591,13 +3040,15 @@ export const LiveMap: React.FC<LiveMapProps> = ({
               <div className="flex items-center gap-2 text-xs">
                 <div
                   className={`w-2.5 h-2.5 rounded-full ${
-                    isGpsActive ? 'bg-emerald-400 shadow-sm shadow-emerald-400/50' : 'bg-amber-400 animate-pulse'
+                    isGpsActive && gpsAccuracy != null
+                      ? 'bg-emerald-400 shadow-sm shadow-emerald-400/50'
+                      : 'bg-amber-400 animate-pulse'
                   }`}
                 />
                 <span className="text-slate-300 text-xs">
-                  {isGpsActive
-                    ? `GNSS Fix ±${gpsAccuracy ? Math.round(gpsAccuracy) : 5}m`
-                    : 'Acquiring GPS...'}
+                  {isGpsActive && gpsAccuracy != null
+                    ? `Accuracy ±${Math.round(gpsAccuracy)} m`
+                    : locationStatus || 'Waiting for location'}
                 </span>
               </div>
               <button
@@ -2611,31 +3062,6 @@ export const LiveMap: React.FC<LiveMapProps> = ({
           </div>
         )}
       </div>
-
-      {/* Onboarding Explanation Banner (Section 7.1 & 7.2) */}
-      {showPermissionBanner && !isGpsActive && (
-        <div className="absolute top-24 left-4 right-4 md:left-4 md:w-96 z-20 bg-blue-900 text-white p-4 rounded-2xl shadow-2xl border border-blue-800 flex items-start gap-3">
-          <Shield className="w-5 h-5 text-blue-300 shrink-0 mt-0.5" />
-          <div className="flex-1">
-            <h4 className="font-bold text-xs">Enable Maximum Real-Time Accuracy</h4>
-            <p className="text-[11px] text-blue-200 mt-0.5 leading-relaxed">
-              Beacon uses GNSS and device sensors to calculate distances in meters, protect safety check-ins, and trigger geofenced reminders.
-            </p>
-            <button
-              onClick={() => {
-                requestLocationUpdate();
-                setShowPermissionBanner(false);
-              }}
-              className="mt-2.5 px-3 py-1 bg-white text-blue-900 font-bold text-xs rounded-lg shadow"
-            >
-              Enable GPS Tracking
-            </button>
-          </div>
-          <button onClick={() => setShowPermissionBanner(false)} className="text-blue-300 hover:text-white">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-      )}
 
       {/* Floating Controls: Zoom, Compass & Location */}
       <div className={`absolute ${roomOnlyMode ? 'bottom-4' : 'bottom-20'} right-4 md:bottom-6 md:right-6 z-10 flex flex-col items-center gap-2.5`}>
@@ -2877,23 +3303,42 @@ export const LiveMap: React.FC<LiveMapProps> = ({
             </div>
 
             <div>
-              <span className="text-slate-400 block">Accuracy</span>
-              <span className="font-semibold text-slate-800">
-                {formatAccuracy(selectedUser.accuracy)}
-              </span>
+              <span className="text-slate-400 block">Accuracy & Signal</span>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="font-semibold text-slate-800">
+                  Accuracy ±{Math.round(Number(selectedUser.accuracy_m ?? selectedUser.accuracy))} m
+                </span>
+                {getGpsSignalInfo(selectedUser.accuracy).isLowSignal ? (
+                  <span className="px-1.5 py-0.5 rounded-md bg-amber-100 text-amber-800 border border-amber-300 text-[10px] font-bold">
+                    {getGpsSignalInfo(selectedUser.accuracy).label}
+                  </span>
+                ) : (
+                  <span className="px-1.5 py-0.5 rounded-md bg-emerald-100 text-emerald-800 border border-emerald-200 text-[10px] font-semibold">
+                    Strong GPS
+                  </span>
+                )}
+              </div>
             </div>
 
             <div>
               <span className="text-slate-400 block">Last Updated</span>
               <span className="font-medium text-slate-700">
-                {formatTimeAgo(selectedUser.timestamp)}
+                {formatTimeAgo(selectedUser.updated_at || selectedUser.timestamp)}
               </span>
             </div>
 
             <div>
               <span className="text-slate-400 block">Status</span>
               <span className="font-medium text-slate-700">
-                {onlineUserIds.includes(selectedUser.userId) ? 'Online' : 'Offline'}
+                {(() => {
+                  const serverTs = selectedUser.updated_at || selectedUser.timestamp;
+                  const ageMs = serverTs ? Date.now() - Date.parse(serverTs) : Infinity;
+                  return Number.isFinite(ageMs) && ageMs < 120000
+                    ? 'Live'
+                    : onlineUserIds.includes(selectedUser.userId)
+                    ? 'Online (Stale fix)'
+                    : 'Offline';
+                })()}
               </span>
             </div>
           </div>
@@ -3076,6 +3521,30 @@ export const LiveMap: React.FC<LiveMapProps> = ({
 
             {/* Context Menu Actions */}
             <div className="py-1.5 space-y-0.5 text-xs">
+              {/* Set as My Current Location (Exact Calibration) */}
+              {contextMenu.target.type !== 'self' && (
+                <button
+                  onClick={() => {
+                    const { lat, lng } = contextMenu.target;
+                    closeContextMenu();
+                    setManualLocation(lat, lng, 5);
+                    toast.success(`Exact location set to (${lat.toFixed(5)}, ${lng.toFixed(5)} · ±5m)`);
+                  }}
+                  className="w-full px-2.5 py-2 hover:bg-white/10 active:bg-white/15 rounded-xl flex items-center justify-between transition-colors cursor-pointer group text-left"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-7 h-7 rounded-lg bg-sky-500/20 text-sky-300 flex items-center justify-center group-hover:scale-105 transition-transform">
+                      <Crosshair className="w-3.5 h-3.5" />
+                    </div>
+                    <div>
+                      <span className="font-bold text-white block">Set as My Current Location</span>
+                      <span className="text-[10px] text-slate-400 block">Calibrate exact GPS position (±5m)</span>
+                    </div>
+                  </div>
+                  <span className="text-[10px] font-mono text-sky-400 font-semibold">±5m</span>
+                </button>
+              )}
+
               {/* Navigate To */}
               <button
                 onClick={() => startNavigation(contextMenu.target.lat, contextMenu.target.lng, contextMenu.target.title)}

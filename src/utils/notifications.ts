@@ -84,6 +84,24 @@ export class NotificationService {
       icon: '/pwa-192x192.png',
     });
   }
+
+  public notifyMemberGeofence(
+    memberName: string,
+    action: 'entered' | 'left',
+    placeName: string,
+    distanceMeters?: number
+  ) {
+    const verb = action === 'entered' ? 'entered' : 'left';
+    const distInfo =
+      typeof distanceMeters === 'number' ? ` (${Math.round(distanceMeters)}m from center)` : '';
+    this.send(`📍 Geofence Alert: ${memberName} ${verb} ${placeName}`, {
+      body: `${memberName} has just ${verb} the "${placeName}" saved location geofence${distInfo}.`,
+      tag: `geofence-${memberName}-${placeName}-${action}`,
+      requireInteraction: false,
+      icon: '/pwa-192x192.png',
+    });
+  }
 }
 
 export const notifications = NotificationService.getInstance();
+

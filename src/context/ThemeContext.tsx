@@ -158,9 +158,53 @@ interface ThemeContextType {
   themeConfig: ThemeConfig;
   setTheme: (theme: GlassThemeId) => void;
   isDark: boolean;
+  isLiteMode: boolean;
+  setLiteMode: (enabled: boolean) => void;
+  isLowEndDeviceDetected: boolean;
 }
 
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
+
+function detectLowEndHardware(): boolean {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
+  try {
+    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      return true;
+    }
+    const nav = navigator as any;
+    if (typeof nav.deviceMemory === 'number' && nav.deviceMemory <= 4) {
+      return true;
+    }
+    if (typeof nav.hardwareConcurrency === 'number' && nav.hardwareConcurrency <= 4) {
+      return true;
+    }
+    if (nav.connection && (nav.connection.saveData === true || nav.connection.effectiveType === '2g' || nav.connection.effectiveType === 'slow-2g')) {
+      return true;
+    }
+    const ua = navigator.userAgent || '';
+    if (/Android\s+[5-9]\./i.test(ua) || /Android.*Go\b/i.test(ua)) {
+      return true;
+    }
+  } catch (_) {}
+  return false;
+}
+
+function stripBlurForLiteMode(config: ThemeConfig): ThemeConfig {
+  const clean = (cls: string) =>
+    cls
+      .replace(/\bbackdrop-blur(?:-[a-z0-9]+)?\b/g, '')
+      .replace(/\/70\b|\/75\b|\/80\b|\/85\b|\/90\b/g, '/95')
+      .replace(/\bshadow-(?:lg|xl|2xl)\b/g, 'shadow-sm')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  return {
+    ...config,
+    glassPanel: clean(config.glassPanel),
+    glassCard: clean(config.glassCard),
+    glassHeader: clean(config.glassHeader),
+  };
+}
 
 export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [currentTheme, setCurrentThemeState] = useState<GlassThemeId>(() => {
@@ -173,6 +217,17 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     return 'glass-dark';
   });
 
+  const [isLowEndDeviceDetected] = useState<boolean>(() => detectLowEndHardware());
+
+  const [isLiteMode, setIsLiteModeState] = useState<boolean>(() => {
+    try {
+      const stored = localStorage.getItem('beacon_lite_mode');
+      if (stored === 'on') return true;
+      if (stored === 'off') return false;
+    } catch (_) {}
+    return detectLowEndHardware();
+  });
+
   const setTheme = (theme: GlassThemeId) => {
     if (!GLASS_THEMES[theme]) return;
     setCurrentThemeState(theme);
@@ -182,11 +237,27 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     document.documentElement.setAttribute('data-theme', theme);
   };
 
+  const setLiteMode = (enabled: boolean) => {
+    setIsLiteModeState(enabled);
+    try {
+      localStorage.setItem('beacon_lite_mode', enabled ? 'on' : 'off');
+    } catch (_) {}
+    document.documentElement.classList.toggle('lite-mode', enabled);
+  };
+
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', currentTheme);
   }, [currentTheme]);
 
-  const themeConfig = GLASS_THEMES[currentTheme] || GLASS_THEMES['glass-dark'];
+  useEffect(() => {
+    document.documentElement.classList.toggle('lite-mode', isLiteMode);
+  }, [isLiteMode]);
+
+  const rawThemeConfig = GLASS_THEMES[currentTheme] || GLASS_THEMES['glass-dark'];
+  const themeConfig = React.useMemo(
+    () => (isLiteMode ? stripBlurForLiteMode(rawThemeConfig) : rawThemeConfig),
+    [rawThemeConfig, isLiteMode]
+  );
 
   return (
     <ThemeContext.Provider
@@ -195,6 +266,9 @@ export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ childre
         themeConfig,
         setTheme,
         isDark: themeConfig.isDark,
+        isLiteMode,
+        setLiteMode,
+        isLowEndDeviceDetected,
       }}
     >
       {children}

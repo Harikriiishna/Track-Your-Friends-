@@ -1,26 +1,51 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, Suspense } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext.tsx';
-import { RealtimeProvider, useRealtime } from './context/RealtimeContext.tsx';
+import { RealtimeProvider } from './context/RealtimeContext.tsx';
 import { ThemeProvider, useTheme } from './context/ThemeContext.tsx';
 import { AuthScreen } from './components/Auth/AuthScreen.tsx';
 import { Navbar } from './components/Navigation/Navbar.tsx';
 import { BottomNav } from './components/Navigation/BottomNav.tsx';
 import { OfflineBanner } from './components/Navigation/OfflineBanner.tsx';
 import { LiveMap } from './components/Map/LiveMap.tsx';
-import { RoomsManager } from './components/Rooms/RoomsManager.tsx';
-import { ChatView } from './components/Chat/ChatView.tsx';
-import { EmergencyManager } from './components/Alerts/EmergencyManager.tsx';
-import { SavedPlacesManager } from './components/SavedPlaces/SavedPlacesManager.tsx';
-import { RemindersManager } from './components/Reminders/RemindersManager.tsx';
-import { MeetingsManager } from './components/Meetings/MeetingsManager.tsx';
-import { ProfilePrivacyView } from './components/Profile/ProfilePrivacyView.tsx';
-import { AdminDashboard } from './components/Admin/AdminDashboard.tsx';
 import type { SavedPlace, Room } from './types.ts';
 import { api } from './utils/api.ts';
 
+const RoomsManager = React.lazy(() =>
+  import('./components/Rooms/RoomsManager.tsx').then((m) => ({ default: m.RoomsManager }))
+);
+const ChatView = React.lazy(() =>
+  import('./components/Chat/ChatView.tsx').then((m) => ({ default: m.ChatView }))
+);
+const EmergencyManager = React.lazy(() =>
+  import('./components/Alerts/EmergencyManager.tsx').then((m) => ({ default: m.EmergencyManager }))
+);
+const SavedPlacesManager = React.lazy(() =>
+  import('./components/SavedPlaces/SavedPlacesManager.tsx').then((m) => ({ default: m.SavedPlacesManager }))
+);
+const RemindersManager = React.lazy(() =>
+  import('./components/Reminders/RemindersManager.tsx').then((m) => ({ default: m.RemindersManager }))
+);
+const MeetingsManager = React.lazy(() =>
+  import('./components/Meetings/MeetingsManager.tsx').then((m) => ({ default: m.MeetingsManager }))
+);
+const ProfilePrivacyView = React.lazy(() =>
+  import('./components/Profile/ProfilePrivacyView.tsx').then((m) => ({ default: m.ProfilePrivacyView }))
+);
+const AdminDashboard = React.lazy(() =>
+  import('./components/Admin/AdminDashboard.tsx').then((m) => ({ default: m.AdminDashboard }))
+);
+
+function TabFallback() {
+  return (
+    <div className="w-full h-full flex items-center justify-center p-8">
+      <div className="w-7 h-7 border-3 border-sky-400 border-t-transparent rounded-full animate-spin" />
+    </div>
+  );
+}
+
 function MainApp() {
   const { user, isLoading } = useAuth();
-  const { themeConfig } = useTheme();
+  const { themeConfig, isLiteMode } = useTheme();
   const [currentTab, setCurrentTab] = useState<string>('map');
   const [, startTransition] = React.useTransition();
   const [visitedTabs, setVisitedTabs] = useState<Set<string>>(() => new Set(['map']));
@@ -35,17 +60,17 @@ function MainApp() {
   // In-memory registry to deduplicate background data pre-fetching
   const prefetchedDataRef = useRef<Set<string>>(new Set(['map']));
 
-  // Pre-fetching mechanism: triggers component DOM pre-warming and target data caching
+  // Pre-fetching mechanism: triggers component DOM pre-warming (on high-end devices) and target data caching
   const prefetchTab = React.useCallback((tabId: string) => {
-    // 1. Immediately warm up the component in the DOM (hidden layer) so GPU allocates its composition texture
-    setVisitedTabs((prev) => {
-      if (prev.has(tabId)) return prev;
-      const next = new Set(prev);
-      next.add(tabId);
-      return next;
-    });
+    if (!isLiteMode) {
+      setVisitedTabs((prev) => {
+        if (prev.has(tabId)) return prev;
+        const next = new Set(prev);
+        next.add(tabId);
+        return next;
+      });
+    }
 
-    // 2. Pre-fetch target tab data asynchronously in the background if not already cached
     if (!prefetchedDataRef.current.has(tabId)) {
       prefetchedDataRef.current.add(tabId);
       switch (tabId) {
@@ -72,33 +97,34 @@ function MainApp() {
           break;
       }
     }
-  }, []);
+  }, [isLiteMode]);
 
-  // Tab switcher: pre-warms target component and safely switches tab via startTransition
+  // Tab switcher: safely switches tab via startTransition and manages memory footprint
   const handleSelectTab = React.useCallback((tabId: string) => {
-    // 1. Ensure target component and data are pre-fetched
     prefetchTab(tabId);
 
-    // 2. Mark tab as visited (pure state updater without side effects)
     setVisitedTabs((prev) => {
+      if (isLiteMode) {
+        // In Lite Mode, only keep 'map' and the active tab mounted to minimize RAM and DOM nodes
+        return new Set(['map', tabId]);
+      }
       if (prev.has(tabId)) return prev;
       const next = new Set(prev);
       next.add(tabId);
       return next;
     });
 
-    // 3. Switch active tab safely in transition outside render phase
     startTransition(() => {
       setCurrentTab(tabId);
     });
-  }, [prefetchTab]);
+  }, [prefetchTab, isLiteMode]);
 
-  // Idle pre-warming: pre-warm critical communication hubs during browser idle periods
+  // Idle pre-warming: skipped in Lite Mode to save CPU & RAM on low-end devices
   useEffect(() => {
-    if (!user) return;
+    if (!user || isLiteMode) return;
     const idleCallback =
       (window as any).requestIdleCallback ||
-      ((cb: () => void) => setTimeout(cb, 1200));
+      ((cb: () => void) => setTimeout(cb, 1500));
 
     const idleHandle = idleCallback(() => {
       prefetchTab('rooms');
@@ -110,7 +136,7 @@ function MainApp() {
         (window as any).cancelIdleCallback(idleHandle);
       }
     };
-  }, [user, prefetchTab]);
+  }, [user, isLiteMode, prefetchTab]);
 
   const refreshSavedPlaces = React.useCallback(async () => {
     if (!user || !api.getToken()) return;
@@ -158,17 +184,22 @@ function MainApp() {
     return <AuthScreen />;
   }
 
-  const activeRoom = userRooms.find((r) => r.id === selectedRoomId);
+  const shouldRenderTab = (tabId: string) =>
+    isLiteMode ? currentTab === tabId : visitedTabs.has(tabId);
 
   return (
-    <div className={`flex flex-col h-screen w-screen overflow-hidden font-sans relative ${themeConfig.appBg} transition-colors duration-300`}>
-      {/* Ambient background glass luminescence */}
-      <div
-        className={`fixed -top-40 -left-40 w-96 h-96 rounded-full bg-gradient-to-br ${themeConfig.ambientGlow} blur-3xl pointer-events-none z-0`}
-      />
-      <div
-        className={`fixed -bottom-40 -right-40 w-96 h-96 rounded-full bg-gradient-to-tl ${themeConfig.ambientGlow} blur-3xl pointer-events-none z-0`}
-      />
+    <div className={`flex flex-col h-screen w-screen overflow-hidden font-sans relative ${themeConfig.appBg}`}>
+      {/* Ambient background glass luminescence (omitted in Lite Mode to save GPU fill-rate) */}
+      {!isLiteMode && (
+        <>
+          <div
+            className={`fixed -top-40 -left-40 w-96 h-96 rounded-full bg-gradient-to-br ${themeConfig.ambientGlow} blur-3xl pointer-events-none z-0`}
+          />
+          <div
+            className={`fixed -bottom-40 -right-40 w-96 h-96 rounded-full bg-gradient-to-tl ${themeConfig.ambientGlow} blur-3xl pointer-events-none z-0`}
+          />
+        </>
+      )}
 
       {/* Top Bar for Desktop */}
       <Navbar
@@ -181,11 +212,11 @@ function MainApp() {
       {/* Floating Network Resilience / Offline Status Banner */}
       <OfflineBanner />
 
-      {/* Main Content Area: Hardware-accelerated compositor layer */}
+      {/* Main Content Area */}
       <main className="flex-1 overflow-hidden relative tab-pane-container">
-        {/* Persistent Leaflet Map: Kept mounted with isolated GPU layer for zero-latency 60fps instant switching */}
+        {/* Persistent Leaflet Map */}
         <div
-          className={`tab-pane-container absolute inset-0 transition-opacity duration-200 transform-gpu-smooth ${
+          className={`tab-pane-container absolute inset-0 ${
             currentTab === 'map' ? 'opacity-100 z-10 pointer-events-auto visible' : 'opacity-0 z-0 pointer-events-none invisible'
           }`}
         >
@@ -211,183 +242,199 @@ function MainApp() {
           />
         </div>
 
-        {/* Rooms Tab Pane: Lazily mounted, cached in GPU compositor layer */}
-        {visitedTabs.has('rooms') && (
+        {/* Rooms Tab Pane */}
+        {shouldRenderTab('rooms') && (
           <div
-            className={`tab-pane-container absolute top-0 left-0 right-0 tab-pane-mobile-safe transition-opacity duration-180 transform-gpu-smooth ${
+            className={`tab-pane-container absolute top-0 left-0 right-0 tab-pane-mobile-safe ${
               currentTab === 'rooms'
                 ? 'opacity-100 z-10 pointer-events-auto visible animate-tab-enter'
                 : 'opacity-0 z-0 pointer-events-none invisible'
             }`}
           >
-            <RoomsManager
-              isActive={currentTab === 'rooms'}
-              selectedRoomId={selectedRoomId}
-              savedPlaces={savedPlaces}
-              onRefreshSavedPlaces={refreshSavedPlaces}
-              onSelectRoom={(roomId) => {
-                setSelectedRoomId(roomId);
-                api.get<{ rooms: Room[] }>('/api/rooms').then((res) => setUserRooms(res.rooms));
-              }}
-              onSelectUserForChat={(targetUserId) => {
-                setSelectedChatUser({ id: targetUserId, name: 'Peer', avatar: '' });
-                handleSelectTab('chat');
-              }}
-              onOpenChat={(roomId) => {
-                if (roomId) setSelectedRoomId(roomId);
-                setSelectedChatUser(null);
-                handleSelectTab('chat');
-              }}
-              onFocusMapLocation={(lat, lng) => {
-                setPendingCoords({ lat, lng });
-                handleSelectTab('map');
-              }}
-              onAddPlaceAtCoords={(lat, lng) => {
-                setPendingCoords({ lat, lng });
-                handleSelectTab('saved');
-              }}
-              onSetReminderAtCoords={(lat, lng, title) => {
-                setPendingReminder({ lat, lng, title });
-                handleSelectTab('reminders');
-              }}
-            />
+            <Suspense fallback={<TabFallback />}>
+              <RoomsManager
+                isActive={currentTab === 'rooms'}
+                selectedRoomId={selectedRoomId}
+                savedPlaces={savedPlaces}
+                onRefreshSavedPlaces={refreshSavedPlaces}
+                onSelectRoom={(roomId) => {
+                  setSelectedRoomId(roomId);
+                  api.get<{ rooms: Room[] }>('/api/rooms').then((res) => setUserRooms(res.rooms));
+                }}
+                onSelectUserForChat={(targetUserId) => {
+                  setSelectedChatUser({ id: targetUserId, name: 'Peer', avatar: '' });
+                  handleSelectTab('chat');
+                }}
+                onOpenChat={(roomId) => {
+                  if (roomId) setSelectedRoomId(roomId);
+                  setSelectedChatUser(null);
+                  handleSelectTab('chat');
+                }}
+                onFocusMapLocation={(lat, lng) => {
+                  setPendingCoords({ lat, lng });
+                  handleSelectTab('map');
+                }}
+                onAddPlaceAtCoords={(lat, lng) => {
+                  setPendingCoords({ lat, lng });
+                  handleSelectTab('saved');
+                }}
+                onSetReminderAtCoords={(lat, lng, title) => {
+                  setPendingReminder({ lat, lng, title });
+                  handleSelectTab('reminders');
+                }}
+              />
+            </Suspense>
           </div>
         )}
 
-        {/* Chat Tab Pane: Lazily mounted, state/scroll preserved, zero re-render lag */}
-        {visitedTabs.has('chat') && (
+        {/* Chat Tab Pane */}
+        {shouldRenderTab('chat') && (
           <div
-            className={`tab-pane-container absolute top-0 left-0 right-0 tab-pane-mobile-safe transition-opacity duration-180 transform-gpu-smooth ${
+            className={`tab-pane-container absolute top-0 left-0 right-0 tab-pane-mobile-safe ${
               currentTab === 'chat'
                 ? 'opacity-100 z-10 pointer-events-auto visible animate-tab-enter'
                 : 'opacity-0 z-0 pointer-events-none invisible'
             }`}
           >
-            <ChatView
-              userRooms={userRooms}
-              selectedRoomId={selectedRoomId}
-              savedPlaces={savedPlaces}
-              onRefreshSavedPlaces={refreshSavedPlaces}
-              onSelectRoom={(roomId) => {
-                setSelectedRoomId(roomId);
-                setSelectedChatUser(null);
-              }}
-              selectedChatUser={selectedChatUser}
-              onSelectChatUser={(u) => setSelectedChatUser(u)}
-              onFocusMapLocation={(lat, lng) => {
-                setPendingCoords({ lat, lng });
-                handleSelectTab('map');
-              }}
-              onAddPlaceAtCoords={(lat, lng) => {
-                setPendingCoords({ lat, lng });
-                handleSelectTab('saved');
-              }}
-              onSetReminderAtCoords={(lat, lng, title) => {
-                setPendingReminder({ lat, lng, title });
-                handleSelectTab('reminders');
-              }}
-              onNavigateTab={(tab) => handleSelectTab(tab)}
-            />
+            <Suspense fallback={<TabFallback />}>
+              <ChatView
+                userRooms={userRooms}
+                selectedRoomId={selectedRoomId}
+                savedPlaces={savedPlaces}
+                onRefreshSavedPlaces={refreshSavedPlaces}
+                onSelectRoom={(roomId) => {
+                  setSelectedRoomId(roomId);
+                  setSelectedChatUser(null);
+                }}
+                selectedChatUser={selectedChatUser}
+                onSelectChatUser={(u) => setSelectedChatUser(u)}
+                onFocusMapLocation={(lat, lng) => {
+                  setPendingCoords({ lat, lng });
+                  handleSelectTab('map');
+                }}
+                onAddPlaceAtCoords={(lat, lng) => {
+                  setPendingCoords({ lat, lng });
+                  handleSelectTab('saved');
+                }}
+                onSetReminderAtCoords={(lat, lng, title) => {
+                  setPendingReminder({ lat, lng, title });
+                  handleSelectTab('reminders');
+                }}
+                onNavigateTab={(tab) => handleSelectTab(tab)}
+              />
+            </Suspense>
           </div>
         )}
 
         {/* Alerts Tab Pane */}
-        {visitedTabs.has('alerts') && (
+        {shouldRenderTab('alerts') && (
           <div
-            className={`tab-pane-container absolute top-0 left-0 right-0 tab-pane-mobile-safe transition-opacity duration-180 transform-gpu-smooth ${
+            className={`tab-pane-container absolute top-0 left-0 right-0 tab-pane-mobile-safe ${
               currentTab === 'alerts'
                 ? 'opacity-100 z-10 pointer-events-auto visible animate-tab-enter'
                 : 'opacity-0 z-0 pointer-events-none invisible'
             }`}
           >
-            <EmergencyManager
-              onViewLocationOnMap={(lat, lng) => {
-                setPendingCoords({ lat, lng });
-                handleSelectTab('map');
-              }}
-              onSelectUserForChat={(userId) => {
-                setSelectedChatUser({ id: userId, name: 'User', avatar: '' });
-                handleSelectTab('chat');
-              }}
-            />
+            <Suspense fallback={<TabFallback />}>
+              <EmergencyManager
+                onViewLocationOnMap={(lat, lng) => {
+                  setPendingCoords({ lat, lng });
+                  handleSelectTab('map');
+                }}
+                onSelectUserForChat={(userId) => {
+                  setSelectedChatUser({ id: userId, name: 'User', avatar: '' });
+                  handleSelectTab('chat');
+                }}
+              />
+            </Suspense>
           </div>
         )}
 
         {/* Saved Places Tab Pane */}
-        {visitedTabs.has('saved') && (
+        {shouldRenderTab('saved') && (
           <div
-            className={`tab-pane-container absolute top-0 left-0 right-0 tab-pane-mobile-safe transition-opacity duration-180 transform-gpu-smooth ${
+            className={`tab-pane-container absolute top-0 left-0 right-0 tab-pane-mobile-safe ${
               currentTab === 'saved'
                 ? 'opacity-100 z-10 pointer-events-auto visible animate-tab-enter'
                 : 'opacity-0 z-0 pointer-events-none invisible'
             }`}
           >
-            <SavedPlacesManager
-              savedPlaces={savedPlaces}
-              onRefreshSavedPlaces={refreshSavedPlaces}
-              pendingCoords={pendingCoords}
-              onClearPendingCoords={() => setPendingCoords(null)}
-              onFocusMapLocation={(lat, lng) => {
-                setPendingCoords({ lat, lng });
-                handleSelectTab('map');
-              }}
-            />
+            <Suspense fallback={<TabFallback />}>
+              <SavedPlacesManager
+                savedPlaces={savedPlaces}
+                onRefreshSavedPlaces={refreshSavedPlaces}
+                pendingCoords={pendingCoords}
+                onClearPendingCoords={() => setPendingCoords(null)}
+                onFocusMapLocation={(lat, lng) => {
+                  setPendingCoords({ lat, lng });
+                  handleSelectTab('map');
+                }}
+              />
+            </Suspense>
           </div>
         )}
 
         {/* Reminders Tab Pane */}
-        {visitedTabs.has('reminders') && (
+        {shouldRenderTab('reminders') && (
           <div
-            className={`tab-pane-container absolute top-0 left-0 right-0 tab-pane-mobile-safe transition-opacity duration-180 transform-gpu-smooth ${
+            className={`tab-pane-container absolute top-0 left-0 right-0 tab-pane-mobile-safe ${
               currentTab === 'reminders'
                 ? 'opacity-100 z-10 pointer-events-auto visible animate-tab-enter'
                 : 'opacity-0 z-0 pointer-events-none invisible'
             }`}
           >
-            <RemindersManager
-              savedPlaces={savedPlaces}
-              pendingReminder={pendingReminder}
-              onClearPendingReminder={() => setPendingReminder(null)}
-            />
+            <Suspense fallback={<TabFallback />}>
+              <RemindersManager
+                savedPlaces={savedPlaces}
+                pendingReminder={pendingReminder}
+                onClearPendingReminder={() => setPendingReminder(null)}
+              />
+            </Suspense>
           </div>
         )}
 
         {/* Meetings Tab Pane */}
-        {visitedTabs.has('meetings') && (
+        {shouldRenderTab('meetings') && (
           <div
-            className={`tab-pane-container absolute top-0 left-0 right-0 tab-pane-mobile-safe transition-opacity duration-180 transform-gpu-smooth ${
+            className={`tab-pane-container absolute top-0 left-0 right-0 tab-pane-mobile-safe ${
               currentTab === 'meetings'
                 ? 'opacity-100 z-10 pointer-events-auto visible animate-tab-enter'
                 : 'opacity-0 z-0 pointer-events-none invisible'
             }`}
           >
-            <MeetingsManager rooms={userRooms} />
+            <Suspense fallback={<TabFallback />}>
+              <MeetingsManager rooms={userRooms} />
+            </Suspense>
           </div>
         )}
 
         {/* Profile Tab Pane */}
-        {visitedTabs.has('profile') && (
+        {shouldRenderTab('profile') && (
           <div
-            className={`tab-pane-container absolute top-0 left-0 right-0 tab-pane-mobile-safe transition-opacity duration-180 transform-gpu-smooth ${
+            className={`tab-pane-container absolute top-0 left-0 right-0 tab-pane-mobile-safe ${
               currentTab === 'profile'
                 ? 'opacity-100 z-10 pointer-events-auto visible animate-tab-enter'
                 : 'opacity-0 z-0 pointer-events-none invisible'
             }`}
           >
-            <ProfilePrivacyView />
+            <Suspense fallback={<TabFallback />}>
+              <ProfilePrivacyView />
+            </Suspense>
           </div>
         )}
 
         {/* Admin Dashboard Pane */}
-        {visitedTabs.has('admin') && (
+        {shouldRenderTab('admin') && (
           <div
-            className={`tab-pane-container absolute top-0 left-0 right-0 tab-pane-mobile-safe transition-opacity duration-180 transform-gpu-smooth ${
+            className={`tab-pane-container absolute top-0 left-0 right-0 tab-pane-mobile-safe ${
               currentTab === 'admin'
                 ? 'opacity-100 z-10 pointer-events-auto visible animate-tab-enter'
                 : 'opacity-0 z-0 pointer-events-none invisible'
             }`}
           >
-            <AdminDashboard />
+            <Suspense fallback={<TabFallback />}>
+              <AdminDashboard />
+            </Suspense>
           </div>
         )}
       </main>
