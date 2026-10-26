@@ -46,7 +46,7 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
   onOpenChat,
   onFocusMapLocation,
 }) => {
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
   const { themeConfig } = useTheme();
   const {
     myLocation,
@@ -1061,45 +1061,59 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
 
       {/* Create Room Modal */}
       {showCreateModal && (
-        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl p-6 max-w-md w-full shadow-2xl border border-slate-100">
-            <h3 className="font-bold text-lg text-slate-900 mb-1">Create Private Room</h3>
-            <p className="text-xs text-slate-500 mb-4">
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div
+            style={{ colorScheme: 'light' }}
+            className="bg-white text-slate-950 rounded-3xl p-6 max-w-md w-full shadow-2xl border border-slate-200 animate-popIn"
+          >
+            <h3 className="font-bold text-xl text-slate-950 mb-1">Create Private Room</h3>
+            <p className="text-xs text-slate-700 mb-4 font-medium">
               Set up a secure encrypted room for your family or team.
             </p>
 
             {errorMsg && (
-              <div className="mb-4 p-3 bg-rose-50 text-rose-700 rounded-xl text-xs font-medium">
-                {errorMsg}
+              <div className="mb-4 p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-xl text-xs font-semibold flex items-center justify-between">
+                <span>{errorMsg}</span>
+                {errorMsg.toLowerCase().includes('session') && (
+                  <button
+                    type="button"
+                    onClick={() => logout()}
+                    className="ml-2 px-2.5 py-1 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-lg text-[11px] shrink-0"
+                  >
+                    Sign In
+                  </button>
+                )}
               </div>
             )}
 
-            <form onSubmit={handleCreateRoom} className="space-y-3">
+            <form onSubmit={handleCreateRoom} className="space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Room Name</label>
+                <label className="block text-xs font-bold text-slate-950 mb-1.5">Room Name</label>
                 <input
                   type="text"
                   required
-                  placeholder="e.g. Family Safe Haven"
+                  placeholder="e.g. Family Safe Haven or Reddy"
                   value={newRoomName}
                   onChange={(e) => setNewRoomName(e.target.value)}
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
+                  style={{ color: '#090d16', backgroundColor: '#ffffff', colorScheme: 'light', WebkitTextFillColor: '#090d16' }}
+                  className="w-full px-3.5 py-2.5 rounded-xl border-2 border-slate-300 bg-white text-slate-950 placeholder:text-slate-500 font-semibold text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-600 transition-all shadow-sm"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Description</label>
+                <label className="block text-xs font-bold text-slate-950 mb-1.5">Description</label>
                 <input
                   type="text"
                   placeholder="e.g. Real-time family check-ins and emergency alerts"
                   value={newRoomDesc}
                   onChange={(e) => setNewRoomDesc(e.target.value)}
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
+                  style={{ color: '#090d16', backgroundColor: '#ffffff', colorScheme: 'light', WebkitTextFillColor: '#090d16' }}
+                  className="w-full px-3.5 py-2.5 rounded-xl border-2 border-slate-300 bg-white text-slate-950 placeholder:text-slate-500 font-semibold text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-600 transition-all shadow-sm"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                <label className="block text-xs font-bold text-slate-950 mb-1.5">
                   Room Password (Optional)
                 </label>
                 <input
@@ -1107,21 +1121,22 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
                   placeholder="Leave empty for open room"
                   value={newRoomPassword}
                   onChange={(e) => setNewRoomPassword(e.target.value)}
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
+                  style={{ color: '#090d16', backgroundColor: '#ffffff', colorScheme: 'light', WebkitTextFillColor: '#090d16' }}
+                  className="w-full px-3.5 py-2.5 rounded-xl border-2 border-slate-300 bg-white text-slate-950 placeholder:text-slate-500 font-semibold text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-600 transition-all shadow-sm"
                 />
               </div>
 
-              <div className="pt-3 flex items-center justify-end gap-2">
+              <div className="pt-3 flex items-center justify-end gap-2.5">
                 <button
                   type="button"
                   onClick={() => setShowCreateModal(false)}
-                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-xl"
+                  className="px-4 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-xl shadow-sm"
+                  className="px-5 py-2 text-xs font-bold text-white bg-sky-600 hover:bg-sky-500 active:scale-95 rounded-xl shadow-md transition-all cursor-pointer"
                 >
                   Create Room
                 </button>
@@ -1133,54 +1148,68 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
 
       {/* Join Room Modal */}
       {showJoinModal && (
-        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl p-6 max-w-md w-full shadow-2xl border border-slate-100">
-            <h3 className="font-bold text-lg text-slate-900 mb-1">Join Room</h3>
-            <p className="text-xs text-slate-500 mb-4">
-              Enter the unique Room ID and password (if required).
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div
+            style={{ colorScheme: 'light' }}
+            className="bg-white text-slate-950 rounded-3xl p-6 max-w-md w-full shadow-2xl border border-slate-200 animate-popIn"
+          >
+            <h3 className="font-bold text-xl text-slate-950 mb-1">Join Room</h3>
+            <p className="text-xs text-slate-700 mb-4 font-medium">
+              Enter the unique Room ID or Room Name and password (if required).
             </p>
 
             {errorMsg && (
-              <div className="mb-4 p-3 bg-rose-50 text-rose-700 rounded-xl text-xs font-medium">
-                {errorMsg}
+              <div className="mb-4 p-3 bg-rose-50 border border-rose-200 text-rose-800 rounded-xl text-xs font-semibold flex items-center justify-between">
+                <span>{errorMsg}</span>
+                {errorMsg.toLowerCase().includes('session') && (
+                  <button
+                    type="button"
+                    onClick={() => logout()}
+                    className="ml-2 px-2.5 py-1 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-lg text-[11px] shrink-0"
+                  >
+                    Sign In
+                  </button>
+                )}
               </div>
             )}
 
-            <form onSubmit={handleJoinRoom} className="space-y-3">
+            <form onSubmit={handleJoinRoom} className="space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Room ID</label>
+                <label className="block text-xs font-bold text-slate-950 mb-1.5">Room ID or Name</label>
                 <input
                   type="text"
                   required
-                  placeholder="e.g. room-3b91a24f"
+                  placeholder="e.g. Reddy or room-name"
                   value={joinRoomId}
                   onChange={(e) => setJoinRoomId(e.target.value)}
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
+                  style={{ color: '#090d16', backgroundColor: '#ffffff', colorScheme: 'light', WebkitTextFillColor: '#090d16' }}
+                  className="w-full px-3.5 py-2.5 rounded-xl border-2 border-slate-300 bg-white text-slate-950 placeholder:text-slate-500 font-semibold text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-600 transition-all shadow-sm"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Password</label>
+                <label className="block text-xs font-bold text-slate-950 mb-1.5">Password</label>
                 <input
                   type="password"
                   placeholder="Room password if protected"
                   value={joinPassword}
                   onChange={(e) => setJoinPassword(e.target.value)}
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
+                  style={{ color: '#090d16', backgroundColor: '#ffffff', colorScheme: 'light', WebkitTextFillColor: '#090d16' }}
+                  className="w-full px-3.5 py-2.5 rounded-xl border-2 border-slate-300 bg-white text-slate-950 placeholder:text-slate-500 font-semibold text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-600 transition-all shadow-sm"
                 />
               </div>
 
-              <div className="pt-3 flex items-center justify-end gap-2">
+              <div className="pt-3 flex items-center justify-end gap-2.5">
                 <button
                   type="button"
                   onClick={() => setShowJoinModal(false)}
-                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-xl"
+                  className="px-4 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 text-xs font-semibold text-white bg-slate-900 hover:bg-slate-800 rounded-xl shadow-sm"
+                  className="px-5 py-2 text-xs font-bold text-white bg-sky-600 hover:bg-sky-500 active:scale-95 rounded-xl shadow-md transition-all cursor-pointer"
                 >
                   Join Room
                 </button>

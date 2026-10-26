@@ -132,6 +132,7 @@ export interface ChatMessage {
   updatedAt?: string;
   isEdited?: boolean;
   isDeleted?: boolean;
+  clientMsgId?: string;
 }
 
 export interface SavedPlace {
@@ -273,7 +274,7 @@ export type WsClientMessage =
   | { type: 'location:update'; location: { latitude: number; longitude: number; accuracy: number; altitude?: number | null; heading?: number | null; speed?: number | null; batteryLevel?: number | null } }
   | { type: 'room:join'; roomId: string }
   | { type: 'room:leave'; roomId: string }
-  | { type: 'chat:message'; roomId?: string; channelId?: string; recipientId?: string; text: string; attachments?: MessageAttachment[]; replyToId?: string }
+  | { type: 'chat:message'; roomId?: string; channelId?: string; recipientId?: string; text: string; attachments?: MessageAttachment[]; replyToId?: string; clientMsgId?: string }
   | { type: 'chat:typing'; roomId?: string; recipientId?: string; isTyping: boolean }
   | { type: 'chat:reaction'; messageId: string; emoji: string }
   | { type: 'chat:delete'; messageId: string }

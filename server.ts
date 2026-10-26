@@ -206,6 +206,7 @@ wss.on('connection', (ws: WebSocket, req) => {
             text: msg.text,
             attachments: msg.attachments,
             replyToId: msg.replyToId,
+            clientMsgId: (msg as any).clientMsgId,
           });
 
           if (msg.roomId) {
@@ -1576,6 +1577,11 @@ app.post('/api/admin/reports/:id/resolve', authMiddleware, (req, res) => {
   }
   db.resolveReport(req.params.id, req.body.status);
   res.json({ success: true });
+});
+
+// Explicit API 404 fallback to ensure API routes never return index.html
+app.all('/api/*', (req, res) => {
+  res.status(404).json({ error: `API endpoint not found: ${req.method} ${req.originalUrl}` });
 });
 
 // Mount Vite in development or serve static in production

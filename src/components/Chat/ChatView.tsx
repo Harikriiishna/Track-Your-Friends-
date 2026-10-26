@@ -87,6 +87,7 @@ export interface DisplayChatMessage {
   timestamp: string;
   isSelf: boolean;
   channelId?: string;
+  roomId?: string;
   attachments?: any[];
   replyToId?: string;
   replyToText?: string;
@@ -96,88 +97,7 @@ export interface DisplayChatMessage {
   isEdited?: boolean;
 }
 
-const INITIAL_CHANNEL_MESSAGES: Record<string, DisplayChatMessage[]> = {
-  general: [
-    {
-      id: 'seed-gen-1',
-      senderId: 'mesh-node',
-      sender: 'Beacon Mesh Node',
-      senderName: 'Beacon Mesh Node',
-      senderAvatar: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&w=128&q=80',
-      role: 'MODERATOR',
-      text: 'Encrypted decentralized mesh relay connected. All active room peers are synchronized.',
-      timestamp: '10:15 AM',
-      isSelf: false,
-      channelId: 'general',
-    },
-    {
-      id: 'seed-gen-2',
-      senderId: 'alex-rivera',
-      sender: 'Alex Rivera',
-      senderName: 'Alex Rivera',
-      senderAvatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=128&q=80',
-      role: 'MEMBER',
-      text: 'Hey everyone! GPS signal is locked in with ±5m accuracy today. Live map tracking is working smoothly.',
-      timestamp: '10:18 AM',
-      isSelf: false,
-      channelId: 'general',
-    },
-    {
-      id: 'seed-gen-3',
-      senderId: 'sarah-chen',
-      sender: 'Sarah Chen',
-      senderName: 'Sarah Chen',
-      senderAvatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=128&q=80',
-      role: 'MEMBER',
-      text: 'Confirmed, coordinates are syncing in real time across the mesh.',
-      timestamp: '10:20 AM',
-      isSelf: false,
-      channelId: 'general',
-    },
-  ],
-  'live-locations': [
-    {
-      id: 'seed-loc-1',
-      senderId: 'alex-rivera',
-      sender: 'Alex Rivera',
-      senderName: 'Alex Rivera',
-      senderAvatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=128&q=80',
-      role: 'MEMBER',
-      text: '📍 Live Location Shared: 13.04412° N, 77.72380° W (Accuracy: ±5.2m)',
-      timestamp: '10:21 AM',
-      isSelf: false,
-      channelId: 'live-locations',
-    },
-  ],
-  announcements: [
-    {
-      id: 'seed-ann-1',
-      senderId: 'mesh-node',
-      sender: 'Beacon Safety Monitor',
-      senderName: 'Beacon Safety Monitor',
-      senderAvatar: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&w=128&q=80',
-      role: 'ADMIN',
-      text: '🛡️ Beacon Security Core v1.0 active: OWASP PBKDF2 hashing, object-level RBAC & ephemeral breadcrumb expiration active.',
-      timestamp: '09:00 AM',
-      isSelf: false,
-      channelId: 'announcements',
-    },
-  ],
-  lounge: [
-    {
-      id: 'seed-lou-1',
-      senderId: 'sarah-chen',
-      sender: 'Sarah Chen',
-      senderName: 'Sarah Chen',
-      senderAvatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=128&q=80',
-      role: 'MEMBER',
-      text: 'Joined voice channel #lounge if anyone wants to test audio.',
-      timestamp: '10:25 AM',
-      isSelf: false,
-      channelId: 'lounge',
-    },
-  ],
-};
+const INITIAL_CHANNEL_MESSAGES: Record<string, DisplayChatMessage[]> = {};
 
 export const ChatView: React.FC<ChatViewProps> = ({
   userRooms = [],
@@ -200,6 +120,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
     onlineUserIds,
     chatMessages,
     sendMessage,
+    setConversationMessages,
     sendTyping,
     sendReaction,
     deleteMessage,
@@ -293,32 +214,63 @@ export const ChatView: React.FC<ChatViewProps> = ({
       try {
         if (effectiveRoomId) {
           const res = await api.get<{ messages: ChatMessage[] }>(`/api/rooms/${effectiveRoomId}/messages`);
-          chatMessages[effectiveRoomId] = res.messages;
+          setConversationMessages(effectiveRoomId, res.messages);
         } else if (effectiveRecipientId) {
           const res = await api.get<{ messages: ChatMessage[] }>(`/api/direct-messages/${effectiveRecipientId}`);
-          chatMessages[effectiveRecipientId] = res.messages;
+          setConversationMessages(effectiveRecipientId, res.messages);
         }
       } catch (err) {
         console.error('Failed to load message history:', err);
       }
     }
     loadHistory();
-  }, [effectiveRoomId, effectiveRecipientId]);
+  }, [effectiveRoomId, effectiveRecipientId, setConversationMessages]);
 
-  // Merge local channel state with incoming real-time socket messages
+  // Merge local channel state with incoming real-time socket messages without duplicate rendering
+  // Strictly isolates messages to their respective room/conversation
   const activeChannelMessages: DisplayChatMessage[] = useMemo(() => {
-    const currentList = channelMessages[activeChannelId] || [];
+    const storageKey = `${conversationKey}:${activeChannelId}`;
+    const currentList = channelMessages[storageKey] || [];
     const remoteList = (chatMessages[conversationKey] || []).filter((m) => {
-      if (!m.channelId) return activeChannelId === 'general';
-      return m.channelId === activeChannelId;
+      const msgChannel = m.channelId || 'general';
+      if (msgChannel !== activeChannelId) return false;
+      // Strict room isolation: If inside a room, only show messages belonging to this room
+      if (effectiveRoomId && m.roomId && m.roomId !== effectiveRoomId) return false;
+      return true;
     });
 
-    if (remoteList.length === 0) return currentList;
+    const confirmedClientIds = new Set(
+      remoteList.map((m: any) => m.clientMsgId).filter(Boolean)
+    );
 
-    const existingIds = new Set(currentList.map((m) => m.id));
-    const convertedRemote: DisplayChatMessage[] = remoteList
-      .filter((m) => !existingIds.has(m.id))
-      .map((m) => ({
+    // Filter currentList to ONLY keep optimistic local messages that have NOT yet arrived from the server
+    const pendingLocal: DisplayChatMessage[] = currentList.filter((local) => {
+      // 1. Matched by clientMsgId
+      if (confirmedClientIds.has(local.id)) return false;
+
+      // 2. Fallback heuristic: match by sender + identical trimmed text within 30 seconds
+      const localTimeMs = Number(local.id) || (local.createdAt ? new Date(local.createdAt).getTime() : 0);
+      const isFulfilled = remoteList.some((r) => {
+        const isSameSender = r.senderId === user?.id || local.isSelf;
+        const isSameText = r.text.trim() === local.text.trim();
+        if (!isSameSender || !isSameText) return false;
+        if (!localTimeMs) return true;
+        const rTimeMs = new Date(r.createdAt).getTime();
+        return Math.abs(rTimeMs - localTimeMs) < 30000;
+      });
+
+      return !isFulfilled;
+    });
+
+    // Deduplicate remote messages themselves (preventing socket echo duplicates)
+    const seenIds = new Set<string>();
+    const convertedRemote: DisplayChatMessage[] = [];
+
+    for (const m of remoteList) {
+      if (seenIds.has(m.id)) continue;
+      seenIds.add(m.id);
+
+      convertedRemote.push({
         id: m.id,
         senderId: m.senderId,
         sender: m.senderName,
@@ -338,9 +290,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
         reactions: m.reactions,
         createdAt: m.createdAt,
         isEdited: m.isEdited,
-      }));
+      });
+    }
 
-    return [...currentList, ...convertedRemote];
+    return [...convertedRemote, ...pendingLocal];
   }, [channelMessages, activeChannelId, chatMessages, conversationKey, user]);
 
   const displayMessages: DisplayChatMessage[] = useMemo(() => {
@@ -407,6 +360,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
       setIsUploading(true);
       const res = await api.uploadFile(voicePreview.dataUrl, `voice-note-${Date.now()}.webm`, 'audio/webm');
       const targetChannel = activeChannelId || 'general';
+      const storageKey = `${conversationKey}:${targetChannel}`;
       const voiceMsg: DisplayChatMessage = {
         id: Date.now().toString(),
         senderId: user?.id || 'self',
@@ -418,6 +372,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         isSelf: true,
         channelId: targetChannel,
+        roomId: effectiveRoomId,
         attachments: [
           {
             id: 'att-' + Math.random().toString(36).slice(2),
@@ -435,7 +390,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
       setChannelMessages((prev) => ({
         ...prev,
-        [targetChannel]: [...(prev[targetChannel] || []), voiceMsg],
+        [storageKey]: [...(prev[storageKey] || []), voiceMsg],
       }));
 
       sendMessage({
@@ -445,6 +400,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
         text: '🎤 Voice message',
         attachments: voiceMsg.attachments,
         replyToId: replyTarget?.id,
+        clientMsgId: voiceMsg.id,
       });
 
       sound.playSuccess();
@@ -470,8 +426,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
     }
 
     const targetChannel = activeChannelId || 'general';
+    const storageKey = `${conversationKey}:${targetChannel}`;
+    const tempId = Date.now().toString();
     const newMsg: DisplayChatMessage = {
-      id: Date.now().toString(),
+      id: tempId,
       senderId: user?.id || 'self',
       sender: user?.fullName || 'Reddy',
       senderName: user?.fullName || 'Reddy',
@@ -481,15 +439,16 @@ export const ChatView: React.FC<ChatViewProps> = ({
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       isSelf: true,
       channelId: targetChannel,
+      roomId: effectiveRoomId,
       replyToId: replyTarget?.id,
       replyToText: replyTarget?.text,
       replyToSender: replyTarget?.senderName,
     };
 
-    // 1. Immediately append to state
+    // 1. Immediately append to state scoped to this room and channel
     setChannelMessages((prev) => ({
       ...prev,
-      [targetChannel]: [...(prev[targetChannel] || []), newMsg],
+      [storageKey]: [...(prev[storageKey] || []), newMsg],
     }));
 
     // 2. Clear input immediately
@@ -502,13 +461,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
     sound.playTap();
     triggerHaptic('light');
 
-    // 3. Dispatch through WebSocket
+    // 3. Dispatch through WebSocket with clientMsgId
     sendMessage({
       roomId: effectiveRoomId,
       channelId: effectiveRoomId ? targetChannel : undefined,
       recipientId: effectiveRecipientId,
       text: textToSend,
       replyToId: replyTarget?.id,
+      clientMsgId: tempId,
     });
 
     sendTyping({ roomId: effectiveRoomId, recipientId: effectiveRecipientId, isTyping: false });
@@ -516,40 +476,6 @@ export const ChatView: React.FC<ChatViewProps> = ({
     setTimeout(() => {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, 50);
-
-    // 4. Mock / Received Messages Simulation (1.5 seconds)
-    setTimeout(() => {
-      const mockResponses = [
-        `Received via Beacon Mesh: packet verified & relayed to 4 peers.`,
-        `Beacon Mesh Node: packet ACK confirmed. Signal health: 99.4%.`,
-        `Mesh Node #2: Coordinate synchronization confirmed across room.`,
-        `Acknowledged via beacon relay. Channel #${targetChannel} synced.`,
-      ];
-      const randomResponse = mockResponses[Math.floor(Math.random() * mockResponses.length)];
-
-      const peerMsg: DisplayChatMessage = {
-        id: (Date.now() + Math.random()).toString(),
-        senderId: 'beacon-mesh-node',
-        sender: 'Beacon Mesh Node',
-        senderName: 'Beacon Mesh Node',
-        senderAvatar: 'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&w=128&q=80',
-        role: 'MODERATOR',
-        text: randomResponse,
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        isSelf: false,
-        channelId: targetChannel,
-      };
-
-      setChannelMessages((prev) => ({
-        ...prev,
-        [targetChannel]: [...(prev[targetChannel] || []), peerMsg],
-      }));
-
-      sound.playChime();
-      setTimeout(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-      }, 50);
-    }, 1500);
   };
 
   // Instant location share
@@ -1459,11 +1385,18 @@ export const ChatView: React.FC<ChatViewProps> = ({
         )}
 
         {/* Typing indicator */}
-        <div className={`px-4 h-5 text-[11px] ${themeConfig.textSecondary} flex items-center`}>
+        <div className="px-4 min-h-6 py-0.5 text-xs flex items-center">
           {currentTyping && currentTyping.userId !== user?.id && (
-            <span className="animate-pulse">
-              <strong className={themeConfig.textPrimary}>{currentTyping.name}</strong> is typing...
-            </span>
+            <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-cyan-500/10 border border-cyan-500/25 text-cyan-300 shadow-sm animate-pulse">
+              <div className="flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-bounce" style={{ animationDelay: '0ms' }} />
+                <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-bounce" style={{ animationDelay: '150ms' }} />
+                <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-bounce" style={{ animationDelay: '300ms' }} />
+              </div>
+              <span className="text-[11px] font-medium tracking-wide">
+                <strong className="text-white font-semibold">{currentTyping.name || 'User'}</strong> is typing...
+              </span>
+            </div>
           )}
         </div>
 

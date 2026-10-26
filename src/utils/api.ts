@@ -40,28 +40,32 @@ class ApiClient {
       headers,
     });
 
-    if (!response.ok) {
-      let errorMessage = 'Request failed';
-      let errorData: any = null;
-      try {
-        errorData = await response.json();
-        errorMessage = errorData.error || errorData.message || errorMessage;
-      } catch {
-        errorMessage = `HTTP error ${response.status}: ${response.statusText}`;
+    const text = await response.text();
+    let data: any = null;
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch {
+      if (!response.ok) {
+        throw new Error(`HTTP error ${response.status}: ${response.statusText}`);
       }
+      throw new Error(`Server returned invalid response (${response.status})`);
+    }
+
+    if (!response.ok) {
+      const errorMessage = data?.error || data?.message || `HTTP error ${response.status}: ${response.statusText}`;
       const err: any = new Error(errorMessage);
-      if (errorData) {
-        err.data = errorData;
-        err.code = errorData.code;
-        err.suggestion = errorData.suggestion;
-        err.email = errorData.email;
-        err.username = errorData.username;
-        err.identifier = errorData.identifier;
+      if (data && typeof data === 'object') {
+        err.data = data;
+        err.code = data.code;
+        err.suggestion = data.suggestion;
+        err.email = data.email;
+        err.username = data.username;
+        err.identifier = data.identifier;
       }
       throw err;
     }
 
-    return response.json();
+    return data as T;
   }
 
   public get<T>(endpoint: string): Promise<T> {

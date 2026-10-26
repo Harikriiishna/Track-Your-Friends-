@@ -171,3 +171,20 @@ body, #root {
     scroll-behavior: auto !important;
   }
 }
+
+/* Universal high-contrast rules for inputs inside white/light modals */
+.bg-white input,
+.bg-white textarea,
+.bg-white select {
+  color: #090d16 !important;
+  -webkit-text-fill-color: #090d16 !important;
+  color-scheme: light;
+}
+
+.bg-white input::placeholder,
+.bg-white textarea::placeholder {
+  color: #64748b !important;
+  -webkit-text-fill-color: #64748b !important;
+  opacity: 1 !important;
+}
+

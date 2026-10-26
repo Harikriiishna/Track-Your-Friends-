@@ -727,7 +727,25 @@ class Database {
     const owner = this.findUserById(ownerId);
     if (!owner) throw new Error('User not found');
 
-    const roomId = 'room-' + crypto.randomBytes(4).toString('hex');
+    const cleanName = data.name.trim();
+    // User requested: "Room id should be room name kept by the user not other names"
+    let baseId = cleanName
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '');
+
+    if (!baseId) {
+      baseId = 'room';
+    }
+
+    let roomId = baseId;
+    let counter = 1;
+    while (this.data.rooms.some((r) => r.id.toLowerCase() === roomId.toLowerCase())) {
+      roomId = `${baseId}-${counter}`;
+      counter++;
+    }
+
     let passwordHash: string | undefined = undefined;
     let salt: string | undefined = undefined;
 
@@ -770,10 +788,14 @@ class Database {
       return this.sanitizeRoom(uRoom, userId);
     }
 
-    const room = this.data.rooms.find((r) => r.id === roomId);
-    if (!room) throw new Error('Room not found');
+    const cleanTarget = roomId.trim().toLowerCase();
+    const room = this.data.rooms.find(
+      (r) => r.id === roomId || r.id.toLowerCase() === cleanTarget || r.name.toLowerCase() === cleanTarget
+    );
+    if (!room) throw new Error('Room not found. Check the Room ID or Name.');
 
-    const isMember = this.data.roomMembers.some((m) => m.roomId === roomId && m.userId === userId);
+    const targetRoomId = room.id;
+    const isMember = this.data.roomMembers.some((m) => m.roomId === targetRoomId && m.userId === userId);
     if (isMember) {
       return this.sanitizeRoom(room, userId);
     }
@@ -788,13 +810,13 @@ class Database {
     }
 
     this.data.roomMembers.push({
-      roomId,
+      roomId: targetRoomId,
       userId,
       role: 'MEMBER',
       joinedAt: new Date().toISOString(),
     });
 
-    room.memberCount = this.data.roomMembers.filter((m) => m.roomId === roomId).length;
+    room.memberCount = this.data.roomMembers.filter((m) => m.roomId === targetRoomId).length;
     this.save();
 
     return this.sanitizeRoom(room, userId);
@@ -974,7 +996,10 @@ class Database {
     if (roomId === UNIVERSAL_ROOM_ID) {
       this.ensureUniversalRoom(requestingUserId);
     }
-    const room = this.data.rooms.find((r) => r.id === roomId);
+    const cleanTarget = roomId.trim().toLowerCase();
+    const room = this.data.rooms.find(
+      (r) => r.id === roomId || r.id.toLowerCase() === cleanTarget || r.name.toLowerCase() === cleanTarget
+    );
     if (!room) return null;
     return this.sanitizeRoom(room, requestingUserId);
   }
@@ -1032,6 +1057,7 @@ class Database {
     text: string;
     attachments?: ChatMessage['attachments'];
     replyToId?: string;
+    clientMsgId?: string;
   }): ChatMessage {
     const sender = this.findUserById(data.senderId);
     if (!sender) throw new Error('Sender not found');
@@ -1098,6 +1124,7 @@ class Database {
       createdAt: new Date().toISOString(),
       isEdited: false,
       isDeleted: false,
+      clientMsgId: data.clientMsgId,
     };
 
     this.data.messages.push(message);

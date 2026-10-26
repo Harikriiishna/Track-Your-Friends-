@@ -297,13 +297,16 @@ export const EmergencyManager: React.FC<EmergencyManagerProps> = ({
       {/* Confirmation Modal to prevent accidental SOS broadcast */}
       {showConfirmModal && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl p-6 max-w-md w-full shadow-2xl border border-rose-200">
+          <div
+            style={{ colorScheme: 'light' }}
+            className="bg-white rounded-3xl p-6 max-w-md w-full shadow-2xl border border-rose-200"
+          >
             <div className="w-12 h-12 rounded-2xl bg-rose-100 text-rose-600 flex items-center justify-center mb-4">
               <Siren className="w-6 h-6 animate-pulse" />
             </div>
 
             <h3 className="text-lg font-black text-slate-900">Broadcast Emergency SOS?</h3>
-            <p className="text-xs text-slate-600 mt-1 mb-4">
+            <p className="text-xs text-slate-700 mt-1 mb-4 font-medium">
               This will immediately send your exact real GPS location (
               {myLocation
                 ? `${myLocation.latitude.toFixed(5)}, ${myLocation.longitude.toFixed(5)} · ${formatAccuracy(myLocation.accuracy)}`
@@ -312,12 +315,14 @@ export const EmergencyManager: React.FC<EmergencyManagerProps> = ({
             </p>
 
             <div className="mb-4">
-              <label className="block text-xs font-semibold text-slate-700 mb-1">Distress Message</label>
+              <label className="block text-xs font-bold text-slate-950 mb-1">Distress Message</label>
               <input
                 type="text"
                 value={sosMessage}
                 onChange={(e) => setSosMessage(e.target.value)}
-                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-rose-600"
+                placeholder="EMERGENCY: Immediate help needed!"
+                style={{ color: '#090d16', backgroundColor: '#ffffff', colorScheme: 'light', WebkitTextFillColor: '#090d16' }}
+                className="w-full px-3.5 py-2.5 rounded-xl border-2 border-rose-300 bg-white text-slate-950 placeholder:text-slate-500 font-bold text-sm focus:outline-none focus:ring-2 focus:ring-rose-600 focus:border-rose-600 shadow-sm"
               />
             </div>
 

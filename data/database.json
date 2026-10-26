@@ -1,6 +1,40 @@
 {
-  "users": [],
-  "sessions": [],
+  "users": [
+    {
+      "id": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "email": "reddytest39@gmail.com",
+      "username": "Reddy",
+      "fullName": "Reddy",
+      "avatarUrl": "https://api.dicebear.com/7.x/initials/svg?seed=Reddy",
+      "about": "Member of Beacon Community",
+      "phoneNumber": "",
+      "createdAt": "2026-10-26T08:46:03.025Z",
+      "isOnline": false,
+      "lastSeen": "2026-10-26T08:51:04.733Z",
+      "privacy": {
+        "locationVisibility": "room_members",
+        "phoneVisibility": "room_members",
+        "profileVisibility": "public",
+        "showOnlineStatus": true,
+        "locationSharingEnabled": true,
+        "temporarySharingExpiry": null,
+        "blockedUserIds": []
+      },
+      "isAdmin": true,
+      "passwordHash": "83a49e4c0efe805cc488e1ae5235f9d3f1df27b555e676d2fdc9af69bd38f33639135cc6f0c61244d78469d85cb33e3aed0ec8279dfb9dd76ccf015cd53367de",
+      "salt": "43a57f595d789793b7e5c0e22b17a618"
+    }
+  ],
+  "sessions": [
+    {
+      "token": "2bff24e5c64717fe1b9f37edfcf22a8afd39a22b499dc8fe0803d0b99464781a",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "createdAt": "2026-10-26T08:46:03.025Z",
+      "expiresAt": "2027-10-26T08:46:03.025Z",
+      "userAgent": "Mozilla/5.0 (Android 16; Mobile; rv:158.0) Gecko/158.0 Firefox/158.0",
+      "ip": "127.0.0.1"
+    }
+  ],
   "rooms": [
     {
       "id": "room-universal",
@@ -10,13 +44,52 @@
       "ownerId": "system",
       "hasPassword": false,
       "createdAt": "2026-01-01T00:00:00.000Z",
-      "memberCount": 0,
+      "memberCount": 1,
       "isPrivate": false,
       "isUniversal": true
+    },
+    {
+      "id": "reddy",
+      "name": "Reddy",
+      "description": "Personal Room",
+      "ownerId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "hasPassword": false,
+      "createdAt": "2026-10-26T08:56:20.038Z",
+      "memberCount": 1,
+      "isPrivate": true
     }
   ],
-  "roomMembers": [],
-  "locations": {},
+  "roomMembers": [
+    {
+      "roomId": "room-universal",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "role": "ADMIN",
+      "joinedAt": "2026-10-26T08:46:03.025Z"
+    },
+    {
+      "roomId": "reddy",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "role": "OWNER",
+      "joinedAt": "2026-10-26T08:56:20.039Z"
+    }
+  ],
+  "locations": {
+    "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0": {
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "username": "Reddy",
+      "fullName": "Reddy",
+      "avatarUrl": "https://api.dicebear.com/7.x/initials/svg?seed=Reddy",
+      "latitude": 13.044389,
+      "longitude": 77.72117,
+      "accuracy": 25.4,
+      "altitude": 809,
+      "heading": null,
+      "speed": null,
+      "batteryLevel": null,
+      "timestamp": "2026-10-26T08:46:04.732Z",
+      "isStale": false
+    }
+  },
   "savedPlaces": [],
   "messages": [],
   "reminders": [],
@@ -24,7 +97,29 @@
   "emergencyAlerts": [],
   "locationShareRequests": [],
   "reports": [],
-  "auditLogs": [],
+  "auditLogs": [
+    {
+      "id": "log-385180cd-367b-42f3-9d29-dba233ae6fea",
+      "timestamp": "2026-10-26T08:46:03.025Z",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "userName": "Reddy",
+      "action": "USER_REGISTERED",
+      "details": "Account created with username Reddy",
+      "ip": "127.0.0.1"
+    }
+  ],
   "passwordResets": [],
-  "locationHistory": []
+  "locationHistory": [
+    {
+      "id": "70079892-d252-49f8-9afb-3e4798d876ad",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.044389,
+      "longitude": 77.72117,
+      "accuracy": 25.4,
+      "altitude": 809,
+      "heading": null,
+      "speed": null,
+      "timestamp": "2026-10-26T08:46:04.732Z"
+    }
+  ]
 }

@@ -36,7 +36,8 @@ interface RealtimeContextType {
   // Chat real-time
   chatMessages: Record<string, ChatMessage[]>; // roomId or recipientId -> messages
   typingUsers: Record<string, { userId: string; name: string }>; // roomId/recipientId -> user
-  sendMessage: (data: { roomId?: string; channelId?: string; recipientId?: string; text: string; attachments?: ChatMessage['attachments']; replyToId?: string }) => void;
+  sendMessage: (data: { roomId?: string; channelId?: string; recipientId?: string; text: string; attachments?: ChatMessage['attachments']; replyToId?: string; clientMsgId?: string }) => void;
+  setConversationMessages: (key: string, messages: ChatMessage[]) => void;
   sendTyping: (data: { roomId?: string; recipientId?: string; isTyping: boolean }) => void;
   sendReaction: (messageId: string, emoji: string) => void;
   deleteMessage: (messageId: string) => void;
@@ -201,7 +202,7 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
 
       case 'chat:message': {
-        const key = data.message.roomId || data.message.senderId;
+        const key = data.message.roomId || (data.message.senderId === user?.id ? data.message.recipientId : data.message.senderId) || 'room-universal';
         setChatMessages((prev) => {
           const list = prev[key] || [];
           if (list.some((m) => m.id === data.message.id)) return prev;
@@ -218,12 +219,25 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         const key = data.roomId || data.senderId;
         if (data.isTyping) {
           setTypingUsers((prev) => ({ ...prev, [key]: { userId: data.senderId, name: data.senderName } }));
+          if ((window as any)[`typing_timeout_${key}`]) {
+            clearTimeout((window as any)[`typing_timeout_${key}`]);
+          }
+          (window as any)[`typing_timeout_${key}`] = setTimeout(() => {
+            setTypingUsers((prev) => {
+              const copy = { ...prev };
+              delete copy[key];
+              return copy;
+            });
+          }, 4000);
         } else {
           setTypingUsers((prev) => {
             const copy = { ...prev };
             delete copy[key];
             return copy;
           });
+          if ((window as any)[`typing_timeout_${key}`]) {
+            clearTimeout((window as any)[`typing_timeout_${key}`]);
+          }
         }
         break;
       }
@@ -460,7 +474,7 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   // Chat Actions
   const sendMessage = useCallback(
-    (data: { roomId?: string; channelId?: string; recipientId?: string; text: string; attachments?: ChatMessage['attachments']; replyToId?: string }) => {
+    (data: { roomId?: string; channelId?: string; recipientId?: string; text: string; attachments?: ChatMessage['attachments']; replyToId?: string; clientMsgId?: string }) => {
       sendWs({
         type: 'chat:message',
         roomId: data.roomId,
@@ -469,10 +483,26 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         text: data.text,
         attachments: data.attachments,
         replyToId: data.replyToId,
+        clientMsgId: data.clientMsgId,
       });
     },
     [sendWs]
   );
+
+  const setConversationMessages = useCallback((key: string, messages: ChatMessage[]) => {
+    setChatMessages((prev) => {
+      const existing = prev[key] || [];
+      const existingIds = new Set(existing.map((m) => m.id));
+      const merged = [...existing];
+      for (const msg of messages) {
+        if (!existingIds.has(msg.id)) {
+          merged.push(msg);
+          existingIds.add(msg.id);
+        }
+      }
+      return { ...prev, [key]: merged };
+    });
+  }, []);
 
   const sendTyping = useCallback(
     (data: { roomId?: string; recipientId?: string; isTyping: boolean }) => {
@@ -770,6 +800,7 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         chatMessages,
         typingUsers,
         sendMessage,
+        setConversationMessages,
         sendTyping,
         sendReaction,
         deleteMessage,

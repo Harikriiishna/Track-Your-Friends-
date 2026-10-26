@@ -267,43 +267,49 @@ export const RemindersManager: React.FC<RemindersManagerProps> = ({
       {/* Add Reminder Modal */}
       {showAddModal && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl p-6 max-w-md w-full shadow-2xl border border-slate-100">
-            <h3 className="font-bold text-lg text-slate-900 mb-1">New Reminder</h3>
-            <p className="text-xs text-slate-500 mb-4">
+          <div
+            style={{ colorScheme: 'light' }}
+            className="bg-white rounded-3xl p-6 max-w-md w-full shadow-2xl border border-slate-200"
+          >
+            <h3 className="font-bold text-lg text-slate-950 mb-1">New Reminder</h3>
+            <p className="text-xs text-slate-600 mb-4 font-medium">
               Schedule time notifications or geofenced proximity triggers.
             </p>
 
             <form onSubmit={handleCreateReminder} className="space-y-3">
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Title</label>
+                <label className="block text-xs font-bold text-slate-950 mb-1">Title</label>
                 <input
                   type="text"
                   required
                   placeholder="e.g. Check in with team / Call mom upon arrival"
                   value={title}
                   onChange={(e) => setTitle(e.target.value)}
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
+                  style={{ color: '#090d16', backgroundColor: '#ffffff', colorScheme: 'light', WebkitTextFillColor: '#090d16' }}
+                  className="w-full px-3.5 py-2.5 rounded-xl border-2 border-slate-300 bg-white text-slate-950 placeholder:text-slate-500 font-semibold text-sm focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-slate-900 shadow-sm"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Description</label>
+                <label className="block text-xs font-bold text-slate-950 mb-1">Description</label>
                 <input
                   type="text"
                   placeholder="Extra instructions or details"
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900"
+                  style={{ color: '#090d16', backgroundColor: '#ffffff', colorScheme: 'light', WebkitTextFillColor: '#090d16' }}
+                  className="w-full px-3.5 py-2.5 rounded-xl border-2 border-slate-300 bg-white text-slate-950 placeholder:text-slate-500 font-semibold text-sm focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-slate-900 shadow-sm"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Date & Time</label>
+                <label className="block text-xs font-bold text-slate-950 mb-1">Date & Time</label>
                 <input
                   type="datetime-local"
                   value={dueDateTime}
                   onChange={(e) => setDueDateTime(e.target.value)}
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none"
+                  style={{ color: '#090d16', backgroundColor: '#ffffff', colorScheme: 'light', WebkitTextFillColor: '#090d16' }}
+                  className="w-full px-3.5 py-2.5 rounded-xl border-2 border-slate-300 bg-white text-slate-950 font-semibold text-sm focus:outline-none focus:ring-2 focus:ring-slate-900 focus:border-slate-900 shadow-sm"
                 />
               </div>
 
