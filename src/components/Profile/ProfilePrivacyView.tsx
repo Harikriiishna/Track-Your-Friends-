@@ -105,43 +105,47 @@ export const ProfilePrivacyView: React.FC = () => {
 
   // Load incoming location sharing requests
   const loadRequests = async () => {
+    if (!user || !api.getToken()) return;
     try {
       const res = await api.get<{ requests: LocationShareRequest[] }>('/api/locations/requests');
-      setShareRequests(res.requests);
+      setShareRequests(res.requests || []);
     } catch (err) {
-      console.error('Failed to load location share requests:', err);
+      console.warn('Could not load location share requests:', err);
     }
   };
 
   const loadSessions = async () => {
+    if (!user || !api.getToken()) return;
     try {
       setLoadingSessions(true);
       const res = await api.getSessions();
       setSessions(res.sessions || []);
     } catch (err) {
-      console.error('Failed to load active sessions:', err);
+      console.warn('Could not load active sessions:', err);
     } finally {
       setLoadingSessions(false);
     }
   };
 
   const loadBlockedUsers = async () => {
+    if (!user || !api.getToken()) return;
     try {
       setLoadingBlocked(true);
       const res = await api.getBlockedUsers();
       setBlockedUsers(res.blockedUsers || []);
     } catch (err) {
-      console.error('Failed to load blocked users:', err);
+      console.warn('Could not load blocked users:', err);
     } finally {
       setLoadingBlocked(false);
     }
   };
 
   useEffect(() => {
+    if (!user || !api.getToken()) return;
     loadRequests();
     loadSessions();
     loadBlockedUsers();
-  }, []);
+  }, [user?.id]);
 
   // Avatar file upload to backend
   const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {

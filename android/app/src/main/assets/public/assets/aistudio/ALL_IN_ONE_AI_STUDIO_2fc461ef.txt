@@ -1,0 +1,1502 @@
+=====================================================================
+ALL-IN-ONE PROJECT FILE (for Google AI Studio)
+Private-room live location sharing: Supabase backend + web app
+=====================================================================
+
+HOW TO USE THIS FILE
+1. Paste this whole file into Google AI Studio (Build mode) as your prompt,
+   or upload it as a text file and tell it: "Follow ALL_IN_ONE_AI_STUDIO.txt".
+2. The SQL in PART 2 does NOT run inside AI Studio. Run it yourself in the
+   Supabase SQL editor (a DEV project first), in the order shown.
+3. Put your Supabase URL and ANON key into the app's environment settings.
+   NEVER use the service_role key in the app.
+
+---------------------------------------------------------------------
+PART 1: INSTRUCTIONS FOR THE AI (read before writing any code)
+---------------------------------------------------------------------
+
+GOAL
+Build a WEB APP (React + TypeScript) where users sign up, create or join
+password-protected rooms, opt in to share live location while the page is open,
+and see room members on a map with distance, "last updated", and accuracy.
+Backend is Supabase (Postgres + PostGIS + RLS). Privacy is enforced in the
+database, not in the UI.
+
+IMPORTANT: The code in PART 3 is React Native / Expo. AI Studio builds web apps,
+so treat PART 3 as REFERENCE LOGIC and port it. Do not paste it unchanged.
+
+PORTING MAP (React Native reference -> web)
+- expo-router screens            -> React Router routes (or simple tab state)
+- <View>, <Text>, <Pressable>    -> div, span, button with CSS
+- <TextInput>                    -> input
+- Alert.alert                    -> inline message or toast (no window.alert spam)
+- AsyncStorage (session)         -> Supabase default localStorage (remove custom storage)
+- expo-location watchPosition    -> navigator.geolocation.watchPosition
+- getCurrentPositionAsync        -> navigator.geolocation.getCurrentPosition
+- react-native-maps              -> Leaflet or MapLibre GL in a single MapSurface component
+- AppState foreground refresh    -> document visibilitychange event
+- app.json permission text       -> show an explanation BEFORE calling geolocation
+- "react-native-url-polyfill"    -> not needed on web
+
+MAP NOTES
+- Keep ALL map-library code inside one MapSurface component so the provider can change.
+- Standard map: OpenStreetMap-based tiles are fine for light use, but check the tile
+  provider's usage policy. Satellite needs a LICENSED provider (e.g. Mapbox or MapTiler
+  with your own key). Do not scrape Google or Esri tiles without checking their terms.
+- Markers show initials for now (no avatars).
+
+LOCATION NOTES
+- Browsers share location only on HTTPS and only while the page is open. There is no
+  background tracking on the web. Say so in the UI.
+- If the AI Studio preview blocks location, the preview iframe may need the geolocation
+  permission declared (AI Studio apps use a metadata.json for frame permissions).
+  Check current AI Studio docs for the exact setting. If it still fails, deploy the app
+  to a normal HTTPS host to test.
+- The browser Geolocation accuracy value is real; display it. Never invent accuracy.
+
+HARD RULES
+1. Do NOT invent APIs, package names, or SQL. If unsure, say so and ask.
+2. Do NOT put the service_role key anywhere. Anon key only.
+3. Do NOT fake users, locations, messages, or statistics. Start with an empty app.
+4. Server timestamps decide "Live". Never trust the browser clock for that.
+   "Live" only if the server's updated_at is under 2 minutes old.
+5. Distances come from the room_member_locations RPC (PostGIS), not from pixels.
+6. Sharing is OFF by default and expires automatically (default 1 hour).
+7. join_room returns the text status 'ok' | 'invalid' | 'rate_limited'. Show ONE message
+   for wrong ID and wrong password: "Invalid room ID or password".
+8. Every screen needs loading, empty, and error-with-retry states.
+9. Work in phases. After each phase list what changed and what you could not verify.
+   If something fails twice, stop and show me the exact error.
+
+BUILD PHASES
+Phase A: Auth (sign up with username and full name passed as sign-up metadata,
+         sign in, sign out, password reset email).
+Phase B: Rooms (list my rooms, create, join).
+Phase C: Map (MapSurface, members with distance/freshness/accuracy, sharing toggle,
+         status banners for permission denied / GPS error / load failure).
+Phase D: Final report: files changed, checks run, what is unverified, how to test with
+         two browsers/devices.
+
+NOT IN SCOPE YET: chat, push notifications, avatars, background tracking, voice.
+
+DATABASE RUN ORDER (in Supabase SQL editor, dev project first)
+  1. 001_mvp_schema.sql
+  2. 004_join_rate_limit.sql
+  3. 005_profile_trigger_and_timestamps.sql
+  4. 003_storage_policies.sql
+  5. 002_rls_tests.sql   -> must print ALL RLS TESTS PASSED before building the UI
+
+ENVIRONMENT VARIABLES (names may differ in your web setup; Vite shown)
+  VITE_SUPABASE_URL=...
+  VITE_SUPABASE_ANON_KEY=...
+(The reference code uses EXPO_PUBLIC_*; rename when porting.)
+
+=====================================================================
+PART 2: DATABASE (run in Supabase, NOT in AI Studio)
+=====================================================================
+
+######## FILE: 001_mvp_schema.sql ########
+-- MVP schema: profiles, rooms, members, live location, chat, block/report
+-- Supabase (Postgres + PostGIS). Run in the SQL editor or as a migration.
+
+create extension if not exists postgis;
+create extension if not exists pgcrypto with schema extensions;
+
+-- ========== TABLES ==========
+
+create table profiles (
+  id          uuid primary key references auth.users on delete cascade,
+  username    text unique not null check (username ~ '^[a-z0-9_]{3,24}$'),
+  full_name   text not null check (char_length(full_name) between 1 and 80),
+  about       text check (char_length(about) <= 200),
+  avatar_url  text,
+  created_at  timestamptz not null default now()
+);
+
+create table rooms (
+  id          uuid primary key default gen_random_uuid(),
+  name        text not null check (char_length(name) between 1 and 60),
+  description text check (char_length(description) <= 300),
+  icon_url    text,
+  owner_id    uuid not null references profiles on delete cascade,
+  created_at  timestamptz not null default now()
+);
+
+-- Password hashes live apart from rooms. RLS is on with NO policies,
+-- so clients can never read them. Only security-definer functions can.
+create table room_secrets (
+  room_id       uuid primary key references rooms on delete cascade,
+  password_hash text not null
+);
+
+create type room_role as enum ('owner', 'member');
+
+create table room_members (
+  room_id           uuid references rooms on delete cascade,
+  user_id           uuid references profiles on delete cascade,
+  role              room_role not null default 'member',
+  sharing_enabled   boolean not null default false,  -- off by default
+  share_expires_at  timestamptz,                      -- null = until turned off
+  joined_at         timestamptz not null default now(),
+  primary key (room_id, user_id)
+);
+create index on room_members (user_id);
+
+-- Latest position only. No location history is kept (data minimization).
+create table user_locations (
+  user_id     uuid primary key references profiles on delete cascade,
+  geog        geography(Point, 4326) not null,
+  accuracy_m  real check (accuracy_m >= 0),
+  updated_at  timestamptz not null default now()
+);
+create index on user_locations using gist (geog);
+
+create table messages (
+  id          bigint generated always as identity primary key,
+  room_id     uuid not null references rooms on delete cascade,
+  user_id     uuid not null references profiles on delete cascade,
+  body        text not null check (char_length(body) between 1 and 4000),
+  reply_to    bigint references messages on delete set null,
+  created_at  timestamptz not null default now()
+);
+create index on messages (room_id, created_at desc);
+
+create table blocks (
+  blocker_id  uuid references profiles on delete cascade,
+  blocked_id  uuid references profiles on delete cascade,
+  created_at  timestamptz not null default now(),
+  primary key (blocker_id, blocked_id),
+  check (blocker_id <> blocked_id)
+);
+
+create table reports (
+  id           bigint generated always as identity primary key,
+  reporter_id  uuid not null references profiles on delete cascade,
+  target_user  uuid references profiles on delete set null,
+  message_id   bigint references messages on delete set null,
+  reason       text not null check (char_length(reason) between 1 and 500),
+  created_at   timestamptz not null default now()
+);
+
+-- ========== HELPER FUNCTIONS ==========
+-- Security definer avoids RLS recursion on room_members.
+
+create function is_room_member(p_room uuid)
+returns boolean language sql stable security definer set search_path = public as $$
+  select exists (select 1 from room_members
+                 where room_id = p_room and user_id = auth.uid());
+$$;
+
+create function is_room_owner(p_room uuid)
+returns boolean language sql stable security definer set search_path = public as $$
+  select exists (select 1 from room_members
+                 where room_id = p_room and user_id = auth.uid() and role = 'owner');
+$$;
+
+create function shares_room_with(p_other uuid)
+returns boolean language sql stable security definer set search_path = public as $$
+  select exists (
+    select 1 from room_members a
+    join room_members b on a.room_id = b.room_id
+    where a.user_id = auth.uid() and b.user_id = p_other
+  );
+$$;
+
+create function is_blocked_between(p_other uuid)
+returns boolean language sql stable security definer set search_path = public as $$
+  select exists (
+    select 1 from blocks
+    where (blocker_id = auth.uid() and blocked_id = p_other)
+       or (blocker_id = p_other and blocked_id = auth.uid())
+  );
+$$;
+
+-- The core privacy rule: viewer may see target's location only if
+-- they share a room where the target has sharing ON and not expired,
+-- and neither has blocked the other.
+create function can_see_location(p_target uuid)
+returns boolean language sql stable security definer set search_path = public as $$
+  select p_target = auth.uid()
+  or (
+    exists (
+      select 1 from room_members me
+      join room_members them on me.room_id = them.room_id
+      where me.user_id = auth.uid()
+        and them.user_id = p_target
+        and them.sharing_enabled
+        and (them.share_expires_at is null or them.share_expires_at > now())
+    )
+    and not is_blocked_between(p_target)
+  );
+$$;
+
+-- ========== RPCs (the only way to create/join rooms) ==========
+
+create function create_room(p_name text, p_description text, p_password text)
+returns uuid language plpgsql security definer set search_path = public, extensions as $$
+declare v_id uuid;
+begin
+  if char_length(p_password) < 8 then
+    raise exception 'Password must be at least 8 characters';
+  end if;
+  insert into rooms (name, description, owner_id)
+    values (p_name, p_description, auth.uid()) returning id into v_id;
+  insert into room_secrets (room_id, password_hash)
+    values (v_id, crypt(p_password, gen_salt('bf', 10)));
+  insert into room_members (room_id, user_id, role)
+    values (v_id, auth.uid(), 'owner');
+  return v_id;
+end $$;
+
+-- TODO before launch: add attempt rate limiting (table of failed joins
+-- per user/room, lock after N tries) to stop password brute-forcing.
+create function join_room(p_room_id uuid, p_password text)
+returns void language plpgsql security definer set search_path = public, extensions as $$
+declare v_hash text;
+begin
+  select password_hash into v_hash from room_secrets where room_id = p_room_id;
+  -- Same error for "no such room" and "wrong password" (no room enumeration)
+  if v_hash is null or crypt(p_password, v_hash) <> v_hash then
+    raise exception 'Invalid room ID or password';
+  end if;
+  insert into room_members (room_id, user_id)
+    values (p_room_id, auth.uid()) on conflict do nothing;
+end $$;
+
+-- Lock RPCs to signed-in users only
+revoke execute on function create_room, join_room from public, anon;
+grant  execute on function create_room, join_room to authenticated;
+
+-- Nearby members' locations with distance in meters (computed server-side)
+create function room_member_locations(p_room uuid)
+returns table (user_id uuid, lat double precision, lng double precision,
+               accuracy_m real, updated_at timestamptz, distance_m double precision)
+language sql stable security definer set search_path = public as $$
+  select l.user_id,
+         st_y(l.geog::geometry), st_x(l.geog::geometry),
+         l.accuracy_m, l.updated_at,
+         st_distance(l.geog, mine.geog)
+  from user_locations l
+  join room_members rm on rm.user_id = l.user_id and rm.room_id = p_room
+  left join user_locations mine on mine.user_id = auth.uid()
+  where is_room_member(p_room)
+    and l.user_id <> auth.uid()
+    and can_see_location(l.user_id)
+    and rm.sharing_enabled
+    and (rm.share_expires_at is null or rm.share_expires_at > now());
+$$;
+
+-- ========== ROW LEVEL SECURITY ==========
+
+alter table profiles       enable row level security;
+alter table rooms          enable row level security;
+alter table room_secrets   enable row level security;  -- no policies = no access
+alter table room_members   enable row level security;
+alter table user_locations enable row level security;
+alter table messages       enable row level security;
+alter table blocks         enable row level security;
+alter table reports        enable row level security;
+
+-- profiles: see yourself and people you share a room with
+create policy profiles_select on profiles for select to authenticated
+  using (id = auth.uid() or (shares_room_with(id) and not is_blocked_between(id)));
+create policy profiles_insert on profiles for insert to authenticated
+  with check (id = auth.uid());
+create policy profiles_update on profiles for update to authenticated
+  using (id = auth.uid()) with check (id = auth.uid());
+
+-- rooms: members read; owner edits. Creation goes through create_room().
+create policy rooms_select on rooms for select to authenticated
+  using (is_room_member(id));
+create policy rooms_update on rooms for update to authenticated
+  using (is_room_owner(id)) with check (is_room_owner(id));
+create policy rooms_delete on rooms for delete to authenticated
+  using (is_room_owner(id));
+
+-- room_members: members see co-members; you may edit only YOUR sharing
+-- settings (column-level grant below stops role changes); you may leave.
+create policy members_select on room_members for select to authenticated
+  using (is_room_member(room_id));
+create policy members_update_self on room_members for update to authenticated
+  using (user_id = auth.uid()) with check (user_id = auth.uid());
+create policy members_leave on room_members for delete to authenticated
+  using (user_id = auth.uid() and role <> 'owner');
+
+revoke update on room_members from authenticated;
+grant  update (sharing_enabled, share_expires_at) on room_members to authenticated;
+
+-- user_locations: you write your own; reads go through can_see_location()
+create policy loc_select on user_locations for select to authenticated
+  using (can_see_location(user_id));
+create policy loc_insert on user_locations for insert to authenticated
+  with check (user_id = auth.uid());
+create policy loc_update on user_locations for update to authenticated
+  using (user_id = auth.uid()) with check (user_id = auth.uid());
+create policy loc_delete on user_locations for delete to authenticated
+  using (user_id = auth.uid());
+
+-- messages
+create policy msg_select on messages for select to authenticated
+  using (is_room_member(room_id) and not is_blocked_between(user_id));
+create policy msg_insert on messages for insert to authenticated
+  with check (user_id = auth.uid() and is_room_member(room_id));
+create policy msg_delete on messages for delete to authenticated
+  using (user_id = auth.uid() or is_room_owner(room_id));
+
+-- blocks / reports
+create policy blocks_all on blocks for all to authenticated
+  using (blocker_id = auth.uid()) with check (blocker_id = auth.uid());
+create policy reports_insert on reports for insert to authenticated
+  with check (reporter_id = auth.uid());
+-- reports: no select policy. Review them in the Supabase dashboard.
+
+-- ========== REALTIME ==========
+-- postgres_changes respects RLS, so subscribers only receive rows they may read.
+alter publication supabase_realtime add table messages, user_locations, room_members;
+
+-- Auto-expire sharing: schedule with pg_cron (hourly is fine), e.g.
+--   update room_members set sharing_enabled = false
+--   where share_expires_at < now() and sharing_enabled;
+######## END FILE: 001_mvp_schema.sql ########
+
+######## FILE: 004_join_rate_limit.sql ########
+-- Rate limiting for join_room(). Run after 001_mvp_schema.sql.
+--
+-- WHY IT RETURNS A STATUS INSTEAD OF RAISING:
+-- A raised exception rolls back the transaction, including the row that logs
+-- the failed attempt, so the lockout would never trigger. join_room now returns
+-- text: 'ok' | 'invalid' | 'rate_limited'. Raise only for unauthenticated calls.
+--
+-- THREAT MODEL: room IDs are random UUIDs, so an attacker needs a leaked ID
+-- before guessing the password. These limits slow that guessing.
+
+drop function if exists join_room(uuid, text);
+
+create table join_attempts (
+  id            bigint generated always as identity primary key,
+  user_id       uuid not null references profiles on delete cascade,
+  room_id       uuid not null,   -- no FK on purpose: also logs nonexistent rooms
+  succeeded     boolean not null,
+  attempted_at  timestamptz not null default now()
+);
+create index on join_attempts (user_id, attempted_at desc);
+create index on join_attempts (room_id, attempted_at desc);
+
+alter table join_attempts enable row level security;  -- no policies = clients can't touch it
+
+create function join_room(p_room_id uuid, p_password text)
+returns text language plpgsql security definer set search_path = public, extensions as $$
+declare
+  v_uid   uuid := auth.uid();
+  v_hash  text;
+  v_ok    boolean;
+begin
+  if v_uid is null then
+    raise exception 'Not authenticated';
+  end if;
+
+  -- Limit 1: 10 failures per user across all rooms in 15 minutes
+  if (select count(*) from join_attempts
+      where user_id = v_uid and not succeeded
+        and attempted_at > now() - interval '15 minutes') >= 10 then
+    return 'rate_limited';
+  end if;
+
+  -- Limit 2: 5 failures per user per room in 15 minutes
+  if (select count(*) from join_attempts
+      where user_id = v_uid and room_id = p_room_id and not succeeded
+        and attempted_at > now() - interval '15 minutes') >= 5 then
+    return 'rate_limited';
+  end if;
+
+  -- Limit 3: 100 failures per room per hour from anyone (defends against
+  -- many throwaway accounts). Trade-off: a determined attacker with a leaked
+  -- room ID can briefly block legitimate joins to that room.
+  if (select count(*) from join_attempts
+      where room_id = p_room_id and not succeeded
+        and attempted_at > now() - interval '1 hour') >= 100 then
+    return 'rate_limited';
+  end if;
+
+  select password_hash into v_hash from room_secrets where room_id = p_room_id;
+
+  if v_hash is null then
+    -- Burn the same bcrypt time as a real check so response time
+    -- doesn't reveal whether a room exists.
+    perform crypt(p_password, gen_salt('bf', 10));
+    v_ok := false;
+  else
+    v_ok := crypt(p_password, v_hash) = v_hash;
+  end if;
+
+  insert into join_attempts (user_id, room_id, succeeded)
+    values (v_uid, p_room_id, v_ok);
+
+  if not v_ok then
+    return 'invalid';   -- same answer for wrong password and unknown room
+  end if;
+
+  insert into room_members (room_id, user_id)
+    values (p_room_id, v_uid) on conflict do nothing;
+  return 'ok';
+end $$;
+
+revoke execute on function join_room(uuid, text) from public, anon;
+grant  execute on function join_room(uuid, text) to authenticated;
+
+-- Housekeeping: schedule daily with pg_cron
+--   delete from join_attempts where attempted_at < now() - interval '7 days';
+
+-- CLIENT: map 'invalid' to "Invalid room ID or password" (one message for both),
+-- and 'rate_limited' to "Too many attempts. Try again in 15 minutes."
+######## END FILE: 004_join_rate_limit.sql ########
+
+######## FILE: 005_profile_trigger_and_timestamps.sql ########
+-- Two fixes the app needs. Run after 001.
+
+-- 1. Create the profile row when someone signs up.
+--    The app passes username and full_name as sign-up metadata. Doing this in a
+--    trigger works even when email confirmation is on (no session at sign-up).
+create function handle_new_user()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  insert into profiles (id, username, full_name)
+  values (
+    new.id,
+    coalesce(nullif(new.raw_user_meta_data ->> 'username', ''), 'user_' || substr(new.id::text, 1, 8)),
+    coalesce(nullif(new.raw_user_meta_data ->> 'full_name', ''), 'New user')
+  );
+  return new;
+end $$;
+
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute function handle_new_user();
+
+-- 2. Location timestamps come from the SERVER clock, never the phone's.
+--    Otherwise a wrong device clock could make a stale marker look "Live".
+create function touch_location()
+returns trigger language plpgsql as $$
+begin
+  new.updated_at := now();
+  return new;
+end $$;
+
+create trigger user_locations_touch
+  before insert or update on user_locations
+  for each row execute function touch_location();
+######## END FILE: 005_profile_trigger_and_timestamps.sql ########
+
+######## FILE: 003_storage_policies.sql ########
+-- Storage buckets and policies. Run after 001_mvp_schema.sql.
+-- All buckets are PRIVATE. The app reads files through short-lived signed URLs,
+-- so a leaked link expires and strangers can't browse.
+--
+-- Path conventions (policies depend on these):
+--   avatars     : {user_id}/{filename}
+--   room-icons  : {room_id}/{filename}
+--   chat-media  : {room_id}/{filename}      (week 6+, optional for MVP)
+
+-- ========== BUCKETS ==========
+-- No SVG: SVG files can carry scripts. Raster images only.
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types) values
+  ('avatars',    'avatars',    false, 2 * 1024 * 1024,  array['image/jpeg','image/png','image/webp']),
+  ('room-icons', 'room-icons', false, 2 * 1024 * 1024,  array['image/jpeg','image/png','image/webp']),
+  ('chat-media', 'chat-media', false, 10 * 1024 * 1024, array['image/jpeg','image/png','image/webp'])
+on conflict (id) do update
+  set public = false,
+      file_size_limit = excluded.file_size_limit,
+      allowed_mime_types = excluded.allowed_mime_types;
+
+-- ========== HELPER ==========
+-- First path segment as a uuid, or null if it isn't one (never throws).
+create function storage_folder_uuid(p_name text)
+returns uuid language plpgsql immutable as $$
+begin
+  return ((storage.foldername(p_name))[1])::uuid;
+exception when others then
+  return null;
+end $$;
+
+-- ========== AVATARS ==========
+-- Read: your own, or a user you share a room with (and haven't blocked either way).
+create policy avatars_select on storage.objects for select to authenticated
+  using (
+    bucket_id = 'avatars' and (
+      storage_folder_uuid(name) = auth.uid()
+      or (shares_room_with(storage_folder_uuid(name))
+          and not is_blocked_between(storage_folder_uuid(name)))
+    )
+  );
+-- Write/replace/delete: only inside your own folder.
+create policy avatars_insert on storage.objects for insert to authenticated
+  with check (bucket_id = 'avatars' and storage_folder_uuid(name) = auth.uid()
+              and array_length(storage.foldername(name), 1) = 1);
+create policy avatars_update on storage.objects for update to authenticated
+  using (bucket_id = 'avatars' and storage_folder_uuid(name) = auth.uid())
+  with check (bucket_id = 'avatars' and storage_folder_uuid(name) = auth.uid());
+create policy avatars_delete on storage.objects for delete to authenticated
+  using (bucket_id = 'avatars' and storage_folder_uuid(name) = auth.uid());
+
+-- ========== ROOM ICONS ==========
+-- Read: room members. Write: room owner only.
+create policy room_icons_select on storage.objects for select to authenticated
+  using (bucket_id = 'room-icons' and is_room_member(storage_folder_uuid(name)));
+create policy room_icons_insert on storage.objects for insert to authenticated
+  with check (bucket_id = 'room-icons' and is_room_owner(storage_folder_uuid(name))
+              and array_length(storage.foldername(name), 1) = 1);
+create policy room_icons_update on storage.objects for update to authenticated
+  using (bucket_id = 'room-icons' and is_room_owner(storage_folder_uuid(name)))
+  with check (bucket_id = 'room-icons' and is_room_owner(storage_folder_uuid(name)));
+create policy room_icons_delete on storage.objects for delete to authenticated
+  using (bucket_id = 'room-icons' and is_room_owner(storage_folder_uuid(name)));
+
+-- ========== CHAT MEDIA (optional for MVP) ==========
+-- Read: room members. Upload: room members. Delete: uploader or room owner.
+create policy chat_media_select on storage.objects for select to authenticated
+  using (bucket_id = 'chat-media' and is_room_member(storage_folder_uuid(name)));
+create policy chat_media_insert on storage.objects for insert to authenticated
+  with check (bucket_id = 'chat-media' and is_room_member(storage_folder_uuid(name))
+              and array_length(storage.foldername(name), 1) = 1);
+create policy chat_media_delete on storage.objects for delete to authenticated
+  using (bucket_id = 'chat-media'
+         and (owner_id = auth.uid()::text or is_room_owner(storage_folder_uuid(name))));
+
+-- ========== MANUAL TESTS (use two real user tokens via the Storage API) ==========
+-- 1. User A uploads avatars/{A}/me.jpg                    -> OK
+-- 2. User A uploads avatars/{B}/me.jpg                    -> DENIED
+-- 3. User C (no shared room) reads avatars/{A}/me.jpg     -> DENIED
+-- 4. User B (shares a room) reads avatars/{A}/me.jpg      -> OK
+-- 5. After B blocks A, B reads avatars/{A}/me.jpg         -> DENIED
+-- 6. Non-owner uploads room-icons/{room}/icon.png         -> DENIED
+-- 7. Upload an .svg or .pdf to avatars                    -> REJECTED (mime type)
+-- 8. Upload a 5 MB image to avatars                       -> REJECTED (size)
+-- 9. Request an expired signed URL                        -> REJECTED
+######## END FILE: 003_storage_policies.sql ########
+
+######## FILE: 002_rls_tests.sql ########
+-- RLS / privacy tests for 001_mvp_schema.sql
+-- Prerequisites: 001_mvp_schema.sql and 004_join_rate_limit.sql applied.
+-- Run in the Supabase SQL editor against a DEV project (never production).
+-- Everything runs in one transaction and is rolled back at the end.
+-- Success = a NOTICE saying "ALL RLS TESTS PASSED". Any failure raises an error.
+-- If the auth.users insert fails on your Supabase version, add the NOT NULL
+-- columns it names (they vary between versions).
+
+begin;
+
+-- Helper: act as a given user, the way an authenticated API request would.
+create function pg_temp.as_user(u uuid) returns void language plpgsql as $$
+begin
+  execute 'reset role';
+  perform set_config('request.jwt.claim.sub', u::text, true);
+  perform set_config('request.jwt.claims',
+    json_build_object('sub', u::text, 'role', 'authenticated')::text, true);
+  execute 'set local role authenticated';
+end $$;
+
+do $$
+declare
+  a uuid := gen_random_uuid();   -- room owner, shares location
+  b uuid := gen_random_uuid();   -- room member
+  c uuid := gen_random_uuid();   -- stranger, never joins
+  room uuid;
+  n int;
+  i int;
+  failed boolean;
+begin
+  -- ---------- setup (as superuser) ----------
+  insert into auth.users (id, email) values
+    (a, 'a@test.local'), (b, 'b@test.local'), (c, 'c@test.local');
+  -- If 005's signup trigger is installed it already created these rows
+  insert into profiles (id, username, full_name) values
+    (a, 'user_a', 'A'), (b, 'user_b', 'B'), (c, 'user_c', 'C')
+  on conflict (id) do update
+    set username = excluded.username, full_name = excluded.full_name;
+
+  -- ---------- rooms and joining ----------
+  perform pg_temp.as_user(a);
+  room := create_room('Test room', 'd', 'password123');
+
+  perform pg_temp.as_user(b);
+  -- join_room (from 004) returns a status instead of raising
+  if join_room(room, 'wrong-password') <> 'invalid' then
+    raise exception 'FAIL: wrong password not rejected'; end if;
+  if join_room(gen_random_uuid(), 'password123') <> 'invalid' then
+    raise exception 'FAIL: nonexistent room not rejected'; end if;
+  if join_room(room, 'password123') <> 'ok' then
+    raise exception 'FAIL: correct password rejected'; end if;
+
+  -- rate limiting: 5 failures lock that user+room, even for the right password
+  perform pg_temp.as_user(c);
+  for i in 1..5 loop
+    if join_room(room, 'nope-' || i) <> 'invalid' then
+      raise exception 'FAIL: expected invalid on attempt %', i; end if;
+  end loop;
+  if join_room(room, 'password123') <> 'rate_limited' then
+    raise exception 'FAIL: no lockout after 5 failures'; end if;
+  select count(*) into n from room_members where room_id = room and user_id = c;
+  if n <> 0 then raise exception 'FAIL: locked-out user got in'; end if;
+
+  -- attempt log is not readable by clients
+  begin select count(*) into n from join_attempts; exception when others then n := 0; end;
+  if n <> 0 then raise exception 'FAIL: join_attempts readable by client'; end if;
+
+  -- everyone reports a location
+  perform pg_temp.as_user(a);
+  insert into user_locations (user_id, geog, accuracy_m)
+    values (a, 'SRID=4326;POINT(10.0 50.0)', 8);
+  perform pg_temp.as_user(b);
+  insert into user_locations (user_id, geog, accuracy_m)
+    values (b, 'SRID=4326;POINT(10.001 50.001)', 8);
+  perform pg_temp.as_user(c);
+  insert into user_locations (user_id, geog, accuracy_m)
+    values (c, 'SRID=4326;POINT(11.0 51.0)', 8);
+
+  -- ---------- 1. sharing is OFF by default ----------
+  perform pg_temp.as_user(b);
+  select count(*) into n from user_locations where user_id = a;
+  if n <> 0 then raise exception 'FAIL 1: member saw location while sharing was off'; end if;
+
+  -- ---------- 2. sharing ON: member sees, stranger does not ----------
+  perform pg_temp.as_user(a);
+  update room_members set sharing_enabled = true where room_id = room and user_id = a;
+
+  perform pg_temp.as_user(b);
+  select count(*) into n from user_locations where user_id = a;
+  if n <> 1 then raise exception 'FAIL 2a: member could not see shared location'; end if;
+
+  perform pg_temp.as_user(c);
+  select count(*) into n from user_locations where user_id = a;
+  if n <> 0 then raise exception 'FAIL 2b: STRANGER saw a location'; end if;
+
+  -- ---------- 3. RPC respects the same rules ----------
+  perform pg_temp.as_user(b);
+  select count(*) into n from room_member_locations(room);
+  if n <> 1 then raise exception 'FAIL 3a: RPC should return 1 row for member'; end if;
+
+  perform pg_temp.as_user(c);
+  select count(*) into n from room_member_locations(room);
+  if n <> 0 then raise exception 'FAIL 3b: RPC leaked data to non-member'; end if;
+
+  -- ---------- 4. expired sharing is hidden ----------
+  perform pg_temp.as_user(a);
+  update room_members set share_expires_at = now() - interval '1 minute'
+    where room_id = room and user_id = a;
+  perform pg_temp.as_user(b);
+  select count(*) into n from user_locations where user_id = a;
+  if n <> 0 then raise exception 'FAIL 4: expired share still visible'; end if;
+  perform pg_temp.as_user(a);
+  update room_members set share_expires_at = null where room_id = room and user_id = a;
+
+  -- ---------- 5. blocking hides location in BOTH directions ----------
+  perform pg_temp.as_user(b);
+  update room_members set sharing_enabled = true where room_id = room and user_id = b;
+  insert into blocks (blocker_id, blocked_id) values (b, a);
+
+  select count(*) into n from user_locations where user_id = a;
+  if n <> 0 then raise exception 'FAIL 5a: blocker still sees blocked user'; end if;
+  perform pg_temp.as_user(a);
+  select count(*) into n from user_locations where user_id = b;
+  if n <> 0 then raise exception 'FAIL 5b: blocked user still sees blocker'; end if;
+  perform pg_temp.as_user(b);
+  delete from blocks where blocker_id = b and blocked_id = a;
+
+  -- ---------- 6. cannot write or alter someone else's location ----------
+  perform pg_temp.as_user(c);
+  failed := false;
+  begin
+    insert into user_locations (user_id, geog, accuracy_m)
+      values (a, 'SRID=4326;POINT(0 0)', 1) on conflict (user_id) do update set accuracy_m = 1;
+  exception when others then failed := true; end;
+  if not failed then raise exception 'FAIL 6a: wrote another user''s location'; end if;
+
+  update user_locations set accuracy_m = 1 where user_id = a;
+  get diagnostics n = row_count;
+  if n <> 0 then raise exception 'FAIL 6b: updated another user''s location'; end if;
+
+  -- ---------- 7. password hashes are unreadable ----------
+  perform pg_temp.as_user(b);
+  begin
+    select count(*) into n from room_secrets;
+  exception when others then n := 0; end;
+  if n <> 0 then raise exception 'FAIL 7: room_secrets readable by client'; end if;
+
+  -- ---------- 8. rooms and chat are members-only ----------
+  perform pg_temp.as_user(c);
+  select count(*) into n from rooms;
+  if n <> 0 then raise exception 'FAIL 8a: stranger can see rooms'; end if;
+
+  failed := false;
+  begin insert into messages (room_id, user_id, body) values (room, c, 'hi');
+  exception when others then failed := true; end;
+  if not failed then raise exception 'FAIL 8b: stranger posted in room'; end if;
+
+  perform pg_temp.as_user(b);
+  insert into messages (room_id, user_id, body) values (room, b, 'hello');
+
+  failed := false;
+  begin insert into messages (room_id, user_id, body) values (room, a, 'spoofed');
+  exception when others then failed := true; end;
+  if not failed then raise exception 'FAIL 8c: posted as another user'; end if;
+
+  perform pg_temp.as_user(c);
+  select count(*) into n from messages;
+  if n <> 0 then raise exception 'FAIL 8d: stranger read messages'; end if;
+
+  -- ---------- 9. no privilege escalation ----------
+  perform pg_temp.as_user(b);
+  failed := false;
+  begin update room_members set role = 'owner' where room_id = room and user_id = b;
+  exception when others then failed := true; end;
+  if not failed then raise exception 'FAIL 9a: member changed own role'; end if;
+
+  begin delete from rooms where id = room; get diagnostics n = row_count;
+  exception when others then n := 0; end;
+  if n <> 0 then raise exception 'FAIL 9b: non-owner deleted room'; end if;
+
+  begin update rooms set name = 'hacked' where id = room; get diagnostics n = row_count;
+  exception when others then n := 0; end;
+  if n <> 0 then raise exception 'FAIL 9c: non-owner edited room'; end if;
+
+  -- ---------- 10. anonymous users get nothing ----------
+  execute 'reset role';
+  execute 'set local role anon';
+  begin select count(*) into n from user_locations;
+  exception when others then n := 0; end;
+  if n <> 0 then raise exception 'FAIL 10: anon read locations'; end if;
+  execute 'reset role';
+
+  raise notice 'ALL RLS TESTS PASSED';
+end $$;
+
+rollback;
+######## END FILE: 002_rls_tests.sql ########
+
+=====================================================================
+PART 3: REFERENCE APP CODE (React Native / Expo). PORT TO WEB, see PART 1.
+=====================================================================
+
+######## FILE: expo-app/lib/supabase.ts ########
+import 'react-native-url-polyfill/auto';
+import { AppState } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { createClient } from '@supabase/supabase-js';
+
+// Only the public anon key goes in the app. Row-level security does the protecting.
+// NEVER put the service_role key in this app.
+export const supabase = createClient(
+  process.env.EXPO_PUBLIC_SUPABASE_URL!,
+  process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!,
+  {
+    auth: {
+      storage: AsyncStorage,
+      autoRefreshToken: true,
+      persistSession: true,
+      detectSessionInUrl: false,
+    },
+  }
+);
+
+// Only refresh tokens while the app is in the foreground.
+AppState.addEventListener('change', (state) => {
+  if (state === 'active') supabase.auth.startAutoRefresh();
+  else supabase.auth.stopAutoRefresh();
+});
+######## END FILE: expo-app/lib/supabase.ts ########
+
+######## FILE: expo-app/lib/geo.ts ########
+type Coords = { latitude: number; longitude: number };
+
+// Great-circle distance in meters, used only for the client-side movement
+// threshold. Distances shown to users come from PostGIS via the RPC.
+export function haversineM(a: Coords, b: Coords): number {
+  const R = 6371008.8;
+  const rad = (d: number) => (d * Math.PI) / 180;
+  const dLat = rad(b.latitude - a.latitude);
+  const dLon = rad(b.longitude - a.longitude);
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(rad(a.latitude)) * Math.cos(rad(b.latitude)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+export function formatDistance(m: number | null | undefined): string {
+  if (m == null) return 'Distance unknown';
+  return m < 1000 ? `${Math.round(m)} m` : `${(m / 1000).toFixed(1)} km`;
+}
+
+export type Freshness = { state: 'live' | 'recent' | 'stale'; label: string };
+
+// "Live" only when the SERVER received an update in the last 2 minutes.
+export function freshness(updatedAt: string, now = Date.now()): Freshness {
+  const s = Math.max(0, Math.round((now - new Date(updatedAt).getTime()) / 1000));
+  if (s < 120) return { state: 'live', label: s < 10 ? 'Live' : `Live · ${s}s ago` };
+  const m = Math.round(s / 60);
+  if (m <= 15) return { state: 'recent', label: `Updated ${m} min ago` };
+  return {
+    state: 'stale',
+    label: m < 60 ? `Last seen ${m} min ago` : `Last seen ${Math.round(m / 60)} h ago`,
+  };
+}
+######## END FILE: expo-app/lib/geo.ts ########
+
+######## FILE: expo-app/lib/locationSharing.ts ########
+import * as Location from 'expo-location';
+import { supabase } from './supabase';
+import { haversineM } from './geo';
+
+// Starting values from the plan. Tune them on real devices.
+const MIN_MOVE_M = 25;
+const HEARTBEAT_MS = 60_000;
+const MAX_ACCURACY_M = 100;
+const MAX_FIX_AGE_MS = 30_000;
+
+export type ShareStatus = 'starting' | 'active' | 'denied' | 'error';
+
+/**
+ * Foreground-only sharing. Returns a stop() function.
+ * Not yet implemented: low-battery backoff, background tracking.
+ */
+export async function startSharing(
+  userId: string,
+  onStatus: (s: ShareStatus) => void
+): Promise<() => void> {
+  onStatus('starting');
+
+  const perm = await Location.requestForegroundPermissionsAsync();
+  if (perm.status !== 'granted') {
+    onStatus('denied');
+    return () => {};
+  }
+
+  let last: { latitude: number; longitude: number } | null = null;
+  let lastSentAt = 0;
+  let failures = 0;
+  let stopped = false;
+
+  async function onFix(f: Location.LocationObject) {
+    if (stopped) return;
+    const acc = f.coords.accuracy ?? 999;
+
+    if (Date.now() - f.timestamp > MAX_FIX_AGE_MS) return;   // stale fix
+    if (last && acc > MAX_ACCURACY_M) return;                // too imprecise
+
+    const moved = last ? haversineM(last, f.coords) : Infinity;
+    const due = Date.now() - lastSentAt > HEARTBEAT_MS;
+    if (moved < Math.max(MIN_MOVE_M, acc) && !due) return;   // jitter / no news
+
+    // updated_at is set by the database, not sent from the phone.
+    const { error } = await supabase.from('user_locations').upsert({
+      user_id: userId,
+      geog: `SRID=4326;POINT(${f.coords.longitude} ${f.coords.latitude})`,
+      accuracy_m: acc,
+    });
+
+    if (error) {
+      failures += 1;
+      if (failures >= 3) onStatus('error');
+      return;  // the next fix or heartbeat retries; we don't queue a backlog
+    }
+    failures = 0;
+    last = { latitude: f.coords.latitude, longitude: f.coords.longitude };
+    lastSentAt = Date.now();
+    onStatus('active');
+  }
+
+  // First fix immediately, so others see you as soon as sharing starts.
+  try {
+    await onFix(await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }));
+  } catch {
+    onStatus('error');
+  }
+
+  const sub = await Location.watchPositionAsync(
+    { accuracy: Location.Accuracy.Balanced, distanceInterval: 10, timeInterval: 5000 },
+    onFix
+  );
+
+  // iOS only fires the watcher on movement, so a timer takes a fresh reading
+  // when you're stationary. It reads real GPS, it doesn't resend an old point.
+  const timer = setInterval(async () => {
+    try {
+      await onFix(await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }));
+    } catch {
+      onStatus('error');
+    }
+  }, HEARTBEAT_MS);
+
+  return () => {
+    stopped = true;
+    sub.remove();
+    clearInterval(timer);
+  };
+}
+######## END FILE: expo-app/lib/locationSharing.ts ########
+
+######## FILE: expo-app/components/MapSurface.tsx ########
+import { useEffect, useRef } from 'react';
+import { StyleSheet, Text, View } from 'react-native';
+import MapView, { Callout, Marker } from 'react-native-maps';
+
+// The rest of the app talks to THIS component, never to react-native-maps.
+// To switch to MapLibre or Mapbox later, only this file changes.
+
+export type MapMember = {
+  id: string;
+  name: string;
+  lat: number;
+  lng: number;
+  distanceText: string;
+  freshnessLabel: string;
+  stale: boolean;
+  accuracyText: string;
+};
+
+type Props = {
+  members: MapMember[];
+  mapType: 'standard' | 'satellite' | 'hybrid';
+};
+
+function initials(name: string) {
+  return name.split(' ').map((p) => p[0]).slice(0, 2).join('').toUpperCase() || '?';
+}
+
+export default function MapSurface({ members, mapType }: Props) {
+  const ref = useRef<MapView>(null);
+  const fitted = useRef(false);
+
+  // Fit the view once, the first time members arrive (not on every update).
+  useEffect(() => {
+    if (fitted.current || members.length === 0) return;
+    fitted.current = true;
+    ref.current?.fitToCoordinates(
+      members.map((m) => ({ latitude: m.lat, longitude: m.lng })),
+      { edgePadding: { top: 80, right: 80, bottom: 80, left: 80 }, animated: true }
+    );
+  }, [members]);
+
+  return (
+    <MapView
+      ref={ref}
+      style={StyleSheet.absoluteFill}
+      mapType={mapType}
+      showsUserLocation
+      showsMyLocationButton
+      accessibilityLabel="Map of room members"
+    >
+      {members.map((m) => (
+        <Marker
+          key={m.id}
+          coordinate={{ latitude: m.lat, longitude: m.lng }}
+          opacity={m.stale ? 0.45 : 1}
+        >
+          <View style={styles.pin}>
+            <Text style={styles.pinText}>{initials(m.name)}</Text>
+          </View>
+          <Callout>
+            <View style={styles.callout}>
+              <Text style={styles.name}>{m.name}</Text>
+              <Text>{m.distanceText} away</Text>
+              <Text>{m.freshnessLabel}</Text>
+              <Text>{m.accuracyText}</Text>
+            </View>
+          </Callout>
+        </Marker>
+      ))}
+    </MapView>
+  );
+}
+
+const styles = StyleSheet.create({
+  pin: {
+    width: 40, height: 40, borderRadius: 20, backgroundColor: '#2563eb',
+    alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: '#fff',
+  },
+  pinText: { color: '#fff', fontWeight: '700' },
+  callout: { minWidth: 150, padding: 4 },
+  name: { fontWeight: '700', marginBottom: 2 },
+});
+######## END FILE: expo-app/components/MapSurface.tsx ########
+
+######## FILE: expo-app/app/_layout.tsx ########
+import { useEffect, useState } from 'react';
+import { Stack, useRouter, useSegments } from 'expo-router';
+import type { Session } from '@supabase/supabase-js';
+import { supabase } from '../lib/supabase';
+
+export default function RootLayout() {
+  const [session, setSession] = useState<Session | null>(null);
+  const [ready, setReady] = useState(false);
+  const segments = useSegments();
+  const router = useRouter();
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      setReady(true);
+    });
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => setSession(s));
+    return () => sub.subscription.unsubscribe();
+  }, []);
+
+  // Send signed-out users to sign-in and signed-in users into the app.
+  useEffect(() => {
+    if (!ready) return;
+    const inAuth = segments[0] === '(auth)';
+    if (!session && !inAuth) router.replace('/(auth)/sign-in');
+    else if (session && inAuth) router.replace('/(tabs)/rooms');
+  }, [session, ready, segments]);
+
+  if (!ready) return null;
+  return <Stack screenOptions={{ headerShown: false }} />;
+}
+######## END FILE: expo-app/app/_layout.tsx ########
+
+######## FILE: expo-app/app/(auth)/sign-in.tsx ########
+import { useState } from 'react';
+import {
+  ActivityIndicator, Alert, KeyboardAvoidingView, Platform,
+  Pressable, StyleSheet, Text, TextInput, View,
+} from 'react-native';
+import { supabase } from '../../lib/supabase';
+
+export default function SignIn() {
+  const [mode, setMode] = useState<'signin' | 'signup'>('signin');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [username, setUsername] = useState('');
+  const [fullName, setFullName] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  async function submit() {
+    if (!email || !password) return Alert.alert('Enter your email and password.');
+    if (mode === 'signup') {
+      if (!/^[a-z0-9_]{3,24}$/.test(username))
+        return Alert.alert('Username must be 3-24 characters: lowercase letters, numbers, underscore.');
+      if (!fullName.trim()) return Alert.alert('Enter your name.');
+      if (password.length < 8) return Alert.alert('Password must be at least 8 characters.');
+    }
+
+    setBusy(true);
+    try {
+      if (mode === 'signin') {
+        const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+        if (error) throw error;
+      } else {
+        const { data, error } = await supabase.auth.signUp({
+          email: email.trim(),
+          password,
+          options: { data: { username, full_name: fullName.trim() } },
+        });
+        if (error) throw error;
+        // With email confirmation on, there is no session until they confirm.
+        if (!data.session) Alert.alert('Check your email', 'Confirm your address, then sign in.');
+      }
+    } catch (e: any) {
+      Alert.alert('Something went wrong', e?.message ?? 'Please try again.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function forgotPassword() {
+    if (!email) return Alert.alert('Enter your email first.');
+    const { error } = await supabase.auth.resetPasswordForEmail(email.trim());
+    // Same message either way, so it can't be used to check who has an account.
+    if (error && error.status !== 400) return Alert.alert('Could not send the email', error.message);
+    Alert.alert('If that account exists, a reset email is on its way.');
+    // TODO week 2: deep link into an in-app "set new password" screen.
+  }
+
+  return (
+    <KeyboardAvoidingView
+      style={styles.wrap}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    >
+      <Text style={styles.title}>{mode === 'signin' ? 'Sign in' : 'Create account'}</Text>
+
+      {mode === 'signup' && (
+        <>
+          <TextInput style={styles.input} placeholder="Full name" value={fullName}
+            onChangeText={setFullName} accessibilityLabel="Full name" />
+          <TextInput style={styles.input} placeholder="Username" autoCapitalize="none"
+            value={username} onChangeText={(t) => setUsername(t.toLowerCase())}
+            accessibilityLabel="Username" />
+        </>
+      )}
+      <TextInput style={styles.input} placeholder="Email" autoCapitalize="none"
+        keyboardType="email-address" autoComplete="email" value={email}
+        onChangeText={setEmail} accessibilityLabel="Email" />
+      <TextInput style={styles.input} placeholder="Password" secureTextEntry
+        autoComplete={mode === 'signin' ? 'current-password' : 'new-password'}
+        value={password} onChangeText={setPassword} accessibilityLabel="Password" />
+
+      <Pressable style={[styles.button, busy && { opacity: 0.6 }]} onPress={submit}
+        disabled={busy} accessibilityRole="button">
+        {busy ? <ActivityIndicator color="#fff" /> :
+          <Text style={styles.buttonText}>{mode === 'signin' ? 'Sign in' : 'Sign up'}</Text>}
+      </Pressable>
+
+      <Pressable onPress={() => setMode(mode === 'signin' ? 'signup' : 'signin')}>
+        <Text style={styles.link}>
+          {mode === 'signin' ? 'New here? Create an account' : 'Have an account? Sign in'}
+        </Text>
+      </Pressable>
+      {mode === 'signin' && (
+        <Pressable onPress={forgotPassword}>
+          <Text style={styles.link}>Forgot password?</Text>
+        </Pressable>
+      )}
+    </KeyboardAvoidingView>
+  );
+}
+
+const styles = StyleSheet.create({
+  wrap: { flex: 1, justifyContent: 'center', padding: 24, gap: 12 },
+  title: { fontSize: 28, fontWeight: '700', marginBottom: 8 },
+  input: { borderWidth: 1, borderColor: '#9ca3af', borderRadius: 10, padding: 14, fontSize: 16 },
+  button: { backgroundColor: '#2563eb', padding: 16, borderRadius: 10, alignItems: 'center' },
+  buttonText: { color: '#fff', fontSize: 16, fontWeight: '600' },
+  link: { color: '#2563eb', textAlign: 'center', padding: 8 },
+});
+######## END FILE: expo-app/app/(auth)/sign-in.tsx ########
+
+######## FILE: expo-app/app/(tabs)/_layout.tsx ########
+import { Tabs } from 'expo-router';
+
+export default function TabsLayout() {
+  return (
+    <Tabs screenOptions={{ headerShown: false }}>
+      <Tabs.Screen name="rooms" options={{ title: 'Rooms' }} />
+      <Tabs.Screen name="map" options={{ title: 'Map' }} />
+    </Tabs>
+  );
+}
+######## END FILE: expo-app/app/(tabs)/_layout.tsx ########
+
+######## FILE: expo-app/app/(tabs)/rooms.tsx ########
+import { useCallback, useState } from 'react';
+import {
+  ActivityIndicator, Alert, FlatList, Pressable, StyleSheet, Text, TextInput, View,
+} from 'react-native';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { supabase } from '../../lib/supabase';
+
+type RoomRow = { id: string; name: string; role: string };
+
+export default function Rooms() {
+  const router = useRouter();
+  const [rooms, setRooms] = useState<RoomRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [panel, setPanel] = useState<'none' | 'create' | 'join'>('none');
+  const [name, setName] = useState('');
+  const [roomId, setRoomId] = useState('');
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    const { data, error } = await supabase
+      .from('room_members')
+      .select('role, rooms(id, name)');
+    if (error) setError(error.message);
+    else
+      setRooms(
+        (data as any[])
+          .filter((r) => r.rooms)
+          .map((r) => ({ id: r.rooms.id, name: r.rooms.name, role: r.role }))
+      );
+    setLoading(false);
+  }, []);
+
+  useFocusEffect(useCallback(() => { load(); }, [load]));
+
+  async function createRoom() {
+    if (!name.trim()) return Alert.alert('Give the room a name.');
+    if (password.length < 8) return Alert.alert('Room password must be at least 8 characters.');
+    setBusy(true);
+    const { data, error } = await supabase.rpc('create_room', {
+      p_name: name.trim(), p_description: null, p_password: password,
+    });
+    setBusy(false);
+    if (error) return Alert.alert('Could not create room', error.message);
+    Alert.alert('Room created', `Share this Room ID with members (and the password separately):\n\n${data}`);
+    setPanel('none'); setName(''); setPassword('');
+    load();
+  }
+
+  async function joinRoom() {
+    setBusy(true);
+    const { data, error } = await supabase.rpc('join_room', {
+      p_room_id: roomId.trim(), p_password: password,
+    });
+    setBusy(false);
+    if (error) return Alert.alert('Could not join', 'Invalid room ID or password.');
+    if (data === 'rate_limited') return Alert.alert('Too many attempts', 'Try again in 15 minutes.');
+    if (data !== 'ok') return Alert.alert('Could not join', 'Invalid room ID or password.');
+    setPanel('none'); setRoomId(''); setPassword('');
+    load();
+  }
+
+  return (
+    <View style={styles.wrap}>
+      <View style={styles.header}>
+        <Text style={styles.title}>Rooms</Text>
+        <Pressable onPress={() => supabase.auth.signOut()}>
+          <Text style={styles.link}>Sign out</Text>
+        </Pressable>
+      </View>
+
+      <View style={styles.row}>
+        <Pressable style={styles.btn} onPress={() => setPanel(panel === 'create' ? 'none' : 'create')}>
+          <Text style={styles.btnText}>Create room</Text>
+        </Pressable>
+        <Pressable style={styles.btn} onPress={() => setPanel(panel === 'join' ? 'none' : 'join')}>
+          <Text style={styles.btnText}>Join room</Text>
+        </Pressable>
+      </View>
+
+      {panel !== 'none' && (
+        <View style={styles.panel}>
+          {panel === 'create' ? (
+            <TextInput style={styles.input} placeholder="Room name" value={name} onChangeText={setName} />
+          ) : (
+            <TextInput style={styles.input} placeholder="Room ID" autoCapitalize="none"
+              value={roomId} onChangeText={setRoomId} />
+          )}
+          <TextInput style={styles.input} placeholder="Password" secureTextEntry
+            value={password} onChangeText={setPassword} />
+          <Pressable style={[styles.btn, busy && { opacity: 0.6 }]} disabled={busy}
+            onPress={panel === 'create' ? createRoom : joinRoom}>
+            {busy ? <ActivityIndicator color="#fff" /> :
+              <Text style={styles.btnText}>{panel === 'create' ? 'Create' : 'Join'}</Text>}
+          </Pressable>
+        </View>
+      )}
+
+      {loading ? <ActivityIndicator style={{ marginTop: 24 }} /> :
+        error ? (
+          <View style={styles.center}>
+            <Text>Couldn't load your rooms.</Text>
+            <Pressable onPress={load}><Text style={styles.link}>Retry</Text></Pressable>
+          </View>
+        ) : (
+          <FlatList
+            data={rooms}
+            keyExtractor={(r) => r.id}
+            ListEmptyComponent={
+              <Text style={styles.empty}>No rooms yet. Create one, or join with a Room ID and password.</Text>
+            }
+            renderItem={({ item }) => (
+              <Pressable style={styles.card}
+                onPress={() => router.push({ pathname: '/(tabs)/map', params: { roomId: item.id, roomName: item.name } })}>
+                <Text style={styles.cardTitle}>{item.name}</Text>
+                <Text style={styles.cardSub}>{item.role}</Text>
+              </Pressable>
+            )}
+          />
+        )}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  wrap: { flex: 1, padding: 20, paddingTop: 60, gap: 12 },
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  title: { fontSize: 28, fontWeight: '700' },
+  row: { flexDirection: 'row', gap: 10 },
+  btn: { flex: 1, backgroundColor: '#2563eb', padding: 14, borderRadius: 10, alignItems: 'center' },
+  btnText: { color: '#fff', fontWeight: '600' },
+  panel: { gap: 10 },
+  input: { borderWidth: 1, borderColor: '#9ca3af', borderRadius: 10, padding: 12, fontSize: 16 },
+  card: { padding: 16, borderRadius: 12, borderWidth: 1, borderColor: '#d1d5db', marginTop: 10 },
+  cardTitle: { fontSize: 17, fontWeight: '600' },
+  cardSub: { color: '#6b7280', marginTop: 2 },
+  empty: { textAlign: 'center', marginTop: 32, color: '#6b7280' },
+  center: { alignItems: 'center', marginTop: 32, gap: 8 },
+  link: { color: '#2563eb' },
+});
+######## END FILE: expo-app/app/(tabs)/rooms.tsx ########
+
+######## FILE: expo-app/app/(tabs)/map.tsx ########
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, Linking, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useLocalSearchParams } from 'expo-router';
+import MapSurface, { MapMember } from '../../components/MapSurface';
+import { supabase } from '../../lib/supabase';
+import { formatDistance, freshness } from '../../lib/geo';
+import { ShareStatus, startSharing } from '../../lib/locationSharing';
+
+type LocRow = {
+  user_id: string; lat: number; lng: number;
+  accuracy_m: number | null; updated_at: string; distance_m: number | null;
+};
+
+const SHARE_HOURS = 1;  // safe default: sharing expires on its own
+
+export default function MapScreen() {
+  const { roomId, roomName } = useLocalSearchParams<{ roomId?: string; roomName?: string }>();
+  const [userId, setUserId] = useState<string | null>(null);
+  const [rows, setRows] = useState<LocRow[]>([]);
+  const [names, setNames] = useState<Record<string, string>>({});
+  const [loadError, setLoadError] = useState(false);
+  const [sharing, setSharing] = useState(false);
+  const [expiresAt, setExpiresAt] = useState<string | null>(null);
+  const [shareStatus, setShareStatus] = useState<ShareStatus | null>(null);
+  const [mapType, setMapType] = useState<'standard' | 'satellite' | 'hybrid'>('standard');
+  const [now, setNow] = useState(Date.now());
+  const reloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    supabase.auth.getUser().then(({ data }) => setUserId(data.user?.id ?? null));
+  }, []);
+
+  // Refresh "Live / Updated X ago" labels every 15 s.
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 15_000);
+    return () => clearInterval(t);
+  }, []);
+
+  const load = useCallback(async () => {
+    if (!roomId || !userId) return;
+    const { data, error } = await supabase.rpc('room_member_locations', { p_room: roomId });
+    if (error) { setLoadError(true); return; }
+    setLoadError(false);
+    const list = (data ?? []) as LocRow[];
+    setRows(list);
+
+    const ids = list.map((r) => r.user_id);
+    if (ids.length) {
+      const { data: profs } = await supabase.from('profiles').select('id, full_name').in('id', ids);
+      setNames(Object.fromEntries((profs ?? []).map((p: any) => [p.id, p.full_name])));
+    }
+
+    const { data: mine } = await supabase
+      .from('room_members').select('sharing_enabled, share_expires_at')
+      .eq('room_id', roomId).eq('user_id', userId).maybeSingle();
+    const active = !!mine?.sharing_enabled &&
+      (!mine.share_expires_at || new Date(mine.share_expires_at).getTime() > Date.now());
+    setSharing(active);
+    setExpiresAt(active ? mine?.share_expires_at ?? null : null);
+  }, [roomId, userId]);
+
+  // Initial load + realtime. Events only signal "something changed"; we re-fetch
+  // through the RPC so RLS and server-side distance still apply.
+  useEffect(() => {
+    load();
+    if (!roomId) return;
+    const refresh = () => {
+      if (reloadTimer.current) clearTimeout(reloadTimer.current);
+      reloadTimer.current = setTimeout(load, 500);
+    };
+    const channel = supabase.channel(`room-${roomId}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'user_locations' }, refresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'room_members', filter: `room_id=eq.${roomId}` }, refresh)
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [load, roomId]);
+
+  // Run the location loop only while sharing is on for this room.
+  useEffect(() => {
+    if (!sharing || !userId) { setShareStatus(null); return; }
+    let stop: (() => void) | null = null;
+    let cancelled = false;
+    startSharing(userId, setShareStatus).then((s) => {
+      if (cancelled) s(); else stop = s;
+    });
+    // Stop at expiry, then reload so the UI reflects it.
+    const ms = expiresAt ? new Date(expiresAt).getTime() - Date.now() : null;
+    const expiry = ms != null ? setTimeout(load, Math.max(ms, 0) + 500) : null;
+    return () => { cancelled = true; stop?.(); if (expiry) clearTimeout(expiry); };
+  }, [sharing, userId, expiresAt, load]);
+
+  async function toggleSharing() {
+    if (!roomId || !userId) return;
+    const turnOn = !sharing;
+    const { error } = await supabase.from('room_members')
+      .update({
+        sharing_enabled: turnOn,
+        share_expires_at: turnOn ? new Date(Date.now() + SHARE_HOURS * 3600_000).toISOString() : null,
+      })
+      .eq('room_id', roomId).eq('user_id', userId);
+    if (error) return Alert.alert('Could not change sharing', error.message);
+    load();
+  }
+
+  const members: MapMember[] = useMemo(() => rows.map((r) => {
+    const f = freshness(r.updated_at, now);
+    return {
+      id: r.user_id,
+      name: names[r.user_id] ?? 'Member',
+      lat: r.lat, lng: r.lng,
+      distanceText: formatDistance(r.distance_m),
+      freshnessLabel: f.label,
+      stale: f.state === 'stale',
+      accuracyText: r.accuracy_m != null ? `Accuracy ±${Math.round(r.accuracy_m)} m` : 'Accuracy unknown',
+    };
+  }), [rows, names, now]);
+
+  if (!roomId) {
+    return <View style={styles.center}><Text>Pick a room on the Rooms tab to see its map.</Text></View>;
+  }
+
+  const banner =
+    shareStatus === 'denied' ? 'Location permission is off. Enable it in Settings to share.' :
+    shareStatus === 'error' ? "Can't reach the server or GPS. Your location may not be updating." :
+    loadError ? "Can't load the latest locations. Check your connection." : null;
+
+  return (
+    <View style={styles.wrap}>
+      <MapSurface members={members} mapType={mapType} />
+
+      {banner && (
+        <Pressable style={styles.banner} onPress={() => shareStatus === 'denied' ? Linking.openSettings() : load()}>
+          <Text style={styles.bannerText}>{banner}</Text>
+        </Pressable>
+      )}
+
+      <View style={styles.sheet}>
+        <Text style={styles.room}>{roomName ?? 'Room'}</Text>
+        <Text style={styles.sub}>
+          {members.length === 0
+            ? 'No one else is sharing their location right now.'
+            : `${members.length} member${members.length === 1 ? '' : 's'} sharing`}
+        </Text>
+        <View style={styles.row}>
+          <Pressable style={[styles.btn, sharing && styles.btnOn]} onPress={toggleSharing}>
+            <Text style={styles.btnText}>
+              {sharing ? `Sharing${shareStatus === 'active' ? ' · live' : '…'} (tap to stop)` : `Share my location (${SHARE_HOURS} h)`}
+            </Text>
+          </Pressable>
+          <Pressable style={styles.btnSmall}
+            onPress={() => setMapType(mapType === 'standard' ? 'hybrid' : mapType === 'hybrid' ? 'satellite' : 'standard')}>
+            <Text style={styles.btnText}>{mapType}</Text>
+          </Pressable>
+        </View>
+        <Text style={styles.note}>Sharing works while the app is open. It stops on its own after {SHARE_HOURS} hour.</Text>
+      </View>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  wrap: { flex: 1 },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
+  banner: { position: 'absolute', top: 56, left: 16, right: 16, backgroundColor: '#b91c1c', padding: 12, borderRadius: 10 },
+  bannerText: { color: '#fff', fontWeight: '600' },
+  sheet: { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: '#fff', padding: 16, paddingBottom: 28, borderTopLeftRadius: 18, borderTopRightRadius: 18, gap: 6 },
+  room: { fontSize: 18, fontWeight: '700' },
+  sub: { color: '#4b5563' },
+  row: { flexDirection: 'row', gap: 10, marginTop: 6 },
+  btn: { flex: 1, backgroundColor: '#2563eb', padding: 14, borderRadius: 10, alignItems: 'center' },
+  btnOn: { backgroundColor: '#15803d' },
+  btnSmall: { backgroundColor: '#374151', paddingHorizontal: 14, justifyContent: 'center', borderRadius: 10 },
+  btnText: { color: '#fff', fontWeight: '600' },
+  note: { color: '#6b7280', fontSize: 12 },
+});
+######## END FILE: expo-app/app/(tabs)/map.tsx ########
+
+=== END OF FILE ===

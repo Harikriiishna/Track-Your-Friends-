@@ -14,6 +14,18 @@ const PORT = Number(process.env.PORT) || 3000;
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
+// CORS headers for mobile WebView / Capacitor and cross-origin clients
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, Cache-Control');
+  if (req.method === 'OPTIONS') {
+    res.status(204).end();
+    return;
+  }
+  next();
+});
+
 // Static uploads directory
 app.use('/uploads', express.static(UPLOADS_DIR));
 
@@ -979,6 +991,82 @@ app.get('/api/direct-messages/threads/all', authMiddleware, (req, res) => {
   res.json({ threads });
 });
 
+// REST Chat Message Endpoints (fallback for non-WS / mobile environments)
+app.post('/api/messages/create', authMiddleware, (req, res) => {
+  try {
+    const user = (req as any).user as UserProfile;
+    const chatMsg = db.createMessage({
+      senderId: user.id,
+      roomId: req.body.roomId,
+      channelId: req.body.channelId,
+      recipientId: req.body.recipientId,
+      text: req.body.text,
+      attachments: req.body.attachments,
+      replyToId: req.body.replyToId,
+      clientMsgId: req.body.clientMsgId,
+    });
+    if (req.body.roomId) {
+      broadcastToRoom(req.body.roomId, { type: 'chat:message', message: chatMsg });
+    } else if (req.body.recipientId) {
+      broadcastToUser(req.body.recipientId, { type: 'chat:message', message: chatMsg });
+      broadcastToUser(user.id, { type: 'chat:message', message: chatMsg });
+    }
+    res.json({ message: chatMsg });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.post('/api/messages/:id/react', authMiddleware, (req, res) => {
+  try {
+    const user = (req as any).user as UserProfile;
+    const updated = db.reactToMessage(user.id, req.params.id, req.body.emoji);
+    const updateEvent: WsServerMessage = { type: 'chat:message_updated', message: updated };
+    if (updated.roomId) {
+      broadcastToRoom(updated.roomId, updateEvent);
+    } else if (updated.recipientId) {
+      broadcastToUser(updated.recipientId, updateEvent);
+      broadcastToUser(user.id, updateEvent);
+    }
+    res.json({ message: updated });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.put('/api/messages/:id/edit', authMiddleware, (req, res) => {
+  try {
+    const user = (req as any).user as UserProfile;
+    const updated = db.editMessage(user.id, req.params.id, req.body.text);
+    const updateEvent: WsServerMessage = { type: 'chat:message_updated', message: updated };
+    if (updated.roomId) {
+      broadcastToRoom(updated.roomId, updateEvent);
+    } else if (updated.recipientId) {
+      broadcastToUser(updated.recipientId, updateEvent);
+      broadcastToUser(user.id, updateEvent);
+    }
+    res.json({ message: updated });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete('/api/messages/:id', authMiddleware, (req, res) => {
+  try {
+    const user = (req as any).user as UserProfile;
+    db.deleteMessage(user.id, req.params.id);
+    const deleteEvent: WsServerMessage = { type: 'chat:message_deleted', messageId: req.params.id };
+    for (const s of clients.values()) {
+      if (s.ws.readyState === WebSocket.OPEN) {
+        s.ws.send(JSON.stringify(deleteEvent));
+      }
+    }
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 // Locations
 app.post('/api/locations/update', authMiddleware, (req, res) => {
   try {
@@ -1463,6 +1551,11 @@ app.post('/api/alerts/emergency', authMiddleware, sosRateLimiter, (req, res) => 
 });
 
 app.get('/api/alerts/emergency/active', authMiddleware, (_req, res) => {
+  const alerts = db.getActiveEmergencyAlerts();
+  res.json({ alerts });
+});
+
+app.get('/api/alerts/emergency', authMiddleware, (_req, res) => {
   const alerts = db.getActiveEmergencyAlerts();
   res.json({ alerts });
 });

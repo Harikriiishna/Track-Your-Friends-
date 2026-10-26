@@ -112,22 +112,32 @@ function MainApp() {
     };
   }, [user, prefetchTab]);
 
+  const refreshSavedPlaces = React.useCallback(async () => {
+    if (!user || !api.getToken()) return;
+    try {
+      const res = await api.get<{ places: SavedPlace[] }>('/api/saved-places');
+      setSavedPlaces(res.places || []);
+    } catch (e) {
+      console.warn('Could not refresh saved places:', e);
+    }
+  }, [user]);
+
   // Load user saved places and rooms
   useEffect(() => {
-    if (!user) return;
+    if (!user || !api.getToken()) return;
     async function loadData() {
       try {
         const [placesRes, roomsRes] = await Promise.all([
           api.get<{ places: SavedPlace[] }>('/api/saved-places'),
           api.get<{ rooms: Room[] }>('/api/rooms'),
         ]);
-        setSavedPlaces(placesRes.places);
-        setUserRooms(roomsRes.rooms);
-        if (roomsRes.rooms.length > 0 && !selectedRoomId) {
+        setSavedPlaces(placesRes.places || []);
+        setUserRooms(roomsRes.rooms || []);
+        if (roomsRes.rooms && roomsRes.rooms.length > 0 && !selectedRoomId) {
           setSelectedRoomId(roomsRes.rooms[0].id);
         }
       } catch (e) {
-        console.error('Failed to preload user places and rooms:', e);
+        console.warn('Could not preload user places and rooms:', e);
       }
     }
     loadData();
@@ -183,6 +193,7 @@ function MainApp() {
             isActive={currentTab === 'map'}
             focusCoords={pendingCoords}
             savedPlaces={savedPlaces}
+            onRefreshSavedPlaces={refreshSavedPlaces}
             rooms={userRooms}
             selectedRoomId={selectedRoomId}
             onSelectUserForChat={(targetUserId) => {
@@ -210,7 +221,10 @@ function MainApp() {
             }`}
           >
             <RoomsManager
+              isActive={currentTab === 'rooms'}
               selectedRoomId={selectedRoomId}
+              savedPlaces={savedPlaces}
+              onRefreshSavedPlaces={refreshSavedPlaces}
               onSelectRoom={(roomId) => {
                 setSelectedRoomId(roomId);
                 api.get<{ rooms: Room[] }>('/api/rooms').then((res) => setUserRooms(res.rooms));
@@ -228,6 +242,14 @@ function MainApp() {
                 setPendingCoords({ lat, lng });
                 handleSelectTab('map');
               }}
+              onAddPlaceAtCoords={(lat, lng) => {
+                setPendingCoords({ lat, lng });
+                handleSelectTab('saved');
+              }}
+              onSetReminderAtCoords={(lat, lng, title) => {
+                setPendingReminder({ lat, lng, title });
+                handleSelectTab('reminders');
+              }}
             />
           </div>
         )}
@@ -244,6 +266,8 @@ function MainApp() {
             <ChatView
               userRooms={userRooms}
               selectedRoomId={selectedRoomId}
+              savedPlaces={savedPlaces}
+              onRefreshSavedPlaces={refreshSavedPlaces}
               onSelectRoom={(roomId) => {
                 setSelectedRoomId(roomId);
                 setSelectedChatUser(null);
@@ -253,6 +277,14 @@ function MainApp() {
               onFocusMapLocation={(lat, lng) => {
                 setPendingCoords({ lat, lng });
                 handleSelectTab('map');
+              }}
+              onAddPlaceAtCoords={(lat, lng) => {
+                setPendingCoords({ lat, lng });
+                handleSelectTab('saved');
+              }}
+              onSetReminderAtCoords={(lat, lng, title) => {
+                setPendingReminder({ lat, lng, title });
+                handleSelectTab('reminders');
               }}
               onNavigateTab={(tab) => handleSelectTab(tab)}
             />
@@ -291,6 +323,8 @@ function MainApp() {
             }`}
           >
             <SavedPlacesManager
+              savedPlaces={savedPlaces}
+              onRefreshSavedPlaces={refreshSavedPlaces}
               pendingCoords={pendingCoords}
               onClearPendingCoords={() => setPendingCoords(null)}
               onFocusMapLocation={(lat, lng) => {

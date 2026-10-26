@@ -51,6 +51,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, onSelectTab, onOpenS
         <nav className={`hidden md:flex items-center gap-6 text-xs font-semibold ${themeConfig.textSecondary}`}>
           {[
             { id: 'map', label: 'Live Map' },
+            { id: 'saved', label: 'Wishlist & Places' },
             { id: 'rooms', label: 'Rooms & Mesh' },
             { id: 'chat', label: 'Chat & Voice' },
             { id: 'alerts', label: 'Emergency Alerts', badge: activeAlerts.length },

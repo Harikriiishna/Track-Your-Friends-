@@ -42,7 +42,6 @@ import {
   RotateCcw,
   RotateCw,
   Minus,
-  Moon,
   Bell,
   Copy,
   ExternalLink,
@@ -50,6 +49,8 @@ import {
   Palette,
   Info,
   Radio,
+  Trash2,
+  ArrowLeft,
 } from 'lucide-react';
 import {
   MARKER_COLORS,
@@ -67,6 +68,7 @@ export interface MarkerContextMenuTarget {
   lat: number;
   lng: number;
   userId?: string;
+  placeId?: string;
   avatarUrl?: string;
   isOnline?: boolean;
   distanceText?: string;
@@ -76,8 +78,12 @@ export interface MarkerContextMenuTarget {
 
 interface LiveMapProps {
   savedPlaces?: SavedPlace[];
+  onRefreshSavedPlaces?: () => void;
   rooms?: Room[];
   selectedRoomId?: string | null;
+  roomOnlyMode?: boolean;
+  activeRoomDetails?: Room | null;
+  onCloseRoomMap?: () => void;
   onSelectUserForChat?: (userId: string) => void;
   onAddPlaceAtCoords?: (lat: number, lng: number) => void;
   onNavigateTo?: (lat: number, lng: number, label?: string) => void;
@@ -95,8 +101,12 @@ interface SearchResult {
 
 export const LiveMap: React.FC<LiveMapProps> = ({
   savedPlaces = [],
+  onRefreshSavedPlaces,
   rooms = [],
   selectedRoomId = null,
+  roomOnlyMode = false,
+  activeRoomDetails = null,
+  onCloseRoomMap,
   onSelectUserForChat,
   onAddPlaceAtCoords,
   onNavigateTo,
@@ -116,6 +126,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
     onlineUserIds,
   } = useRealtime();
 
+  const mapUid = useRef(Math.random().toString(36).slice(2, 8)).current;
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
   const tileLayerRef = useRef<L.TileLayer | null>(null);
@@ -126,6 +137,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
   const searchMarkerRef = useRef<L.Marker | null>(null);
   const nearbyPoiMarkersRef = useRef<L.Marker[]>([]);
   const [nearbyPoisOnMap, setNearbyPoisOnMap] = useState<PlaceResult[]>([]);
+  const [fetchedRoomDetails, setFetchedRoomDetails] = useState<Room | null>(null);
 
   // Multi-user Breadcrumb Trail Palette & Layer Groups
   interface TrailLayerGroup {
@@ -138,15 +150,18 @@ export const LiveMap: React.FC<LiveMapProps> = ({
   const trailLayersRef = useRef<Map<string, TrailLayerGroup>>(new Map());
 
   const toast = useToast();
-  type MapLayerMode = 'terrain' | 'satellite' | 'dark' | 'standard' | 'traffic';
+  type MapLayerMode = 'terrain' | 'satellite' | 'standard' | 'traffic';
   const [mapMode, setMapMode] = useState<MapLayerMode>(() => {
     const saved = localStorage.getItem('beacon_map_style');
-    return (saved as MapLayerMode) || 'terrain';
+    if (saved && ['terrain', 'satellite', 'standard', 'traffic'].includes(saved)) {
+      return saved as MapLayerMode;
+    }
+    return 'terrain';
   });
   const [showLayerQuickToggle, setShowLayerQuickToggle] = useState<boolean>(true);
   const [selectedUser, setSelectedUser] = useState<UserLocation | null>(null);
   const [hasCenteredOnce, setHasCenteredOnce] = useState(false);
-  const [showPermissionBanner, setShowPermissionBanner] = useState(!isGpsActive && !myLocation);
+  const [showPermissionBanner, setShowPermissionBanner] = useState(false);
 
   // Multi-user Breadcrumb Trail State
   const [activeTrails, setActiveTrails] = useState<Record<string, UserPathTrail>>({});
@@ -806,8 +821,45 @@ export const LiveMap: React.FC<LiveMapProps> = ({
     fitAllTrailsBounds();
   };
 
+  // Fetch room details if in roomOnlyMode and activeRoomDetails doesn't have members loaded
+  useEffect(() => {
+    if (!roomOnlyMode) return;
+    const targetRoomId = activeRoomDetails?.id || selectedRoomId;
+    if (!targetRoomId) return;
+    if (activeRoomDetails?.members && activeRoomDetails.members.length > 0) {
+      setFetchedRoomDetails(activeRoomDetails);
+      return;
+    }
+    api
+      .get<{ room: Room }>(`/api/rooms/${targetRoomId}`)
+      .then((res) => {
+        if (res?.room) setFetchedRoomDetails(res.room);
+      })
+      .catch(() => {});
+  }, [roomOnlyMode, activeRoomDetails, selectedRoomId]);
+
   // Active room and members list
-  const activeRoom = rooms.find((r) => r.id === selectedRoomId);
+  const effectiveRoom = activeRoomDetails || fetchedRoomDetails || rooms.find((r) => r.id === selectedRoomId) || null;
+  const isUniversalActiveRoom = Boolean(
+    effectiveRoom?.isUniversal || effectiveRoom?.id === 'room-universal'
+  );
+
+  // Set of user IDs belonging to the active room when roomOnlyMode is true
+  const roomMemberIdsSet = React.useMemo(() => {
+    if (!roomOnlyMode || !effectiveRoom || isUniversalActiveRoom) return null;
+    const ids = new Set<string>();
+    if (user?.id) ids.add(user.id);
+    if (effectiveRoom.ownerId) ids.add(effectiveRoom.ownerId);
+    effectiveRoom.members?.forEach((m) => ids.add(m.userId));
+    return ids;
+  }, [roomOnlyMode, effectiveRoom, isUniversalActiveRoom, user?.id]);
+
+  // Filtered peer locations: shows all peers on Home Map, or only room members in Room Map
+  const displayedUserLocations = React.useMemo(() => {
+    if (!roomOnlyMode || !roomMemberIdsSet) return userLocations;
+    return userLocations.filter((loc) => roomMemberIdsSet.has(loc.userId));
+  }, [roomOnlyMode, roomMemberIdsSet, userLocations]);
+
   const roomUsersList = React.useMemo(() => {
     const list: Array<{
       id: string;
@@ -816,10 +868,14 @@ export const LiveMap: React.FC<LiveMapProps> = ({
       avatarUrl: string;
       isOnline: boolean;
       isMe: boolean;
+      location?: UserLocation | null;
+      role?: string;
     }> = [];
+    const seen = new Set<string>();
 
     // Current user (Self)
     if (user) {
+      seen.add(user.id);
       list.push({
         id: user.id,
         fullName: `${user.fullName} (You)`,
@@ -827,12 +883,37 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         avatarUrl: user.avatarUrl,
         isOnline: true,
         isMe: true,
+        location: myLocation,
+        role: effectiveRoom?.members?.find((m) => m.userId === user.id)?.role || 'MEMBER',
       });
     }
 
-    // Room Peers
-    userLocations.forEach((loc) => {
-      if (user && loc.userId === user.id) return;
+    // If roomOnlyMode and effectiveRoom has explicit members, include all room members
+    if (roomOnlyMode && effectiveRoom?.members) {
+      effectiveRoom.members.forEach((mem) => {
+        if (seen.has(mem.userId)) return;
+        seen.add(mem.userId);
+        const peerLoc = displayedUserLocations.find((l) => l.userId === mem.userId) || null;
+        list.push({
+          id: mem.userId,
+          fullName: mem.user?.fullName || peerLoc?.fullName || 'Room Member',
+          username: mem.user?.username || peerLoc?.username || mem.userId.slice(0, 6),
+          avatarUrl:
+            mem.user?.avatarUrl ||
+            peerLoc?.avatarUrl ||
+            `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(mem.userId)}`,
+          isOnline: onlineUserIds.includes(mem.userId),
+          isMe: false,
+          location: peerLoc,
+          role: mem.role,
+        });
+      });
+    }
+
+    // Include any remaining visible peer locations
+    displayedUserLocations.forEach((loc) => {
+      if (seen.has(loc.userId)) return;
+      seen.add(loc.userId);
       list.push({
         id: loc.userId,
         fullName: loc.fullName,
@@ -840,11 +921,51 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         avatarUrl: loc.avatarUrl,
         isOnline: onlineUserIds.includes(loc.userId),
         isMe: false,
+        location: loc,
       });
     });
 
     return list;
-  }, [user, userLocations, onlineUserIds]);
+  }, [user, myLocation, roomOnlyMode, effectiveRoom, displayedUserLocations, onlineUserIds]);
+
+  const fitAllRoomMembersOnMap = () => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+    const bounds = L.latLngBounds([]);
+    if (myLocation) {
+      bounds.extend([myLocation.latitude, myLocation.longitude]);
+    }
+    displayedUserLocations.forEach((loc) => {
+      bounds.extend([loc.latitude, loc.longitude]);
+    });
+    if (bounds.isValid()) {
+      map.fitBounds(bounds, { padding: [80, 80], maxZoom: 17 });
+      toast.info(`Showing all active members in ${effectiveRoom?.name || 'room'}`);
+    } else if (myLocation) {
+      map.flyTo([myLocation.latitude, myLocation.longitude], 16);
+    }
+  };
+
+  // Auto-fit room members on map when switching rooms in roomOnlyMode
+  useEffect(() => {
+    if (!roomOnlyMode || !isActive || focusCoords) return;
+    const timer = setTimeout(() => {
+      const map = mapInstanceRef.current;
+      if (!map) return;
+      map.invalidateSize();
+      const bounds = L.latLngBounds([]);
+      if (myLocation) {
+        bounds.extend([myLocation.latitude, myLocation.longitude]);
+      }
+      displayedUserLocations.forEach((loc) => {
+        bounds.extend([loc.latitude, loc.longitude]);
+      });
+      if (bounds.isValid()) {
+        map.fitBounds(bounds, { padding: [70, 70], maxZoom: 16 });
+      }
+    }, 120);
+    return () => clearTimeout(timer);
+  }, [roomOnlyMode, effectiveRoom?.id, isActive]);
 
   const toggleAllRoomTrails = async () => {
     const allIds = roomUsersList.map((u) => u.id);
@@ -865,7 +986,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
 
   const GOOGLE_MAPS_KEY = (import.meta as any).env?.VITE_GOOGLE_MAPS_API_KEY || 'AIzaSyAOVYRIgupAurZup5y1PRh8Ismb1A3lLao';
 
-  const createGoogleTileLayer = (mode: 'standard' | 'satellite' | 'terrain' | 'traffic' | 'dark') => {
+  const createGoogleTileLayer = (mode: 'standard' | 'satellite' | 'terrain' | 'traffic') => {
     if (mode === 'terrain') {
       return L.tileLayer(
         `https://mt{s}.google.com/vt/lyrs=p&x={x}&y={y}&z={z}&scale=2&hl=en`,
@@ -894,16 +1015,6 @@ export const LiveMap: React.FC<LiveMapProps> = ({
           subdomains: ['0', '1', '2', '3'],
           detectRetina: true,
           attribution: '&copy; Google Maps Live Traffic HD',
-        }
-      );
-    } else if (mode === 'dark') {
-      return L.tileLayer(
-        `https://{s}.basemaps.cartocdn.com/rastertiles/dark_all/{z}/{x}/{y}{r}.png`,
-        {
-          maxZoom: 20,
-          subdomains: 'abcd',
-          detectRetina: true,
-          attribution: '&copy; Simple Night-Mode Street Map HD',
         }
       );
     } else {
@@ -1017,6 +1128,17 @@ export const LiveMap: React.FC<LiveMapProps> = ({
       return () => clearTimeout(timer);
     }
   }, [isActive]);
+
+  // Automatically invalidate map size whenever the container dimensions change (e.g., Docked Panel <-> Fullscreen)
+  useEffect(() => {
+    const el = gestureAreaRef.current || mapContainerRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => {
+      mapInstanceRef.current?.invalidateSize();
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   // Smoothly swoop/fly to focused coordinates when requested from external card/alert/chat
   useEffect(() => {
@@ -1420,7 +1542,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
     const currentMarkers = userMarkersRef.current;
     const activePeerIds = new Set<string>();
 
-    for (const peerLoc of userLocations) {
+    for (const peerLoc of displayedUserLocations) {
       if (peerLoc.userId === user?.id) continue;
       activePeerIds.add(peerLoc.userId);
 
@@ -1521,7 +1643,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         currentMarkers.delete(userId);
       }
     }
-  }, [userLocations, onlineUserIds, myLocation, user?.id, bearing, memberOverridesVersion]);
+  }, [displayedUserLocations, onlineUserIds, myLocation, user?.id, bearing, memberOverridesVersion]);
 
   // Update Saved Places Markers
   useEffect(() => {
@@ -1553,15 +1675,35 @@ export const LiveMap: React.FC<LiveMapProps> = ({
       });
 
       const marker = L.marker(latLng, { icon: placeIcon }).addTo(map);
+      const removeBtnId = `remove-saved-place-${mapUid}-${place.id}`;
       marker.bindPopup(`
         <div class="p-2">
-          <p class="font-bold text-sm">${place.name}</p>
+          <p class="font-bold text-sm text-slate-900">${place.name}</p>
           <p class="text-xs text-slate-600">${place.description || 'Saved location'}</p>
           <p class="text-[10px] text-slate-400 mt-1">Geofence radius: ${place.radiusMeters} m</p>
+          <button id="${removeBtnId}" class="mt-2 px-2.5 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-bold cursor-pointer">
+            Remove from Wishlist
+          </button>
         </div>
       `);
+      marker.on('popupopen', () => {
+        const removeBtn = document.getElementById(removeBtnId);
+        if (removeBtn) {
+          removeBtn.onclick = async () => {
+            try {
+              await api.delete(`/api/saved-places/${place.id}`);
+              marker.closePopup();
+              onRefreshSavedPlaces?.();
+              toast.success(`Removed "${place.name}" from Wishlist`);
+            } catch (err: any) {
+              toast.error(err.message || 'Failed to remove place');
+            }
+          };
+        }
+      });
       attachMarkerLongPress(marker, {
         type: 'place',
+        placeId: place.id,
         title: place.name,
         subtitle: place.description || `Radius: ${place.radiusMeters}m`,
         lat: place.latitude,
@@ -1854,15 +1996,14 @@ export const LiveMap: React.FC<LiveMapProps> = ({
 
   const centerOnMyLocation = () => {
     requestLocationUpdate();
-    if (mapInstanceRef.current && myLocation) {
-      mapInstanceRef.current.flyTo([myLocation.latitude, myLocation.longitude], 18, {
+    if (mapInstanceRef.current) {
+      const targetLat = myLocation ? myLocation.latitude : 13.043625;
+      const targetLng = myLocation ? myLocation.longitude : 77.723065;
+      mapInstanceRef.current.flyTo([targetLat, targetLng], 18, {
         animate: true,
         duration: 0.9,
       });
-      toast.success(`Centered on your accurate place (±${gpsAccuracy ? Math.round(gpsAccuracy) : 5}m)`);
-    } else {
-      toast.info('Acquiring fresh high-precision GPS fix...');
-      requestLocationUpdate();
+      toast.success(`Centered on your location (±${gpsAccuracy ? Math.round(gpsAccuracy) : 12}m)`);
     }
   };
 
@@ -1912,7 +2053,102 @@ export const LiveMap: React.FC<LiveMapProps> = ({
       )}
 
       {/* Top Floating Bar: Address Search, Navigation HUD & Quick Pop Button */}
-      <div className="absolute top-4 left-4 right-4 md:right-auto md:w-[440px] z-30 flex flex-col gap-2">
+      <div className="absolute top-4 left-4 right-4 md:right-auto md:w-[460px] z-30 flex flex-col gap-2">
+        {/* Room Map Mode Banner & Room Members Roster Bar */}
+        {roomOnlyMode && (
+          <div className="p-2.5 rounded-2xl bg-slate-900/95 backdrop-blur-xl border border-sky-500/40 shadow-2xl text-white space-y-2 animate-in fade-in slide-in-from-top-1 duration-150">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                {onCloseRoomMap && (
+                  <button
+                    onClick={onCloseRoomMap}
+                    className="px-2.5 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-bold flex items-center gap-1 transition-all cursor-pointer active:scale-95 shrink-0"
+                    title="Back to Room"
+                  >
+                    <ArrowLeft className="w-3.5 h-3.5" />
+                    <span>Back</span>
+                  </button>
+                )}
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <Users className="w-3.5 h-3.5 text-sky-400 shrink-0" />
+                    <span className="font-bold text-xs text-white truncate">
+                      {effectiveRoom?.name || 'Room Map'}
+                    </span>
+                    <span className="px-1.5 py-0.5 rounded-full bg-sky-500/20 text-sky-300 text-[10px] font-bold font-mono shrink-0 border border-sky-400/30">
+                      {roomUsersList.length} {roomUsersList.length === 1 ? 'Member' : 'Members'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <button
+                onClick={fitAllRoomMembersOnMap}
+                className="px-2.5 py-1 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-[11px] font-bold flex items-center gap-1 transition-all cursor-pointer active:scale-95 shrink-0 shadow-sm"
+                title="Fit all room members on map"
+              >
+                <Maximize2 className="w-3 h-3" />
+                <span>Fit All</span>
+              </button>
+            </div>
+
+            {/* Interactive Room Members Chips */}
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 scrollbar-none">
+              {roomUsersList.map((member) => {
+                const hasCoords = Boolean(
+                  member.isMe
+                    ? myLocation
+                    : member.location &&
+                      typeof member.location.latitude === 'number' &&
+                      typeof member.location.longitude === 'number'
+                );
+                return (
+                  <button
+                    key={member.id}
+                    onClick={() => {
+                      if (member.isMe && myLocation) {
+                        centerOnMyLocation();
+                        setSelectedUser(myLocation);
+                      } else if (member.location && mapInstanceRef.current) {
+                        mapInstanceRef.current.flyTo(
+                          [member.location.latitude, member.location.longitude],
+                          18,
+                          { animate: true, duration: 0.9 }
+                        );
+                        setSelectedUser(member.location);
+                      } else {
+                        toast.info(`${member.fullName} has not shared live GPS coordinates yet`);
+                      }
+                    }}
+                    className={`px-2 py-1 rounded-xl border text-[11px] font-semibold flex items-center gap-1.5 shrink-0 transition-all cursor-pointer active:scale-95 ${
+                      hasCoords
+                        ? 'bg-white/10 hover:bg-sky-500/25 border-white/15 hover:border-sky-400/50 text-white'
+                        : 'bg-white/5 border-white/10 text-slate-400 opacity-75'
+                    }`}
+                    title={hasCoords ? `Locate ${member.fullName} on map` : `${member.fullName} (No live GPS)`}
+                  >
+                    <div className="relative w-4 h-4 shrink-0">
+                      <img
+                        src={member.avatarUrl}
+                        alt={member.fullName}
+                        className="w-4 h-4 rounded-full object-cover border border-white/30"
+                      />
+                      <span
+                        className={`absolute -bottom-0.5 -right-0.5 w-1.5 h-1.5 rounded-full ${
+                          member.isOnline ? 'bg-emerald-400' : 'bg-slate-500'
+                        }`}
+                      />
+                    </div>
+                    <span className="truncate max-w-[90px]">
+                      {member.isMe ? 'You' : member.fullName.split(' ')[0]}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {/* Active Route / Google Maps Turn-by-Turn Navigation HUD */}
         {activeRouteData && (
           <div className="p-3.5 rounded-2xl bg-slate-900/95 backdrop-blur-xl border border-sky-500/40 shadow-2xl text-white flex items-center justify-between gap-3 animate-in slide-in-from-top-2">
@@ -2028,7 +2264,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
           >
             <Layers className="w-4 h-4 text-sky-400" />
             <span className="text-xs font-semibold capitalize hidden xs:inline sm:inline">
-              {mapMode === 'terrain' ? 'Terrain' : mapMode === 'satellite' ? 'Satellite' : mapMode === 'dark' ? 'Night Mode' : mapMode === 'traffic' ? 'Traffic' : 'Standard'}
+              {mapMode === 'terrain' ? 'Terrain' : mapMode === 'satellite' ? 'Satellite' : mapMode === 'traffic' ? 'Traffic' : 'Standard'}
             </span>
             {bearing !== 0 && (
               <span className="px-1.5 py-0.2 bg-sky-500 text-white rounded-full text-[9px] font-mono font-bold">
@@ -2039,7 +2275,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
           </button>
         </div>
 
-        {/* Toggle-able Layer Controller Floating Bar: Instant 1-tap switch between Terrain, Satellite, and Night Mode */}
+        {/* Toggle-able Layer Controller Floating Bar: Instant 1-tap switch between Terrain, Satellite, Street, and Traffic */}
         {showLayerQuickToggle && (
           <div className="flex items-center justify-between gap-1 p-1 bg-slate-900/90 backdrop-blur-xl border border-white/15 rounded-2xl shadow-xl z-20 text-white animate-in fade-in slide-in-from-top-1 duration-150">
             <div className="flex items-center gap-1 overflow-x-auto py-0.5 px-1 scrollbar-none">
@@ -2079,36 +2315,36 @@ export const LiveMap: React.FC<LiveMapProps> = ({
 
               <button
                 onClick={() => {
-                  setMapMode('dark');
-                  localStorage.setItem('beacon_map_style', 'dark');
-                  toast.info('🌙 Simple Night-mode street style enabled');
-                }}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer active:scale-95 shrink-0 ${
-                  mapMode === 'dark'
-                    ? 'bg-gradient-to-r from-purple-600 to-slate-800 text-white shadow-md ring-1 ring-white/30'
-                    : 'text-slate-300 hover:text-white hover:bg-white/10'
-                }`}
-                title="Night Mode: Simple high-contrast street style for night navigation"
-              >
-                <Moon className="w-3.5 h-3.5 text-purple-300" />
-                <span>Night Mode</span>
-              </button>
-
-              <button
-                onClick={() => {
                   setMapMode('standard');
                   localStorage.setItem('beacon_map_style', 'standard');
                   toast.info('🗺️ Standard street map enabled');
                 }}
-                className={`px-2.5 py-1.5 rounded-xl text-xs font-medium flex items-center gap-1 transition-all cursor-pointer active:scale-95 shrink-0 ${
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer active:scale-95 shrink-0 ${
                   mapMode === 'standard'
-                    ? 'bg-white/20 text-white shadow-xs font-bold'
-                    : 'text-slate-400 hover:text-white hover:bg-white/5'
+                    ? 'bg-white/20 text-white shadow-md ring-1 ring-white/30'
+                    : 'text-slate-300 hover:text-white hover:bg-white/10'
                 }`}
                 title="Standard Google street map"
               >
                 <MapIcon className="w-3.5 h-3.5 text-slate-300" />
-                <span className="hidden sm:inline">Street</span>
+                <span>Street</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setMapMode('traffic');
+                  localStorage.setItem('beacon_map_style', 'traffic');
+                  toast.info('🚗 Live Traffic layer enabled');
+                }}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer active:scale-95 shrink-0 ${
+                  mapMode === 'traffic'
+                    ? 'bg-gradient-to-r from-amber-600 to-orange-600 text-white shadow-md ring-1 ring-white/30'
+                    : 'text-slate-300 hover:text-white hover:bg-white/10'
+                }`}
+                title="Live Traffic congestion overlay"
+              >
+                <Car className="w-3.5 h-3.5 text-amber-300" />
+                <span>Traffic</span>
               </button>
             </div>
 
@@ -2153,7 +2389,6 @@ export const LiveMap: React.FC<LiveMapProps> = ({
                 {[
                   { id: 'terrain', name: 'Terrain Topo', icon: Mountain, desc: 'Elevation & Contours' },
                   { id: 'satellite', name: 'Satellite HD', icon: Globe, desc: 'Aerial Hybrid Imagery' },
-                  { id: 'dark', name: 'Night Street', icon: Moon, desc: 'Simple Night-Mode Style' },
                   { id: 'standard', name: 'Standard HD', icon: MapIcon, desc: 'Google Street Retina' },
                   { id: 'traffic', name: 'Live Traffic', icon: Car, desc: 'Real-time Congestion' },
                 ].map((item) => {
@@ -2403,7 +2638,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
       )}
 
       {/* Floating Controls: Zoom, Compass & Location */}
-      <div className="absolute bottom-20 right-4 md:bottom-6 md:right-6 z-10 flex flex-col items-center gap-2.5">
+      <div className={`absolute ${roomOnlyMode ? 'bottom-4' : 'bottom-20'} right-4 md:bottom-6 md:right-6 z-10 flex flex-col items-center gap-2.5`}>
         {/* Zoom In & Out */}
         <div className={`${themeConfig.glassPanel} rounded-2xl shadow-xl border ${themeConfig.glassBorder} overflow-hidden flex flex-col`}>
           <button
@@ -2510,23 +2745,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
           <Crosshair className="w-5 h-5 text-sky-400" />
         </button>
       </div>
-
-      {/* GPS Error Banner */}
-      {gpsError && (
-        <div className="absolute top-24 right-4 max-w-sm z-20 bg-rose-50 border border-rose-200 p-3.5 rounded-2xl shadow-lg text-rose-900 text-xs flex items-start gap-2.5">
-          <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
-          <div className="flex-1">
-            <p className="font-semibold">GPS Permission Alert</p>
-            <p className="mt-0.5 text-rose-700">{gpsError}</p>
-          </div>
-          <button
-            onClick={requestLocationUpdate}
-            className="text-xs bg-rose-600 text-white px-2.5 py-1 rounded-lg font-medium hover:bg-rose-700"
-          >
-            Retry
-          </button>
-        </div>
-      )}
+    
 
 
       {/* Path-Tracing HUD Banner for Selected User */}
@@ -2619,7 +2838,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
 
       {/* Selected User Location Card (Product Spec Section 9) */}
       {selectedUser && (
-        <div className="absolute bottom-20 left-4 right-4 md:left-auto md:right-6 md:bottom-6 md:w-96 z-30 bg-white/95 backdrop-blur-md rounded-2xl shadow-2xl border border-slate-200 p-4 transition-all">
+        <div className={`absolute ${roomOnlyMode ? 'bottom-4' : 'bottom-20'} left-4 right-4 md:left-auto md:right-6 md:bottom-6 md:w-96 z-30 bg-white/95 backdrop-blur-md rounded-2xl shadow-2xl border border-slate-200 p-4 transition-all`}>
           <div className="flex items-start justify-between">
             <div className="flex items-center gap-3">
               <img
@@ -3010,8 +3229,35 @@ export const LiveMap: React.FC<LiveMapProps> = ({
                 </button>
               )}
 
-              {/* Save as Saved Place */}
-              {contextMenu.target.type !== 'place' && (
+              {/* Save as Saved Place OR Remove from Wishlist */}
+              {contextMenu.target.type === 'place' && contextMenu.target.placeId ? (
+                <button
+                  onClick={async () => {
+                    const pid = contextMenu.target.placeId!;
+                    const pName = contextMenu.target.title;
+                    closeContextMenu();
+                    try {
+                      await api.delete(`/api/saved-places/${pid}`);
+                      onRefreshSavedPlaces?.();
+                      toast.success(`Removed "${pName}" from Wishlist`);
+                    } catch (err: any) {
+                      toast.error(err.message || 'Failed to remove place');
+                    }
+                  }}
+                  className="w-full px-2.5 py-2 hover:bg-rose-500/20 active:bg-rose-500/30 rounded-xl flex items-center justify-between transition-colors cursor-pointer group text-left"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-7 h-7 rounded-lg bg-rose-500/20 text-rose-400 flex items-center justify-center group-hover:scale-105 transition-transform">
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </div>
+                    <div>
+                      <span className="font-bold text-rose-300 block">Remove from Wishlist</span>
+                      <span className="text-[10px] text-slate-400 block">Delete saved location marker</span>
+                    </div>
+                  </div>
+                  <span className="text-[10px] text-rose-400 font-semibold">Remove</span>
+                </button>
+              ) : (
                 <button
                   onClick={() => {
                     const lat = contextMenu.target.lat;
@@ -3029,7 +3275,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
                     </div>
                     <div>
                       <span className="font-bold text-white block">Save as place</span>
-                      <span className="text-[10px] text-slate-400 block">Add to your geofence list</span>
+                      <span className="text-[10px] text-slate-400 block">Add to your wishlist & geofence list</span>
                     </div>
                   </div>
                   <span className="text-[10px] text-blue-300 font-semibold">Save</span>
@@ -3085,6 +3331,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
           onStartRouteOnMap={handleStartRouteOnMap}
           onShowNearbyOnMap={handleShowNearbyPlacesOnMap}
           savedPlaces={savedPlaces}
+          onRefreshSavedPlaces={onRefreshSavedPlaces}
           rooms={rooms}
           selectedRoomId={selectedRoomId}
         />

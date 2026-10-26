@@ -29,12 +29,16 @@ import {
 } from '../../utils/markerStyles.ts';
 
 interface SavedPlacesManagerProps {
+  savedPlaces?: SavedPlace[];
+  onRefreshSavedPlaces?: () => void;
   onFocusMapLocation?: (lat: number, lng: number) => void;
   pendingCoords?: { lat: number; lng: number } | null;
   onClearPendingCoords?: () => void;
 }
 
 export const SavedPlacesManager: React.FC<SavedPlacesManagerProps> = ({
+  savedPlaces,
+  onRefreshSavedPlaces,
   onFocusMapLocation,
   pendingCoords,
   onClearPendingCoords,
@@ -43,7 +47,7 @@ export const SavedPlacesManager: React.FC<SavedPlacesManagerProps> = ({
   const { myLocation } = useRealtime();
   const toast = useToast();
 
-  const [places, setPlaces] = useState<SavedPlace[]>([]);
+  const [places, setPlaces] = useState<SavedPlace[]>(savedPlaces || []);
   const [showAddModal, setShowAddModal] = useState(false);
   const [name, setName] = useState('');
   const [desc, setDesc] = useState('');
@@ -55,18 +59,25 @@ export const SavedPlacesManager: React.FC<SavedPlacesManagerProps> = ({
   const [markerColor, setMarkerColor] = useState<string>('#10b981'); // Emerald default for home
   const [markerIcon, setMarkerIcon] = useState<string>('home');
 
+  useEffect(() => {
+    if (savedPlaces) {
+      setPlaces(savedPlaces);
+    }
+  }, [savedPlaces]);
+
   const loadPlaces = async () => {
+    if (!user || !api.getToken()) return;
     try {
       const res = await api.get<{ places: SavedPlace[] }>('/api/saved-places');
-      setPlaces(res.places);
+      setPlaces(res.places || []);
     } catch (err) {
-      console.error('Failed to load saved places:', err);
+      console.warn('Could not load saved places:', err);
     }
   };
 
   useEffect(() => {
     loadPlaces();
-  }, []);
+  }, [user?.id]);
 
   // When user clicks map to drop a pin
   useEffect(() => {
@@ -109,6 +120,7 @@ export const SavedPlacesManager: React.FC<SavedPlacesManagerProps> = ({
         markerIcon,
       });
       setPlaces((prev) => [...prev, res.place]);
+      onRefreshSavedPlaces?.();
       setShowAddModal(false);
       setName('');
       setDesc('');
@@ -118,11 +130,12 @@ export const SavedPlacesManager: React.FC<SavedPlacesManagerProps> = ({
     }
   };
 
-  const handleDelete = async (id: string) => {
+  const handleDelete = async (id: string, placeName?: string) => {
     try {
       await api.delete(`/api/saved-places/${id}`);
       setPlaces((prev) => prev.filter((p) => p.id !== id));
-      toast.success('Saved place removed');
+      onRefreshSavedPlaces?.();
+      toast.success(placeName ? `Removed "${placeName}" from Wishlist & Saved Places` : 'Saved place removed');
     } catch (err: any) {
       toast.error(err.message || 'Failed to delete');
     }
@@ -130,11 +143,11 @@ export const SavedPlacesManager: React.FC<SavedPlacesManagerProps> = ({
 
   return (
     <div className="flex flex-col h-full bg-slate-50 overflow-y-auto p-4 md:p-6 pb-28 space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
         <div>
-          <h2 className="font-bold text-slate-900 text-lg">Saved Locations & Geofences</h2>
+          <h2 className="font-bold text-slate-900 text-lg">Wishlist, Saved Locations & Geofences</h2>
           <p className="text-xs text-slate-500">
-            Color-code and customize map markers for family houses, work, schools, and emergency safe zones.
+            Manage your bookmarked wishlist places, family houses, work, schools, and emergency safe zones.
           </p>
         </div>
         <button
@@ -149,64 +162,75 @@ export const SavedPlacesManager: React.FC<SavedPlacesManagerProps> = ({
         </button>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        {places.map((place) => {
-          const colorHex = place.markerColor || '#f59e0b';
-          const iconEmoji = getLocationTypeEmoji(place.markerIcon || place.category);
+      {places.length === 0 ? (
+        <div className="bg-white rounded-2xl border border-slate-200 p-8 text-center text-slate-400">
+          <Heart className="w-10 h-10 text-slate-300 mx-auto mb-2" />
+          <p className="font-semibold text-slate-700 text-sm">No Wishlist or Saved Places Yet</p>
+          <p className="text-xs text-slate-500 mt-1">
+            Add locations here or bookmark places from Google Places on the Live Map.
+          </p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {places.map((place) => {
+            const colorHex = place.markerColor || '#f59e0b';
+            const iconEmoji = getLocationTypeEmoji(place.markerIcon || place.category);
 
-          return (
-            <div
-              key={place.id}
-              className="p-4 bg-white rounded-2xl border border-slate-200 shadow-sm flex items-start justify-between hover:border-slate-300 transition-all"
-            >
-              <div className="flex items-start gap-3">
-                <div
-                  className="w-10 h-10 rounded-2xl flex items-center justify-center text-lg text-white shadow-md border-2 border-white shrink-0"
-                  style={{ backgroundColor: colorHex }}
-                >
-                  {iconEmoji}
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h3 className="font-bold text-slate-900 text-sm">{place.name}</h3>
-                    <span
-                      className="px-2 py-0.5 rounded-full text-[10px] font-bold text-white uppercase font-mono shadow-xs"
-                      style={{ backgroundColor: colorHex }}
-                    >
-                      {place.category}
-                    </span>
-                  </div>
-                  <p className="text-xs text-slate-500 mt-0.5">{place.description || 'Custom map location'}</p>
-                  <div className="flex items-center gap-2 text-[10px] text-slate-400 font-mono mt-1">
-                    <span>Radius: {place.radiusMeters}m</span>
-                    <span>·</span>
-                    <span>{place.latitude.toFixed(4)}, {place.longitude.toFixed(4)}</span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-1 shrink-0">
-                {onFocusMapLocation && (
-                  <button
-                    onClick={() => onFocusMapLocation(place.latitude, place.longitude)}
-                    className="p-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-xl cursor-pointer"
-                    title="Focus on map"
+            return (
+              <div
+                key={place.id}
+                className="p-4 bg-white rounded-2xl border border-slate-200 shadow-sm flex items-start justify-between gap-3 hover:border-slate-300 transition-all"
+              >
+                <div className="flex items-start gap-3 min-w-0">
+                  <div
+                    className="w-10 h-10 rounded-2xl flex items-center justify-center text-lg text-white shadow-md border-2 border-white shrink-0"
+                    style={{ backgroundColor: colorHex }}
                   >
-                    <Compass className="w-4 h-4" />
+                    {iconEmoji}
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className="font-bold text-slate-900 text-sm truncate">{place.name}</h3>
+                      <span
+                        className="px-2 py-0.5 rounded-full text-[10px] font-bold text-white uppercase font-mono shadow-xs"
+                        style={{ backgroundColor: colorHex }}
+                      >
+                        {place.category === 'favorite' ? 'Wishlist' : place.category}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-500 mt-0.5 line-clamp-2">{place.description || 'Custom map location'}</p>
+                    <div className="flex items-center gap-2 text-[10px] text-slate-400 font-mono mt-1">
+                      <span>Radius: {place.radiusMeters}m</span>
+                      <span>·</span>
+                      <span>{place.latitude.toFixed(4)}, {place.longitude.toFixed(4)}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1.5 shrink-0">
+                  {onFocusMapLocation && (
+                    <button
+                      onClick={() => onFocusMapLocation(place.latitude, place.longitude)}
+                      className="p-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-xl cursor-pointer transition-colors"
+                      title="Show on Map"
+                    >
+                      <Compass className="w-4 h-4" />
+                    </button>
+                  )}
+                  <button
+                    onClick={() => handleDelete(place.id, place.name)}
+                    className="px-2.5 py-1.5 text-rose-600 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-xl text-xs font-bold flex items-center gap-1 cursor-pointer active:scale-95 transition-all"
+                    title="Remove from Wishlist / Saved Places"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Remove</span>
                   </button>
-                )}
-                <button
-                  onClick={() => handleDelete(place.id)}
-                  className="p-2 text-rose-600 hover:bg-rose-50 rounded-xl cursor-pointer"
-                  title="Delete"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
+                </div>
               </div>
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      )}
 
       {showAddModal && (
         <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">

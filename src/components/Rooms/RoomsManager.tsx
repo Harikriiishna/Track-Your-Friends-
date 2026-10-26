@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { useRealtime } from '../../context/RealtimeContext.tsx';
-import type { Room, RoomMember, UserRole } from '../../types.ts';
+import type { Room, RoomMember, UserRole, SavedPlace } from '../../types.ts';
 import { api } from '../../utils/api.ts';
 import { calculateDistanceMeters, formatDistance } from '../../utils/geo.ts';
 import { useToast } from '../../context/ToastContext.tsx';
 import { useTheme } from '../../context/ThemeContext.tsx';
+import { LiveMap } from '../Map/LiveMap.tsx';
 import {
   Users,
   Plus,
@@ -27,24 +28,39 @@ import {
   Search,
   X,
   MapPin,
+  Map as MapIcon,
   Check,
   UserX,
+  Maximize2,
+  Minimize2,
+  Eye,
+  EyeOff,
 } from 'lucide-react';
 
 interface RoomsManagerProps {
+  isActive?: boolean;
   onSelectRoom: (roomId: string) => void;
   selectedRoomId: string | null;
+  savedPlaces?: SavedPlace[];
+  onRefreshSavedPlaces?: () => void;
   onSelectUserForChat?: (userId: string) => void;
   onOpenChat?: (roomId?: string) => void;
   onFocusMapLocation?: (lat: number, lng: number) => void;
+  onAddPlaceAtCoords?: (lat: number, lng: number) => void;
+  onSetReminderAtCoords?: (lat: number, lng: number, title?: string) => void;
 }
 
 export const RoomsManager: React.FC<RoomsManagerProps> = ({
+  isActive = true,
   onSelectRoom,
   selectedRoomId,
+  savedPlaces = [],
+  onRefreshSavedPlaces,
   onSelectUserForChat,
   onOpenChat,
   onFocusMapLocation,
+  onAddPlaceAtCoords,
+  onSetReminderAtCoords,
 }) => {
   const { user, logout } = useAuth();
   const { themeConfig } = useTheme();
@@ -68,6 +84,10 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
   const [activeRoomDetails, setActiveRoomDetails] = useState<Room | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showJoinModal, setShowJoinModal] = useState(false);
+  const [showRoomMap, setShowRoomMap] = useState(true);
+  const [isRoomMapFullscreen, setIsRoomMapFullscreen] = useState(false);
+  const [roomMapFocusCoords, setRoomMapFocusCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const roomMapPanelRef = React.useRef<HTMLDivElement>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [quickHubMessage, setQuickHubMessage] = useState('');
 
@@ -718,32 +738,67 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
                 </div>
               </div>
 
-              {!(activeRoomDetails.isUniversal || activeRoomDetails.id === 'room-universal') ? (
+              <div className="flex items-center gap-2 shrink-0">
+                {/* Small Room Map Button */}
                 <button
-                  onClick={() => handleLeaveRoom(activeRoomDetails.id)}
-                  className="p-2 text-rose-600 hover:bg-rose-50 rounded-xl transition-colors"
-                  title="Leave Room"
+                  onClick={() => {
+                    setRoomMapFocusCoords(null);
+                    if (!showRoomMap) {
+                      setShowRoomMap(true);
+                      setTimeout(() => {
+                        roomMapPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                      }, 80);
+                    } else {
+                      setIsRoomMapFullscreen(true);
+                    }
+                  }}
+                  className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer active:scale-95"
+                  title={`Open Live Map showing users in ${activeRoomDetails.name}`}
                 >
-                  <LogOut className="w-4 h-4" />
+                  <MapIcon className="w-3.5 h-3.5" />
+                  <span>Map ({activeRoomDetails.members?.length || 1})</span>
                 </button>
-              ) : (
-                <div className="flex items-center gap-2">
-                  <div className="px-2.5 py-1 rounded-lg bg-indigo-100/80 text-indigo-700 text-[10px] font-bold">
-                    Permanent Hub
-                  </div>
-                  <button
-                    onClick={() => {
-                      onOpenChat?.('room-universal');
-                      toast.success('Opening Universal Hub Messages & Chat...');
-                    }}
-                    className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-indigo-600 to-sky-600 hover:from-indigo-500 hover:to-sky-500 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer active:scale-95"
-                    title="Open Universal Hub Messages"
-                  >
-                    <MessageSquare className="w-3.5 h-3.5" />
-                    <span>Message</span>
-                  </button>
-                </div>
-              )}
+
+                {!(activeRoomDetails.isUniversal || activeRoomDetails.id === 'room-universal') ? (
+                  <>
+                    <button
+                      onClick={() => {
+                        onOpenChat?.(activeRoomDetails.id);
+                        toast.success(`Opening chat in ${activeRoomDetails.name}...`);
+                      }}
+                      className="px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer active:scale-95"
+                      title={`Open Messages in ${activeRoomDetails.name}`}
+                    >
+                      <MessageSquare className="w-3.5 h-3.5" />
+                      <span>Chat</span>
+                    </button>
+                    <button
+                      onClick={() => handleLeaveRoom(activeRoomDetails.id)}
+                      className="p-2 text-rose-600 hover:bg-rose-50 rounded-xl transition-colors cursor-pointer"
+                      title="Leave Room"
+                    >
+                      <LogOut className="w-4 h-4" />
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <div className="hidden sm:block px-2.5 py-1 rounded-lg bg-indigo-100/80 text-indigo-700 text-[10px] font-bold">
+                      Permanent Hub
+                    </div>
+                    <button
+                      onClick={() => {
+                        onOpenChat?.('room-universal');
+                        toast.success('Opening Universal Hub Messages & Chat...');
+                      }}
+                      className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-indigo-600 to-sky-600 hover:from-indigo-500 hover:to-sky-500 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer active:scale-95"
+                      title="Open Universal Hub Messages"
+                    >
+                      <MessageSquare className="w-3.5 h-3.5" />
+                      <span>Message</span>
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
 
             {/* Quick Action Suite for Universal Hub */}
@@ -906,6 +961,129 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
             </div>
           </div>
 
+          {/* Room Live Map View Panel (Mirroring Main LiveMap Functionality & UI Style) */}
+          <div ref={roomMapPanelRef} className="space-y-2.5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping" />
+                <h4 className="font-bold text-slate-900 text-sm flex items-center gap-1.5">
+                  <MapIcon className="w-4 h-4 text-emerald-600" />
+                  <span>Room Live Map Panel — {activeRoomDetails.name}</span>
+                </h4>
+              </div>
+              <div className="flex items-center gap-1.5">
+                {showRoomMap && (
+                  <button
+                    onClick={() => setIsRoomMapFullscreen((prev) => !prev)}
+                    className="px-2.5 py-1 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all cursor-pointer active:scale-95"
+                    title={isRoomMapFullscreen ? 'Dock Map into Panel' : 'Expand Room Map to Full Screen'}
+                  >
+                    {isRoomMapFullscreen ? (
+                      <>
+                        <Minimize2 className="w-3.5 h-3.5 text-sky-400" />
+                        <span>Dock Panel</span>
+                      </>
+                    ) : (
+                      <>
+                        <Maximize2 className="w-3.5 h-3.5 text-sky-400" />
+                        <span>Full Screen</span>
+                      </>
+                    )}
+                  </button>
+                )}
+                <button
+                  onClick={() => {
+                    if (showRoomMap) {
+                      setIsRoomMapFullscreen(false);
+                      setShowRoomMap(false);
+                    } else {
+                      setShowRoomMap(true);
+                    }
+                  }}
+                  className={`px-2.5 py-1 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all cursor-pointer active:scale-95 ${
+                    showRoomMap
+                      ? 'bg-slate-200 hover:bg-slate-300 text-slate-800'
+                      : 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                  }`}
+                  title={showRoomMap ? 'Hide Room Map Panel' : 'Show Room Map Panel'}
+                >
+                  {showRoomMap ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                  <span>{showRoomMap ? 'Hide Map' : 'Show Map'}</span>
+                </button>
+              </div>
+            </div>
+
+            {showRoomMap && (
+              <div
+                className={
+                  isRoomMapFullscreen
+                    ? 'fixed inset-0 z-50 bg-slate-950 flex flex-col animate-in fade-in duration-150'
+                    : 'relative w-full h-[520px] sm:h-[580px] rounded-2xl overflow-hidden border-2 border-slate-200 shadow-xl bg-slate-950 flex flex-col transition-all duration-200'
+                }
+              >
+                {isRoomMapFullscreen && (
+                  <div className="bg-slate-900/95 border-b border-white/10 px-4 py-2 flex items-center justify-between text-white shrink-0 z-40">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+                      <span className="font-bold text-xs truncate">
+                        {activeRoomDetails.name} — Full Screen Room Map
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        onClick={() => setIsRoomMapFullscreen(false)}
+                        className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white text-xs font-semibold flex items-center gap-1 cursor-pointer transition-colors"
+                      >
+                        <Minimize2 className="w-3.5 h-3.5 text-sky-400" />
+                        <span>Dock Panel</span>
+                      </button>
+                      <button
+                        onClick={() => {
+                          setIsRoomMapFullscreen(false);
+                          setShowRoomMap(false);
+                        }}
+                        className="p-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/40 text-rose-300 cursor-pointer transition-colors"
+                        title="Close Room Map"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <div className="relative flex-1 w-full h-full">
+                  <LiveMap
+                    isActive={isActive && showRoomMap}
+                    roomOnlyMode={true}
+                    activeRoomDetails={activeRoomDetails}
+                    onCloseRoomMap={
+                      isRoomMapFullscreen
+                        ? () => setIsRoomMapFullscreen(false)
+                        : () => setShowRoomMap(false)
+                    }
+                    focusCoords={roomMapFocusCoords}
+                    savedPlaces={savedPlaces}
+                    onRefreshSavedPlaces={onRefreshSavedPlaces}
+                    rooms={rooms}
+                    selectedRoomId={activeRoomDetails.id}
+                    onSelectUserForChat={(targetUserId) => {
+                      setIsRoomMapFullscreen(false);
+                      onSelectUserForChat?.(targetUserId);
+                    }}
+                    onAddPlaceAtCoords={(lat, lng) => {
+                      setIsRoomMapFullscreen(false);
+                      onAddPlaceAtCoords?.(lat, lng);
+                    }}
+                    onSetReminderAtCoords={(lat, lng, title) => {
+                      setIsRoomMapFullscreen(false);
+                      onSetReminderAtCoords?.(lat, lng, title);
+                    }}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* Room Members Roster with Real Distances */}
           <div>
             <div className="flex items-center justify-between mb-3">
@@ -913,6 +1091,18 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
                 <Users className="w-4 h-4 text-slate-500" />
                 Members & Live Coordinates ({activeRoomDetails.members?.length || 0})
               </h4>
+              <button
+                onClick={() => {
+                  setRoomMapFocusCoords(null);
+                  setShowRoomMap(true);
+                  setIsRoomMapFullscreen(true);
+                }}
+                className="px-2.5 py-1 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all cursor-pointer active:scale-95"
+                title={`View all members of ${activeRoomDetails.name} on Full Screen Room Map`}
+              >
+                <MapIcon className="w-3.5 h-3.5" />
+                <span>Full Room Map</span>
+              </button>
             </div>
 
             <div className="space-y-2">
@@ -995,9 +1185,15 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
 
                           {peerLoc && (
                             <button
-                              onClick={() => onFocusMapLocation?.(peerLoc.latitude, peerLoc.longitude)}
-                              className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-                              title="View on Live Map"
+                              onClick={() => {
+                                setRoomMapFocusCoords({ lat: peerLoc.latitude, lng: peerLoc.longitude });
+                                setShowRoomMap(true);
+                                setTimeout(() => {
+                                  roomMapPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                                }, 60);
+                              }}
+                              className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors cursor-pointer"
+                              title={`Focus ${mem.user.fullName} on Room Map Panel`}
                             >
                               <Compass className="w-4 h-4" />
                             </button>

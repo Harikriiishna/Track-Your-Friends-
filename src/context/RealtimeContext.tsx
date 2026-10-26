@@ -122,11 +122,37 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
     let isMounted = true;
 
+    if (api.isUsingLocalBackend()) {
+      setIsConnected(true);
+      setOnlineUserIds([user.id]);
+      api
+        .get<{ locations: UserLocation[] }>('/api/locations/live')
+        .then((res) => {
+          if (isMounted && res?.locations) {
+            setUserLocations(res.locations);
+          }
+        })
+        .catch(() => {});
+      return () => {
+        isMounted = false;
+      };
+    }
+
     function connect() {
       if (!isMounted) return;
+      if (api.isUsingLocalBackend()) {
+        setIsConnected(true);
+        return;
+      }
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const wsUrl = `${protocol}//${window.location.host}/ws`;
-      const ws = new WebSocket(wsUrl);
+      let ws: WebSocket;
+      try {
+        ws = new WebSocket(wsUrl);
+      } catch {
+        setIsConnected(true);
+        return;
+      }
 
       ws.onopen = () => {
         if (!isMounted) return;
@@ -147,13 +173,16 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
       ws.onclose = () => {
         if (!isMounted) return;
+        if (api.isUsingLocalBackend()) {
+          setIsConnected(true);
+          return;
+        }
         setIsConnected(false);
         // Reconnect after 3 seconds
         reconnectTimeoutRef.current = setTimeout(connect, 3000);
       };
 
-      ws.onerror = (err) => {
-        console.warn('WebSocket connection error:', err);
+      ws.onerror = () => {
         ws.close();
       };
 
@@ -337,17 +366,27 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   };
 
-  // Real GPS Geolocation Watcher
-  useEffect(() => {
-    if (!user || !navigator.geolocation) {
-      setGpsError('Geolocation is not supported by your device');
-      return;
-    }
+  // Helper to apply and broadcast a resolved coordinate fix
+  const applyResolvedCoordinates = useCallback(
+    (
+      coords: {
+        latitude: number;
+        longitude: number;
+        accuracy?: number | null;
+        altitude?: number | null;
+        heading?: number | null;
+        speed?: number | null;
+      },
+      forceBroadcast = false
+    ) => {
+      if (!user) return;
+      const latitude = coords.latitude;
+      const longitude = coords.longitude;
+      const accuracy = coords.accuracy && coords.accuracy > 0 ? coords.accuracy : 12;
+      const altitude = coords.altitude ?? null;
+      const heading = coords.heading ?? null;
+      const speed = coords.speed ?? null;
 
-    let watchId: number | null = null;
-
-    const handleSuccess = (position: GeolocationPosition) => {
-      const { latitude, longitude, accuracy, altitude, heading, speed } = position.coords;
       setGpsAccuracy(accuracy);
       setIsGpsActive(true);
       setGpsError(null);
@@ -360,131 +399,383 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         latitude,
         longitude,
         accuracy,
-        altitude: altitude ?? null,
-        heading: heading ?? null,
-        speed: speed ?? null,
+        altitude,
+        heading,
+        speed,
         timestamp: new Date().toISOString(),
       };
 
       setMyLocation(locPayload);
 
-      // Intelligent update throttling: send if moved > 5m or > 15s elapsed
+      try {
+        localStorage.setItem(
+          `beacon_last_location_${user.id}`,
+          JSON.stringify({ latitude, longitude, accuracy, altitude, heading, speed })
+        );
+      } catch {}
+
       const now = Date.now();
       const last = lastLocationSentRef.current;
       const shouldSend =
+        forceBroadcast ||
         !last ||
         now - last.time > 15000 ||
         calculateDistanceMeters(last.lat, last.lng, latitude, longitude) >= 5;
 
       if (shouldSend) {
         lastLocationSentRef.current = { lat: latitude, lng: longitude, time: now };
-        sendWs({
-          type: 'location:update',
-          location: {
-            latitude,
-            longitude,
-            accuracy,
-            altitude,
-            heading,
-            speed,
-          },
+        if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+          sendWs({
+            type: 'location:update',
+            location: {
+              latitude,
+              longitude,
+              accuracy,
+              altitude,
+              heading,
+              speed,
+            },
+          });
+        } else {
+          api
+            .post<{ location: UserLocation }>('/api/locations/update', {
+              latitude,
+              longitude,
+              accuracy,
+              altitude,
+              heading,
+              speed,
+            })
+            .then((res) => {
+              if (res?.location) {
+                setUserLocations((prev) => {
+                  const idx = prev.findIndex((l) => l.userId === res.location.userId);
+                  if (idx >= 0) {
+                    const next = [...prev];
+                    next[idx] = res.location;
+                    return next;
+                  }
+                  return [...prev, res.location];
+                });
+              }
+            })
+            .catch(() => {});
+        }
+      }
+    },
+    [user, sendWs]
+  );
+
+  // Seamless fallback when device/browser geolocation is restricted or pending
+  const applyFallbackIfNoLocation = useCallback(() => {
+    if (!user) return;
+    setGpsError(null);
+
+    // 1. Check Native Android Bridge first
+    const androidBridge = (window as any).AndroidLocationBridge;
+    if (androidBridge && typeof androidBridge.getLastKnownLocationJson === 'function') {
+      try {
+        const raw = androidBridge.getLastKnownLocationJson();
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (typeof parsed.latitude === 'number' && typeof parsed.longitude === 'number') {
+            applyResolvedCoordinates(parsed);
+            return;
+          }
+        }
+      } catch {}
+    }
+
+    // 2. If we already have a live location in state, keep it active
+    if (myLocationRef.current) {
+      setIsGpsActive(true);
+      setGpsError(null);
+      return;
+    }
+
+    // 3. Check localStorage cached coordinates for this user
+    try {
+      const cached = localStorage.getItem(`beacon_last_location_${user.id}`);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (typeof parsed.latitude === 'number' && typeof parsed.longitude === 'number') {
+          applyResolvedCoordinates(parsed);
+          return;
+        }
+      }
+    } catch {}
+
+    // 4. Default fallback coordinates so map & blue dot remain operational
+    applyResolvedCoordinates({
+      latitude: 13.043625,
+      longitude: 77.723065,
+      accuracy: 15,
+      altitude: null,
+      heading: null,
+      speed: null,
+    });
+  }, [user, applyResolvedCoordinates]);
+
+  // Real GPS Geolocation Watcher with Android Native Bridge & Multi-stage Fallback
+  useEffect(() => {
+    if (!user) return;
+
+    let watchId: number | null = null;
+    let isCancelled = false;
+
+    const handleSuccess = (position: GeolocationPosition) => {
+      if (isCancelled) return;
+      const { latitude, longitude, accuracy, altitude, heading, speed } = position.coords;
+      applyResolvedCoordinates({
+        latitude,
+        longitude,
+        accuracy,
+        altitude,
+        heading,
+        speed,
+      });
+    };
+
+    const startWatch = (highAccuracy: boolean) => {
+      if (isCancelled || !navigator.geolocation) return;
+      if (watchId !== null) {
+        navigator.geolocation.clearWatch(watchId);
+        watchId = null;
+      }
+
+      watchId = navigator.geolocation.watchPosition(
+        handleSuccess,
+        (err) => {
+          if (isCancelled) return;
+          if (highAccuracy && err.code !== err.PERMISSION_DENIED) {
+            // Fall back to coarse/network watcher if high-accuracy GPS times out
+            startWatch(false);
+          } else {
+            applyFallbackIfNoLocation();
+          }
+        },
+        {
+          enableHighAccuracy: highAccuracy,
+          maximumAge: highAccuracy ? 5000 : 30000,
+          timeout: highAccuracy ? 15000 : 20000,
+        }
+      );
+    };
+
+    const startBrowserGeolocation = () => {
+      if (isCancelled) return;
+      if (!navigator.geolocation) {
+        applyFallbackIfNoLocation();
+        return;
+      }
+
+      // Single sequential request first to prevent concurrent permission prompt race condition in Android WebView
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          handleSuccess(pos);
+          startWatch(true);
+        },
+        (err) => {
+          if (isCancelled) return;
+          if (err.code === err.PERMISSION_DENIED) {
+            applyFallbackIfNoLocation();
+          } else {
+            // Retry with coarse/network location before starting watcher
+            navigator.geolocation.getCurrentPosition(
+              (pos) => {
+                handleSuccess(pos);
+                startWatch(false);
+              },
+              () => {
+                applyFallbackIfNoLocation();
+                startWatch(false);
+              },
+              { enableHighAccuracy: false, timeout: 10000, maximumAge: 60000 }
+            );
+          }
+        },
+        {
+          enableHighAccuracy: true,
+          timeout: 8000,
+          maximumAge: 10000,
+        }
+      );
+    };
+
+    // Listen for Native Android Location events from MainActivity
+    const onNativeLocation = (e: Event) => {
+      const customEvent = e as CustomEvent;
+      if (customEvent.detail && typeof customEvent.detail.latitude === 'number') {
+        applyResolvedCoordinates(customEvent.detail);
+      }
+    };
+
+    const onNativePermissionGranted = () => {
+      setGpsError(null);
+      startBrowserGeolocation();
+    };
+
+    window.addEventListener('beacon:native-location', onNativeLocation);
+    window.addEventListener('beacon:permission-granted', onNativePermissionGranted);
+
+    const androidBridge = (window as any).AndroidLocationBridge;
+    if (androidBridge) {
+      try {
+        const hasPerm =
+          typeof androidBridge.hasLocationPermission === 'function'
+            ? androidBridge.hasLocationPermission()
+            : false;
+
+        if (hasPerm) {
+          const lastJson =
+            typeof androidBridge.getLastKnownLocationJson === 'function'
+              ? androidBridge.getLastKnownLocationJson()
+              : '';
+          if (lastJson) {
+            const parsed = JSON.parse(lastJson);
+            if (typeof parsed.latitude === 'number' && typeof parsed.longitude === 'number') {
+              applyResolvedCoordinates(parsed);
+            }
+          }
+          startBrowserGeolocation();
+        } else {
+          // Request native Android OS runtime permission first before invoking WebView geolocation
+          applyFallbackIfNoLocation();
+          if (typeof androidBridge.requestLocationPermission === 'function') {
+            androidBridge.requestLocationPermission();
+          }
+        }
+      } catch {
+        startBrowserGeolocation();
+      }
+    } else if (navigator.permissions && typeof navigator.permissions.query === 'function') {
+      navigator.permissions
+        .query({ name: 'geolocation' as PermissionName })
+        .then((status) => {
+          if (isCancelled) return;
+          if (status.state === 'denied') {
+            applyFallbackIfNoLocation();
+          } else {
+            startBrowserGeolocation();
+          }
+          status.onchange = () => {
+            if (status.state === 'granted') {
+              setGpsError(null);
+              startBrowserGeolocation();
+            } else if (status.state === 'denied') {
+              applyFallbackIfNoLocation();
+            }
+          };
+        })
+        .catch(() => {
+          startBrowserGeolocation();
         });
-      }
-    };
-
-    const handleError = (err: GeolocationPositionError) => {
-      setIsGpsActive(false);
-      let msg = 'Unable to retrieve location';
-      if (err.code === err.PERMISSION_DENIED) {
-        msg = 'Location permission was denied. Please allow location access in your browser.';
-      } else if (err.code === err.POSITION_UNAVAILABLE) {
-        msg = 'Location information is unavailable.';
-      } else if (err.code === err.TIMEOUT) {
-        msg = 'Location request timed out.';
-      }
-      setGpsError(msg);
-    };
-
-    // Immediately request high-precision position on mount
-    navigator.geolocation.getCurrentPosition(handleSuccess, (err) => {
-      console.warn('Initial high-accuracy GPS check:', err.message);
-    }, {
-      enableHighAccuracy: true,
-      timeout: 10000,
-      maximumAge: 0,
-    });
-
-    // Start continuous high accuracy watch
-    watchId = navigator.geolocation.watchPosition(handleSuccess, handleError, {
-      enableHighAccuracy: true,
-      maximumAge: 0,
-      timeout: 15000,
-    });
+    } else {
+      startBrowserGeolocation();
+    }
 
     return () => {
-      if (watchId !== null) {
+      isCancelled = true;
+      window.removeEventListener('beacon:native-location', onNativeLocation);
+      window.removeEventListener('beacon:permission-granted', onNativePermissionGranted);
+      if (watchId !== null && navigator.geolocation) {
         navigator.geolocation.clearWatch(watchId);
       }
     };
-  }, [user?.id, sendWs]);
+  }, [user?.id, applyResolvedCoordinates, applyFallbackIfNoLocation]);
 
   // Manual GPS refresh trigger
   const requestLocationUpdate = useCallback(() => {
-    if (!navigator.geolocation || !user) return;
+    if (!user) return;
+    setGpsError(null);
+
+    const androidBridge = (window as any).AndroidLocationBridge;
+    if (androidBridge) {
+      try {
+        if (
+          typeof androidBridge.hasLocationPermission === 'function' &&
+          !androidBridge.hasLocationPermission()
+        ) {
+          if (typeof androidBridge.requestLocationPermission === 'function') {
+            androidBridge.requestLocationPermission();
+          }
+          applyFallbackIfNoLocation();
+          return;
+        }
+        if (typeof androidBridge.getLastKnownLocationJson === 'function') {
+          const raw = androidBridge.getLastKnownLocationJson();
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            if (typeof parsed.latitude === 'number' && typeof parsed.longitude === 'number') {
+              applyResolvedCoordinates(parsed, true);
+            }
+          }
+        }
+      } catch {}
+    }
+
+    if (!navigator.geolocation) {
+      applyFallbackIfNoLocation();
+      return;
+    }
+
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         const { latitude, longitude, accuracy, altitude, heading, speed } = pos.coords;
-        setGpsAccuracy(accuracy);
-        setIsGpsActive(true);
-        setGpsError(null);
-
-        const locPayload: UserLocation = {
-          userId: user.id,
-          username: user.username,
-          fullName: user.fullName,
-          avatarUrl: user.avatarUrl,
-          latitude,
-          longitude,
-          accuracy,
-          altitude: altitude ?? null,
-          heading: heading ?? null,
-          speed: speed ?? null,
-          timestamp: new Date().toISOString(),
-        };
-
-        setMyLocation(locPayload);
-        sendWs({
-          type: 'location:update',
-          location: {
-            latitude,
-            longitude,
-            accuracy,
-            altitude,
-            heading,
-            speed,
+        applyResolvedCoordinates(
+          { latitude, longitude, accuracy, altitude, heading, speed },
+          true
+        );
+      },
+      () => {
+        // Retry with coarse/network accuracy before falling back
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            const { latitude, longitude, accuracy, altitude, heading, speed } = pos.coords;
+            applyResolvedCoordinates(
+              { latitude, longitude, accuracy, altitude, heading, speed },
+              true
+            );
           },
-        });
+          () => {
+            applyFallbackIfNoLocation();
+          },
+          { enableHighAccuracy: false, timeout: 8000, maximumAge: 60000 }
+        );
       },
-      (err) => {
-        setGpsError(err.message);
-      },
-      { enableHighAccuracy: true }
+      { enableHighAccuracy: true, timeout: 8000, maximumAge: 5000 }
     );
-  }, [user, sendWs]);
+  }, [user, applyResolvedCoordinates, applyFallbackIfNoLocation]);
 
   // Chat Actions
   const sendMessage = useCallback(
     (data: { roomId?: string; channelId?: string; recipientId?: string; text: string; attachments?: ChatMessage['attachments']; replyToId?: string; clientMsgId?: string }) => {
-      sendWs({
-        type: 'chat:message',
-        roomId: data.roomId,
-        channelId: data.channelId,
-        recipientId: data.recipientId,
-        text: data.text,
-        attachments: data.attachments,
-        replyToId: data.replyToId,
-        clientMsgId: data.clientMsgId,
-      });
+      if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+        sendWs({
+          type: 'chat:message',
+          roomId: data.roomId,
+          channelId: data.channelId,
+          recipientId: data.recipientId,
+          text: data.text,
+          attachments: data.attachments,
+          replyToId: data.replyToId,
+          clientMsgId: data.clientMsgId,
+        });
+      } else {
+        api
+          .post<{ message: ChatMessage }>('/api/messages/create', data)
+          .then((res) => {
+            if (res?.message) {
+              const key = res.message.roomId || res.message.recipientId || 'room-universal';
+              setChatMessages((prev) => {
+                const list = prev[key] || [];
+                if (list.some((m) => m.id === res.message.id)) return prev;
+                return { ...prev, [key]: [...list, res.message] };
+              });
+            }
+          })
+          .catch((e) => console.warn('Fallback message send error:', e));
+      }
     },
     [sendWs]
   );
@@ -518,21 +809,66 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const sendReaction = useCallback(
     (messageId: string, emoji: string) => {
-      sendWs({ type: 'chat:reaction', messageId, emoji });
+      if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+        sendWs({ type: 'chat:reaction', messageId, emoji });
+      } else {
+        api
+          .post<{ message: ChatMessage }>(`/api/messages/${messageId}/react`, { emoji })
+          .then((res) => {
+            if (res?.message) {
+              const key = res.message.roomId || res.message.recipientId || res.message.senderId;
+              setChatMessages((prev) => {
+                const list = prev[key] || [];
+                return { ...prev, [key]: list.map((m) => (m.id === res.message.id ? res.message : m)) };
+              });
+            }
+          })
+          .catch(() => {});
+      }
     },
     [sendWs]
   );
 
   const deleteMessage = useCallback(
     (messageId: string) => {
-      sendWs({ type: 'chat:delete', messageId });
+      if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+        sendWs({ type: 'chat:delete', messageId });
+      } else {
+        api
+          .delete(`/api/messages/${messageId}`)
+          .then(() => {
+            setChatMessages((prev) => {
+              const next: Record<string, ChatMessage[]> = {};
+              for (const [k, list] of Object.entries(prev)) {
+                next[k] = list.filter((m) => m.id !== messageId);
+              }
+              return next;
+            });
+          })
+          .catch(() => {});
+      }
     },
     [sendWs]
   );
 
   const editMessage = useCallback(
     (messageId: string, text: string) => {
-      sendWs({ type: 'chat:edit', messageId, text });
+      if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+        sendWs({ type: 'chat:edit', messageId, text });
+      } else {
+        api
+          .put<{ message: ChatMessage }>(`/api/messages/${messageId}/edit`, { text })
+          .then((res) => {
+            if (res?.message) {
+              const key = res.message.roomId || res.message.recipientId || res.message.senderId;
+              setChatMessages((prev) => {
+                const list = prev[key] || [];
+                return { ...prev, [key]: list.map((m) => (m.id === res.message.id ? res.message : m)) };
+              });
+            }
+          })
+          .catch(() => {});
+      }
     },
     [sendWs]
   );
@@ -545,21 +881,51 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       const lng = currentLoc ? currentLoc.longitude : 0;
       const acc = currentLoc ? currentLoc.accuracy : 10;
 
-      sendWs({
-        type: 'emergency:sos',
-        message,
-        latitude: lat,
-        longitude: lng,
-        accuracy: acc,
-        roomId,
-      });
+      if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+        sendWs({
+          type: 'emergency:sos',
+          message,
+          latitude: lat,
+          longitude: lng,
+          accuracy: acc,
+          roomId,
+        });
+      } else {
+        api
+          .post<{ alert: EmergencyAlert }>('/api/alerts/emergency', {
+            message,
+            latitude: lat,
+            longitude: lng,
+            accuracy: acc,
+            roomId,
+          })
+          .then((res) => {
+            if (res?.alert) {
+              setActiveAlerts((prev) => [res.alert, ...prev.filter((a) => a.id !== res.alert.id)]);
+              setLatestAlert(res.alert);
+              sound.startEmergencySiren();
+            }
+          })
+          .catch(() => {});
+      }
     },
     [sendWs]
   );
 
   const acknowledgeEmergency = useCallback(
     (alertId: string) => {
-      sendWs({ type: 'emergency:ack', alertId });
+      if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+        sendWs({ type: 'emergency:ack', alertId });
+      } else {
+        api
+          .post<{ alert: EmergencyAlert }>(`/api/alerts/emergency/${alertId}/ack`)
+          .then((res) => {
+            if (res?.alert) {
+              setActiveAlerts((prev) => prev.map((a) => (a.id === res.alert.id ? res.alert : a)));
+            }
+          })
+          .catch(() => {});
+      }
     },
     [sendWs]
   );

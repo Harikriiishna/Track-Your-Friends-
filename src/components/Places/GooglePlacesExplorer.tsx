@@ -39,6 +39,8 @@ import {
   RefreshCw,
   LocateFixed,
   Landmark,
+  Trash2,
+  Heart,
 } from 'lucide-react';
 
 interface GooglePlacesExplorerProps {
@@ -99,12 +101,23 @@ export const GooglePlacesExplorer: React.FC<GooglePlacesExplorerProps> = ({
   const [routeData, setRouteData] = useState<RouteData | null>(null);
   const [isRoutingLoading, setIsRoutingLoading] = useState(false);
 
-  // Saving place state
-  const [savedPlaceIds, setSavedPlaceIds] = useState<Set<string>>(() => {
-    const s = new Set<string>();
-    savedPlaces.forEach((p) => s.add(`${p.latitude.toFixed(4)},${p.longitude.toFixed(4)}`));
-    return s;
-  });
+  // Saving / Wishlist place state
+  const [localSavedPlaces, setLocalSavedPlaces] = useState<SavedPlace[]>(savedPlaces);
+
+  useEffect(() => {
+    setLocalSavedPlaces(savedPlaces);
+  }, [savedPlaces]);
+
+  const findSavedPlaceByCoords = useCallback(
+    (lat: number, lon: number): SavedPlace | undefined => {
+      const targetLat = lat.toFixed(4);
+      const targetLon = lon.toFixed(4);
+      return localSavedPlaces.find(
+        (p) => p.latitude.toFixed(4) === targetLat && p.longitude.toFixed(4) === targetLon
+      );
+    },
+    [localSavedPlaces]
+  );
 
   const searchInputRef = useRef<HTMLInputElement>(null);
   const debounceTimerRef = useRef<any>(null);
@@ -287,11 +300,16 @@ export const GooglePlacesExplorer: React.FC<GooglePlacesExplorerProps> = ({
     }
   };
 
-  // Save Place bookmark
+  // Save Place bookmark / Wishlist
   const handleSavePlace = async (place: PlaceResult) => {
+    const existing = findSavedPlaceByCoords(place.lat, place.lon);
+    if (existing) {
+      await handleRemoveSavedPlace(existing.id, existing.name);
+      return;
+    }
+
     try {
-      const coordKey = `${place.lat.toFixed(4)},${place.lon.toFixed(4)}`;
-      await api.post('/api/saved-places', {
+      const res = await api.post<{ place: SavedPlace }>('/api/saved-places', {
         name: place.name,
         description: place.display_name,
         latitude: place.lat,
@@ -301,11 +319,40 @@ export const GooglePlacesExplorer: React.FC<GooglePlacesExplorerProps> = ({
         visibility: 'private',
       });
 
-      setSavedPlaceIds((prev) => new Set(prev).add(coordKey));
+      if (res?.place) {
+        setLocalSavedPlaces((prev) => [...prev, res.place]);
+      }
       onRefreshSavedPlaces?.();
-      toast.success(`Saved "${place.name}" to your Places!`);
+      toast.success(`Added "${place.name}" to your Wishlist & Saved Places!`);
     } catch (err: any) {
       toast.error(err.message || 'Failed to save place');
+    }
+  };
+
+  // Remove Place from Wishlist / Saved Places
+  const handleRemoveSavedPlace = async (placeId: string, placeName?: string) => {
+    try {
+      await api.delete(`/api/saved-places/${placeId}`);
+      setLocalSavedPlaces((prev) => prev.filter((p) => p.id !== placeId));
+      onRefreshSavedPlaces?.();
+      toast.success(
+        placeName ? `Removed "${placeName}" from Wishlist` : 'Removed place from Wishlist'
+      );
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to remove place from wishlist');
+    }
+  };
+
+  // Clear all Wishlist / Saved Places
+  const handleClearAllSavedPlaces = async () => {
+    if (localSavedPlaces.length === 0) return;
+    try {
+      await Promise.all(localSavedPlaces.map((sp) => api.delete(`/api/saved-places/${sp.id}`)));
+      setLocalSavedPlaces([]);
+      onRefreshSavedPlaces?.();
+      toast.success('Cleared all places from Wishlist');
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to clear wishlist');
     }
   };
 
@@ -438,11 +485,11 @@ export const GooglePlacesExplorer: React.FC<GooglePlacesExplorerProps> = ({
                   : 'bg-slate-800/70 text-slate-400 hover:text-white hover:bg-slate-800'
               }`}
             >
-              <Bookmark className="w-3.5 h-3.5" />
-              <span>Saved Places</span>
-              {savedPlaces.length > 0 && (
+              <Heart className="w-3.5 h-3.5" />
+              <span>Wishlist & Saved</span>
+              {localSavedPlaces.length > 0 && (
                 <span className="ml-1 px-1.5 py-0.2 rounded-full text-[10px] bg-black/30">
-                  {savedPlaces.length}
+                  {localSavedPlaces.length}
                 </span>
               )}
             </button>
@@ -674,27 +721,37 @@ export const GooglePlacesExplorer: React.FC<GooglePlacesExplorerProps> = ({
           </div>
         )}
 
-        {/* Saved Places Tab View */}
+        {/* Saved Places / Wishlist Tab View */}
         {activeTab === 'saved' && (
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider font-mono flex items-center gap-1.5">
-                <Bookmark className="w-3.5 h-3.5 text-amber-400" />
-                Bookmarked Places ({savedPlaces.length})
+                <Heart className="w-3.5 h-3.5 text-rose-400" />
+                Wishlist & Saved Places ({localSavedPlaces.length})
               </span>
+              {localSavedPlaces.length > 0 && (
+                <button
+                  onClick={handleClearAllSavedPlaces}
+                  className="px-2.5 py-1 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 text-[11px] font-bold flex items-center gap-1 transition-all cursor-pointer active:scale-95"
+                  title="Remove all places from wishlist"
+                >
+                  <Trash2 className="w-3 h-3" />
+                  <span>Clear Wishlist</span>
+                </button>
+              )}
             </div>
 
-            {savedPlaces.length === 0 ? (
+            {localSavedPlaces.length === 0 ? (
               <div className="py-12 text-center space-y-2">
                 <Bookmark className="w-10 h-10 text-slate-600 mx-auto" />
-                <h4 className="font-bold text-sm text-slate-300">No saved places yet</h4>
+                <h4 className="font-bold text-sm text-slate-300">Your Wishlist is empty</h4>
                 <p className="text-xs text-slate-500 max-w-sm mx-auto">
-                  Click the bookmark icon on any nearby place or search result to save it for instant 1-tap navigation.
+                  Click the bookmark/wishlist button on any nearby place or search result to save it for instant 1-tap navigation.
                 </p>
               </div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {savedPlaces.map((sp) => {
+                {localSavedPlaces.map((sp) => {
                   const dist = calculateDistanceMeters(userLat, userLon, sp.latitude, sp.longitude);
                   return (
                     <div
@@ -713,9 +770,18 @@ export const GooglePlacesExplorer: React.FC<GooglePlacesExplorerProps> = ({
                             </p>
                           </div>
                         </div>
-                        <span className="text-xs font-mono font-bold text-sky-400 shrink-0">
-                          {formatDistance(dist)}
-                        </span>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <span className="text-xs font-mono font-bold text-sky-400">
+                            {formatDistance(dist)}
+                          </span>
+                          <button
+                            onClick={() => handleRemoveSavedPlace(sp.id, sp.name)}
+                            className="p-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/30 text-rose-400 hover:text-rose-200 border border-rose-500/30 transition-all cursor-pointer active:scale-95"
+                            title="Remove from Wishlist"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
 
                       <div className="pt-2 border-t border-slate-800 flex items-center justify-between gap-2">
@@ -746,10 +812,19 @@ export const GooglePlacesExplorer: React.FC<GooglePlacesExplorerProps> = ({
                               lon: sp.longitude,
                             })
                           }
-                          className="py-1.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold flex items-center gap-1 cursor-pointer"
+                          className="py-1.5 px-3 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold flex items-center gap-1 cursor-pointer active:scale-95 transition-all"
                         >
                           <Navigation className="w-3 h-3 text-emerald-400" />
                           <span>Route</span>
+                        </button>
+
+                        <button
+                          onClick={() => handleRemoveSavedPlace(sp.id, sp.name)}
+                          className="py-1.5 px-3 bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 rounded-xl text-xs font-bold flex items-center gap-1 cursor-pointer active:scale-95 transition-all"
+                          title="Remove from Wishlist"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Remove</span>
                         </button>
                       </div>
                     </div>
@@ -791,8 +866,8 @@ export const GooglePlacesExplorer: React.FC<GooglePlacesExplorerProps> = ({
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               {currentDisplayList.map((place) => {
-                const coordKey = `${place.lat.toFixed(4)},${place.lon.toFixed(4)}`;
-                const isSaved = savedPlaceIds.has(coordKey);
+                const matchedSaved = findSavedPlaceByCoords(place.lat, place.lon);
+                const isSaved = !!matchedSaved;
 
                 return (
                   <div
@@ -883,18 +958,25 @@ export const GooglePlacesExplorer: React.FC<GooglePlacesExplorerProps> = ({
                       </div>
 
                       <div className="flex items-center gap-1">
-                        {/* Save to Places */}
-                        <button
-                          onClick={() => handleSavePlace(place)}
-                          className={`p-2 rounded-xl border transition-colors cursor-pointer ${
-                            isSaved
-                              ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
-                              : 'bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white border-slate-700'
-                          }`}
-                          title={isSaved ? 'Saved in Places' : 'Save to My Places'}
-                        >
-                          {isSaved ? <BookmarkCheck className="w-4 h-4 text-amber-400" /> : <Bookmark className="w-4 h-4" />}
-                        </button>
+                        {/* Save to / Remove from Wishlist */}
+                        {isSaved && matchedSaved ? (
+                          <button
+                            onClick={() => handleRemoveSavedPlace(matchedSaved.id, place.name)}
+                            className="py-2 px-2.5 rounded-xl border bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border-rose-500/40 text-xs font-bold flex items-center gap-1 transition-colors cursor-pointer active:scale-95"
+                            title="Remove from Wishlist"
+                          >
+                            <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                            <span>Remove</span>
+                          </button>
+                        ) : (
+                          <button
+                            onClick={() => handleSavePlace(place)}
+                            className="p-2 rounded-xl border bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white border-slate-700 transition-colors cursor-pointer active:scale-95"
+                            title="Add to Wishlist / Save Place"
+                          >
+                            <Bookmark className="w-4 h-4" />
+                          </button>
+                        )}
 
                         {/* Share to Room Chat */}
                         <button

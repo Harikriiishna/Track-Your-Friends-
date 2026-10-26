@@ -1,4 +1,5 @@
 import type { UserProfile, UserSession } from '../types.ts';
+import { localBackend } from './localBackend.ts';
 
 /**
  * Beacon Centralized API Client
@@ -6,9 +7,18 @@ import type { UserProfile, UserSession } from '../types.ts';
 
 class ApiClient {
   private token: string | null = null;
+  private isNativeOrOfflineMode = false;
 
   constructor() {
     this.token = localStorage.getItem('beacon_token');
+    if (typeof window !== 'undefined') {
+      const cap = (window as any).Capacitor;
+      if (cap && typeof cap.isNativePlatform === 'function' && cap.isNativePlatform()) {
+        this.isNativeOrOfflineMode = true;
+      } else if (window.location.protocol === 'capacitor:' || window.location.protocol === 'file:') {
+        this.isNativeOrOfflineMode = true;
+      }
+    }
   }
 
   public setToken(token: string | null) {
@@ -24,36 +34,108 @@ class ApiClient {
     return this.token || localStorage.getItem('beacon_token');
   }
 
+  public isUsingLocalBackend(): boolean {
+    return this.isNativeOrOfflineMode;
+  }
+
+  private syncResponseToLocal(data: any, token: string | null) {
+    if (!data || typeof data !== 'object') return;
+    if (data.user && data.user.id) {
+      localBackend.syncUserSession(data.user, data.token || token);
+    }
+  }
+
   private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+    const token = this.getToken();
+
+    // If running inside standalone native APK where local server is not present, route directly to localBackend
+    if (this.isNativeOrOfflineMode) {
+      const result = await localBackend.handleRequest<T>(endpoint, options, token);
+      this.syncResponseToLocal(result, token);
+      return result;
+    }
+
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      'Cache-Control': 'no-cache',
       ...(options.headers as Record<string, string>),
     };
 
-    const token = this.getToken();
     if (token) {
       headers['Authorization'] = `Bearer ${token}`;
     }
 
-    const response = await fetch(endpoint, {
-      ...options,
-      headers,
-    });
+    let response: Response;
+    try {
+      response = await fetch(endpoint, {
+        ...options,
+        headers,
+        cache: 'no-store',
+      });
+    } catch {
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 350));
+        response = await fetch(endpoint, {
+          ...options,
+          headers,
+          cache: 'no-store',
+        });
+      } catch {
+        // Network unreachable or standalone environment: seamlessly use localBackend
+        const fallbackRes = await localBackend.handleRequest<T>(endpoint, options, token);
+        this.syncResponseToLocal(fallbackRes, token);
+        return fallbackRes;
+      }
+    }
 
+    const contentType = (response.headers.get('content-type') || '').toLowerCase();
     const text = await response.text();
+    const trimmed = text.trim();
+
+    // Detect if a static host, Capacitor WebViewLocalServer, or Service Worker returned HTML (e.g. index.html with HTTP 200)
+    const isHtmlResponse =
+      contentType.includes('text/html') ||
+      trimmed.startsWith('<!doctype') ||
+      trimmed.startsWith('<!DOCTYPE') ||
+      trimmed.startsWith('<html');
+
+    if (isHtmlResponse) {
+      this.isNativeOrOfflineMode = true;
+      const fallbackRes = await localBackend.handleRequest<T>(endpoint, options, token);
+      this.syncResponseToLocal(fallbackRes, token);
+      return fallbackRes;
+    }
+
     let data: any = null;
     try {
-      data = text ? JSON.parse(text) : {};
+      data = trimmed ? JSON.parse(trimmed) : {};
     } catch {
-      if (!response.ok) {
-        throw new Error(`HTTP error ${response.status}: ${response.statusText}`);
-      }
-      throw new Error(`Server returned invalid response (${response.status})`);
+      // Non-JSON response received (e.g. proxy error or SPA fallback): route to localBackend instead of failing with "Server returned invalid response (200)"
+      const fallbackRes = await localBackend.handleRequest<T>(endpoint, options, token);
+      this.syncResponseToLocal(fallbackRes, token);
+      return fallbackRes;
     }
 
     if (!response.ok) {
+      // If server restarted and lost session token while client has cached user profile, fallback cleanly for data queries
+      if (
+        (response.status === 401 || response.status >= 500) &&
+        !endpoint.startsWith('/api/auth/login') &&
+        !endpoint.startsWith('/api/auth/register')
+      ) {
+        try {
+          const fallbackRes = await localBackend.handleRequest<T>(endpoint, options, token);
+          this.syncResponseToLocal(fallbackRes, token);
+          return fallbackRes;
+        } catch {
+          // continue to standard error handling below if localBackend also rejects
+        }
+      }
+
       const errorMessage = data?.error || data?.message || `HTTP error ${response.status}: ${response.statusText}`;
       const err: any = new Error(errorMessage);
+      err.status = response.status;
       if (data && typeof data === 'object') {
         err.data = data;
         err.code = data.code;
@@ -65,6 +147,7 @@ class ApiClient {
       throw err;
     }
 
+    this.syncResponseToLocal(data, token);
     return data as T;
   }
 

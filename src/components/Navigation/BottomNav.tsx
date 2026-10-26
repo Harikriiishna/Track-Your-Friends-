@@ -1,5 +1,5 @@
 import React from 'react';
-import { MapPin, Users, MessageSquare, Siren, Bell, User } from 'lucide-react';
+import { MapPin, Users, MessageSquare, Siren, Bell, User, Heart } from 'lucide-react';
 import { useRealtime } from '../../context/RealtimeContext.tsx';
 import { useTheme } from '../../context/ThemeContext.tsx';
 import { triggerHaptic, sound } from '../../utils/audio.ts';
@@ -24,6 +24,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({ currentTab, onSelectTab, o
 
   const tabs = [
     { id: 'map', label: 'Map', icon: MapPin },
+    { id: 'saved', label: 'Wishlist', icon: Heart },
     { id: 'rooms', label: 'Rooms', icon: Users },
     { id: 'chat', label: 'Chat', icon: MessageSquare },
     { id: 'alerts', label: 'Alerts', icon: Siren, badge: activeAlerts.length },

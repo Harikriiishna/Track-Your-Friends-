@@ -2,12 +2,13 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { useRealtime } from '../../context/RealtimeContext.tsx';
 import { useTheme } from '../../context/ThemeContext.tsx';
-import type { ChatMessage, Room, RoomMember, UserRole, UserProfile } from '../../types.ts';
+import type { ChatMessage, Room, RoomMember, UserRole, UserProfile, SavedPlace } from '../../types.ts';
 import { api } from '../../utils/api.ts';
 import { VoiceRecorder, sound, triggerHaptic } from '../../utils/audio.ts';
 import { AudioWaveformVisualizer } from './AudioWaveformVisualizer.tsx';
 import { useToast } from '../../context/ToastContext.tsx';
 import { calculateDistanceMeters, formatDistance } from '../../utils/geo.ts';
+import { LiveMap } from '../Map/LiveMap.tsx';
 import {
   Hash,
   Volume2,
@@ -28,6 +29,7 @@ import {
   Edit2,
   Reply,
   MapPin,
+  Map as MapIcon,
   Compass,
   Users,
   PhoneCall,
@@ -53,6 +55,10 @@ interface ChatViewProps {
   onSelectChatUser?: (user: { id: string; name: string; avatar: string } | null) => void;
   onFocusMapLocation?: (lat: number, lng: number) => void;
   onNavigateTab?: (tab: string) => void;
+  savedPlaces?: SavedPlace[];
+  onRefreshSavedPlaces?: () => void;
+  onAddPlaceAtCoords?: (lat: number, lng: number) => void;
+  onSetReminderAtCoords?: (lat: number, lng: number, title?: string) => void;
 
   // Fallback props if passed in isolation
   roomId?: string;
@@ -107,6 +113,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
   onSelectChatUser,
   onFocusMapLocation,
   onNavigateTab,
+  savedPlaces = [],
+  onRefreshSavedPlaces,
+  onAddPlaceAtCoords,
+  onSetReminderAtCoords,
   roomId: fallbackRoomId,
   recipientId: fallbackRecipientId,
   recipientName: fallbackRecipientName,
@@ -166,6 +176,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
   // UI state
   const [roomDetails, setRoomDetails] = useState<Room | null>(null);
+  const [showRoomMap, setShowRoomMap] = useState(false);
+  const [roomMapFocusCoords, setRoomMapFocusCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [channelMessages, setChannelMessages] = useState<Record<string, DisplayChatMessage[]>>(INITIAL_CHANNEL_MESSAGES);
   const [inputVal, setInputVal] = useState('');
   const [replyTarget, setReplyTarget] = useState<ChatMessage | DisplayChatMessage | null>(null);
@@ -1024,6 +1036,21 @@ export const ChatView: React.FC<ChatViewProps> = ({
           </div>
 
           <div className={`flex items-center gap-1.5 ${themeConfig.textSecondary}`}>
+            {/* Small Room Map Button in Room Header */}
+            {!activeDirectUser && (
+              <button
+                onClick={() => {
+                  setRoomMapFocusCoords(null);
+                  setShowRoomMap(true);
+                }}
+                className="px-2.5 py-1 rounded-xl bg-emerald-600/25 hover:bg-emerald-600 text-emerald-300 hover:text-white text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm cursor-pointer border border-emerald-500/40 active:scale-95"
+                title={`Open Room Map showing users in ${activeRoomObj?.name || 'this room'}`}
+              >
+                <MapIcon className="w-3.5 h-3.5" />
+                <span>Map</span>
+              </button>
+            )}
+
             <button
               onClick={handleShareCurrentLocation}
               className="px-2.5 py-1 rounded-xl bg-cyan-600/20 hover:bg-cyan-600 text-cyan-300 hover:text-white text-xs font-semibold flex items-center gap-1.5 transition-all shadow-sm cursor-pointer border border-cyan-500/30"
@@ -1778,6 +1805,40 @@ export const ChatView: React.FC<ChatViewProps> = ({
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Full-Featured Room Map Overlay showing Users in the Room */}
+      {showRoomMap && (
+        <div className="fixed inset-0 z-50 bg-slate-950 flex flex-col animate-in fade-in duration-150">
+          <LiveMap
+            isActive={showRoomMap}
+            roomOnlyMode={true}
+            activeRoomDetails={roomDetails || activeRoomObj || null}
+            onCloseRoomMap={() => setShowRoomMap(false)}
+            focusCoords={roomMapFocusCoords}
+            savedPlaces={savedPlaces}
+            onRefreshSavedPlaces={onRefreshSavedPlaces}
+            rooms={userRooms}
+            selectedRoomId={effectiveRoomId || activeRoomId}
+            onSelectUserForChat={(targetUserId) => {
+              setShowRoomMap(false);
+              const peerLoc = userLocations.find((l) => l.userId === targetUserId);
+              const mem = roomDetails?.members?.find((m) => m.userId === targetUserId)?.user;
+              const name = mem?.fullName || peerLoc?.fullName || 'Peer';
+              const avatar = mem?.avatarUrl || peerLoc?.avatarUrl || '';
+              onSelectChatUser?.({ id: targetUserId, name, avatar });
+              setActiveDirectUser({ id: targetUserId, name, avatar });
+            }}
+            onAddPlaceAtCoords={(lat, lng) => {
+              setShowRoomMap(false);
+              onAddPlaceAtCoords?.(lat, lng);
+            }}
+            onSetReminderAtCoords={(lat, lng, title) => {
+              setShowRoomMap(false);
+              onSetReminderAtCoords?.(lat, lng, title);
+            }}
+          />
         </div>
       )}
     </div>
