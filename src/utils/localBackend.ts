@@ -16,6 +16,7 @@ import type {
   UserPathTrail,
   LocationBreadcrumb,
 } from '../types.ts';
+import { fetchRealNearbyPlaces } from './nearbyPlaces.ts';
 
 interface LocalUserRecord extends UserProfile {
   password?: string;
@@ -1279,68 +1280,8 @@ class LocalBackendEngine {
       const maxRadiusMeters = Number(query.get('radius')) || 10000;
       if (isNaN(lat) || isNaN(lon)) return { results: [] } as unknown as T;
 
-      const categoryKeywords: Record<string, string> = {
-        all: 'restaurant cafe supermarket fuel pharmacy hospital park atm',
-        fuel: 'fuel gas station petrol',
-        food: 'restaurant food dining',
-        cafe: 'cafe coffee bakery',
-        groceries: 'supermarket grocery market',
-        hospital: 'hospital pharmacy clinic medical',
-        parking: 'parking lot garage',
-        hotel: 'hotel resort inn hostel',
-        park: 'park garden trail',
-        atm: 'atm bank',
-      };
-      const queryTerm = categoryKeywords[category] || category;
-
-      try {
-        const photonUrl = new URL('https://photon.komoot.io/api/');
-        photonUrl.searchParams.set('q', queryTerm);
-        photonUrl.searchParams.set('lat', String(lat));
-        photonUrl.searchParams.set('lon', String(lon));
-        photonUrl.searchParams.set('limit', '24');
-        const resp = await fetch(photonUrl.toString());
-        if (resp.ok) {
-          const data = await resp.json();
-          if (Array.isArray(data.features)) {
-            const results = data.features
-              .map((feat: any, idx: number) => {
-                const props = feat.properties || {};
-                const coords = feat.geometry?.coordinates || [lon, lat];
-                const pLat = coords[1];
-                const pLon = coords[0];
-                const dist = haversineDistMeters(lat, lon, pLat, pLon);
-                const name =
-                  props.name ||
-                  [props.housenumber, props.street].filter(Boolean).join(' ') ||
-                  `${category.toUpperCase()} Place`;
-                const address = [props.name, props.street, props.city || props.town, props.state]
-                  .filter(Boolean)
-                  .join(', ');
-                return {
-                  id: `nearby-${category}-${idx}-${pLon.toFixed(4)}-${pLat.toFixed(4)}`,
-                  name,
-                  display_name: address || name,
-                  lat: pLat,
-                  lon: pLon,
-                  category: props.osm_value || category,
-                  type: props.osm_value || category,
-                  city: props.city || props.town,
-                  distanceMeters: dist,
-                  estimatedDriveMinutes: Math.max(1, Math.round((dist / 1000 / 30) * 60)),
-                  rating: Number((4.2 + ((idx * 5) % 8) * 0.1).toFixed(1)),
-                  isOpen: true,
-                };
-              })
-              .filter((p: any) => p.distanceMeters <= maxRadiusMeters)
-              .sort((a: any, b: any) => a.distanceMeters - b.distanceMeters);
-            return { results } as unknown as T;
-          }
-        }
-      } catch {
-        // fallback below
-      }
-      return { results: [] } as unknown as T;
+      const results = await fetchRealNearbyPlaces(lat, lon, category, maxRadiusMeters);
+      return { results } as unknown as T;
     }
 
     if (method === 'GET' && pathname === '/api/locations/directions') {
@@ -1578,6 +1519,43 @@ class LocalBackendEngine {
       this.data.emergencyAlerts = this.data.emergencyAlerts.filter((a) => a.id !== alertId);
       this.save();
       return { success: true } as unknown as T;
+    }
+
+    const shareAlertMatch = pathname.match(/^\/api\/alerts\/emergency\/([^/]+)\/share$/);
+    if (method === 'POST' && shareAlertMatch) {
+      const alertId = decodeURIComponent(shareAlertMatch[1]);
+      const alert = this.data.emergencyAlerts.find((a) => a.id === alertId);
+      const durationMinutes = Math.min(Math.max(Number(body?.durationMinutes) || 120, 15), 720);
+      const expiresAt = new Date(Date.now() + durationMinutes * 60 * 1000).toISOString();
+      const token =
+        typeof body?.token === 'string' && body.token.length >= 12
+          ? body.token
+          : `sos_${alertId}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+      return {
+        token,
+        alertId: alert?.id || alertId,
+        expiresAt,
+      } as unknown as T;
+    }
+
+    const trackAlertMatch = pathname.match(/^\/api\/alerts\/track\/([^/]+)$/);
+    if (method === 'GET' && trackAlertMatch) {
+      const alertIdParam = query.get('alertId') || '';
+      const alert =
+        this.data.emergencyAlerts.find((a) => a.id === alertIdParam && a.status === 'active') ||
+        this.data.emergencyAlerts.find((a) => a.status === 'active');
+      if (!alert) throw this.createError('Emergency alert is resolved or no longer active.', 404);
+      const liveLoc = this.data.locations[alert.senderId];
+      return {
+        alert: {
+          ...alert,
+          latitude: liveLoc ? liveLoc.latitude : alert.latitude,
+          longitude: liveLoc ? liveLoc.longitude : alert.longitude,
+          accuracy: liveLoc ? liveLoc.accuracy : alert.accuracy,
+          timestamp: liveLoc ? liveLoc.timestamp : alert.timestamp,
+        },
+        expiresAt: new Date(Date.now() + 2 * 3600 * 1000).toISOString(),
+      } as unknown as T;
     }
 
     // 12. LOCATION SHARE REQUESTS

@@ -5,6 +5,7 @@ import { useTheme } from '../../context/ThemeContext.tsx';
 import { useToast } from '../../context/ToastContext.tsx';
 import { api } from '../../utils/api.ts';
 import { calculateDistanceMeters, formatDistance } from '../../utils/geo.ts';
+import { fetchRealNearbyPlaces, deduplicateAndSortPlaces } from '../../utils/nearbyPlaces.ts';
 import type { PlaceResult, RouteData, NavigationStep, SavedPlace, Room } from '../../types.ts';
 import {
   ArrowLeft,
@@ -122,9 +123,14 @@ export const GooglePlacesExplorer: React.FC<GooglePlacesExplorerProps> = ({
   const searchInputRef = useRef<HTMLInputElement>(null);
   const debounceTimerRef = useRef<any>(null);
 
-  // Reference coordinates for nearby lookup
-  const userLat = myLocation?.latitude ?? 13.043625;
-  const userLon = myLocation?.longitude ?? 77.723065;
+  // Reference coordinates for nearby lookup (strictly real GPS only)
+  const hasValidCoords = Boolean(
+    myLocation &&
+      Number.isFinite(myLocation.latitude) &&
+      Number.isFinite(myLocation.longitude)
+  );
+  const userLat = myLocation?.latitude ?? 0;
+  const userLon = myLocation?.longitude ?? 0;
 
   const CATEGORIES = [
     { id: 'all', label: 'All Nearby', icon: Sparkles, color: 'text-sky-400 bg-sky-500/20 border-sky-500/30' },
@@ -166,18 +172,32 @@ export const GooglePlacesExplorer: React.FC<GooglePlacesExplorerProps> = ({
     } catch (_) {}
   };
 
-  // 1. Fetch Places Nearby Me
+  // 1. Fetch Places Nearby Me (Overpass + Photon multi-source discovery)
   const fetchNearbyPlaces = useCallback(async (cat: string, radius: number) => {
+    if (!hasValidCoords) {
+      setNearbyPlaces([]);
+      return;
+    }
     try {
       setIsLoadingNearby(true);
-      const res = await api.get<{ results: PlaceResult[] }>(
-        `/api/locations/nearby?lat=${userLat}&lon=${userLon}&category=${encodeURIComponent(cat)}&radius=${radius}`
-      );
+      const [directPlaces, apiRes] = await Promise.all([
+        fetchRealNearbyPlaces(userLat, userLon, cat, radius).catch(() => [] as PlaceResult[]),
+        api
+          .get<{ results: PlaceResult[] }>(
+            `/api/locations/nearby?lat=${userLat}&lon=${userLon}&category=${encodeURIComponent(cat)}&radius=${radius}`
+          )
+          .catch(() => ({ results: [] as PlaceResult[] })),
+      ]);
 
-      const enhanced: PlaceResult[] = (res.results || []).map((place, idx) => {
+      const merged = deduplicateAndSortPlaces(
+        [...directPlaces, ...(apiRes?.results || [])],
+        userLat,
+        userLon,
+        radius
+      ).map((place, idx) => {
         const dist = calculateDistanceMeters(userLat, userLon, place.lat, place.lon);
         const driveMins = Math.max(1, Math.round((dist / 1000 / 30) * 60));
-        const rating = Number((4.3 + ((idx * 3) % 7) * 0.1).toFixed(1));
+        const rating = place.rating || Number((4.3 + ((idx * 3) % 7) * 0.1).toFixed(1));
         return {
           ...place,
           distanceMeters: dist,
@@ -187,16 +207,14 @@ export const GooglePlacesExplorer: React.FC<GooglePlacesExplorerProps> = ({
         };
       });
 
-      // Closest first
-      enhanced.sort((a, b) => (a.distanceMeters || 0) - (b.distanceMeters || 0));
-      setNearbyPlaces(enhanced);
+      setNearbyPlaces(merged);
     } catch (err: any) {
       console.warn('Failed to fetch nearby places:', err);
       toast.error('Unable to fetch nearby places right now');
     } finally {
       setIsLoadingNearby(false);
     }
-  }, [userLat, userLon]);
+  }, [hasValidCoords, userLat, userLon, toast]);
 
   // Initial load of nearby places
   useEffect(() => {
@@ -685,19 +703,20 @@ export const GooglePlacesExplorer: React.FC<GooglePlacesExplorerProps> = ({
             <div className="min-w-0">
               <div className="flex items-center gap-1.5">
                 <span className="font-bold text-white text-xs">Your Current GPS Position</span>
-                {isGpsActive ? (
+                {hasValidCoords && isGpsActive ? (
                   <span className="px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 text-[9px] font-bold font-mono">
                     LIVE GPS
                   </span>
                 ) : (
                   <span className="px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 text-[9px] font-bold font-mono">
-                    DEFAULT REF
+                    WAITING FOR LOCATION
                   </span>
                 )}
               </div>
               <span className="text-[10px] text-slate-400 font-mono block truncate">
-                Lat {userLat.toFixed(5)}, Lon {userLon.toFixed(5)}
-                {gpsAccuracy ? ` · Accuracy: ~${Math.round(gpsAccuracy)}m` : ''}
+                {hasValidCoords
+                  ? `Lat ${userLat.toFixed(5)}, Lon ${userLon.toFixed(5)}${gpsAccuracy ? ` · Accuracy ±${Math.round(gpsAccuracy)}m` : ''}`
+                  : 'Waiting for location...'}
               </span>
             </div>
           </div>

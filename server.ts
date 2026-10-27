@@ -5,6 +5,7 @@ import express from 'express';
 import { WebSocketServer, WebSocket } from 'ws';
 import { db, UPLOADS_DIR } from './src/server/db.ts';
 import type { WsClientMessage, WsServerMessage, UserProfile } from './src/types.ts';
+import { fetchRealNearbyPlaces } from './src/utils/nearbyPlaces.ts';
 
 const app = express();
 const server = http.createServer(app);
@@ -1258,127 +1259,8 @@ app.get('/api/locations/nearby', async (req, res) => {
       return;
     }
 
-    // Map high-level categories to search terms
-    const categoryKeywords: Record<string, string> = {
-      all: 'restaurant cafe supermarket fuel pharmacy hospital park atm bakery transit',
-      fuel: 'fuel gas station petrol pump',
-      food: 'restaurant food dining eatery kitchen bistro',
-      cafe: 'cafe coffee bakery tea espresso',
-      groceries: 'supermarket grocery store market organic food',
-      hospital: 'hospital pharmacy clinic emergency medical care',
-      parking: 'parking lot garage car park',
-      hotel: 'hotel lodging resort inn hostel suites',
-      park: 'park garden recreation nature trail playground',
-      atm: 'atm bank cash withdrawal financial',
-    };
-
-    const queryTerm = categoryKeywords[category] || category;
-
-    // Use Photon with proximity coordinates
-    const photonUrl = new URL('https://photon.komoot.io/api/');
-    photonUrl.searchParams.set('q', queryTerm);
-    photonUrl.searchParams.set('lat', lat.toString());
-    photonUrl.searchParams.set('lon', lon.toString());
-    photonUrl.searchParams.set('limit', '25');
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 4500);
-
-    const resp = await fetch(photonUrl.toString(), {
-      signal: controller.signal,
-      headers: { 'User-Agent': 'BeaconNearby/2.0 (places-near-me)' },
-    });
-    clearTimeout(timeoutId);
-
-    let places: any[] = [];
-    if (resp.ok) {
-      const data = await resp.json();
-      if (Array.isArray(data.features)) {
-        places = data.features.map((feat: any, idx: number) => {
-          const props = feat.properties || {};
-          const coords = feat.geometry?.coordinates || [lon, lat];
-          const pLat = coords[1];
-          const pLon = coords[0];
-          const dist = haversineDistMeters(lat, lon, pLat, pLon);
-          const name = props.name || [props.housenumber, props.street].filter(Boolean).join(' ') || `${category.toUpperCase()} Venue`;
-          const address = [props.name, props.street, props.city || props.town, props.state].filter(Boolean).join(', ');
-
-          const effectiveCategory =
-            props.osm_key === 'amenity'
-              ? props.osm_value
-              : props.osm_key || category;
-
-          return {
-            id: `nearby-${category}-${idx}-${pLon.toFixed(4)}-${pLat.toFixed(4)}`,
-            name,
-            display_name: address || name,
-            lat: pLat,
-            lon: pLon,
-            category: effectiveCategory,
-            type: props.osm_value || category,
-            city: props.city || props.town,
-            distanceMeters: dist,
-            estimatedDriveMinutes: Math.max(1, Math.round((dist / 1000 / 30) * 60)),
-            rating: Number((4.2 + ((idx * 5) % 8) * 0.1).toFixed(1)),
-            isOpen: idx % 5 !== 0,
-          };
-        });
-      }
-    }
-
-    // Fallback: If Photon returned 0 or few results, query Nominatim around bounding box
-    if (places.length < 3) {
-      try {
-        const delta = 0.04; // ~4km bounding box
-        const nomUrl = new URL('https://nominatim.openstreetmap.org/search');
-        nomUrl.searchParams.set('format', 'json');
-        nomUrl.searchParams.set('q', category === 'all' ? 'amenity' : queryTerm);
-        nomUrl.searchParams.set('viewbox', `${lon - delta},${lat + delta},${lon + delta},${lat - delta}`);
-        nomUrl.searchParams.set('bounded', '1');
-        nomUrl.searchParams.set('limit', '15');
-
-        const nomController = new AbortController();
-        const nomTimeout = setTimeout(() => nomController.abort(), 3500);
-        const nomResp = await fetch(nomUrl.toString(), {
-          signal: nomController.signal,
-          headers: { 'User-Agent': 'BeaconNearbyFallback/1.0' },
-        });
-        clearTimeout(nomTimeout);
-
-        if (nomResp.ok) {
-          const nomData = await nomResp.json();
-          if (Array.isArray(nomData)) {
-            nomData.forEach((item: any, idx: number) => {
-              const pLat = parseFloat(item.lat);
-              const pLon = parseFloat(item.lon);
-              const dist = haversineDistMeters(lat, lon, pLat, pLon);
-              places.push({
-                id: `nom-nearby-${idx}-${item.place_id}`,
-                name: item.name || item.display_name.split(',')[0],
-                display_name: item.display_name,
-                lat: pLat,
-                lon: pLon,
-                category: item.type || item.class || category,
-                type: item.type || 'poi',
-                distanceMeters: dist,
-                estimatedDriveMinutes: Math.max(1, Math.round((dist / 1000 / 30) * 60)),
-                rating: 4.5,
-                isOpen: true,
-              });
-            });
-          }
-        }
-      } catch (nomErr) {
-        console.warn('Nominatim fallback failed:', nomErr);
-      }
-    }
-
-    // Filter by radius and sort strictly by proximity (closest places first)
-    const filtered = places
-      .filter((p) => p.distanceMeters <= maxRadiusMeters)
-      .sort((a, b) => a.distanceMeters - b.distanceMeters);
-
-    res.json({ results: filtered });
+    const results = await fetchRealNearbyPlaces(lat, lon, category, maxRadiusMeters);
+    res.json({ results });
   } catch (err: any) {
     res.status(500).json({ error: err.message || 'Nearby query failed', results: [] });
   }
@@ -1594,6 +1476,94 @@ app.delete('/api/alerts/emergency/:id', authMiddleware, (req, res) => {
     res.json({ success: true });
   } catch (err: any) {
     res.status(403).json({ error: err.message });
+  }
+});
+
+// Temporary Secure Emergency SOS Live Tracking Links (2-hour TTL for Emergency Responders)
+interface SosShareTokenRecord {
+  token: string;
+  alertId: string;
+  senderId: string;
+  createdAt: string;
+  expiresAt: string;
+}
+const sosShareTokens = new Map<string, SosShareTokenRecord>();
+
+app.post('/api/alerts/emergency/:id/share', authMiddleware, (req, res) => {
+  try {
+    const alertId = req.params.id;
+    const alerts = db.getActiveEmergencyAlerts();
+    const alert = alerts.find((a) => a.id === alertId);
+    if (!alert) {
+      res.status(404).json({ error: 'Active emergency alert not found' });
+      return;
+    }
+
+    const durationMinutes = Math.min(Math.max(Number(req.body?.durationMinutes) || 120, 15), 720);
+    const expiresAt = new Date(Date.now() + durationMinutes * 60 * 1000).toISOString();
+    const token =
+      typeof req.body?.token === 'string' && req.body.token.length >= 12
+        ? req.body.token
+        : `sos_${alert.id}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+
+    const record: SosShareTokenRecord = {
+      token,
+      alertId: alert.id,
+      senderId: alert.senderId,
+      createdAt: new Date().toISOString(),
+      expiresAt,
+    };
+    sosShareTokens.set(token, record);
+
+    res.json({
+      token,
+      alertId: alert.id,
+      expiresAt,
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to generate tracking token' });
+  }
+});
+
+// Public endpoint for Emergency Responders opening a temporary secure tracking link
+app.get('/api/alerts/track/:token', (req, res) => {
+  try {
+    const token = req.params.token;
+    const record = sosShareTokens.get(token);
+    const alerts = db.getActiveEmergencyAlerts();
+
+    let alert = record ? alerts.find((a) => a.id === record.alertId) : undefined;
+    if (!alert && typeof req.query.alertId === 'string') {
+      alert = alerts.find((a) => a.id === req.query.alertId);
+    }
+
+    if (record && Date.now() > new Date(record.expiresAt).getTime()) {
+      sosShareTokens.delete(token);
+      res.status(410).json({ error: 'This temporary emergency tracking link has expired.' });
+      return;
+    }
+
+    if (!alert) {
+      res.status(404).json({ error: 'Emergency alert is resolved or no longer active.' });
+      return;
+    }
+
+    const liveLoc = db.getVisibleLocationsForUser(alert.senderId).find(
+      (l) => l.userId === alert!.senderId
+    );
+
+    res.json({
+      alert: {
+        ...alert,
+        latitude: liveLoc ? liveLoc.latitude : alert.latitude,
+        longitude: liveLoc ? liveLoc.longitude : alert.longitude,
+        accuracy: liveLoc ? liveLoc.accuracy : alert.accuracy,
+        timestamp: liveLoc ? liveLoc.timestamp : alert.timestamp,
+      },
+      expiresAt: record?.expiresAt || new Date(Date.now() + 2 * 3600 * 1000).toISOString(),
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to load live tracking data' });
   }
 });
 

@@ -16,7 +16,8 @@ export default defineConfig(() => {
           id: '/',
           name: 'Beacon - Real-Time Location & Community Mesh',
           short_name: 'Beacon',
-          description: 'Production real-time location sharing, private rooms, live voice channels, community emergency alerts, and mapping.',
+          description:
+            'Production real-time location sharing, private rooms, live voice channels, community emergency alerts, and mapping.',
           theme_color: '#0f172a',
           background_color: '#0f172a',
           display: 'standalone',
@@ -56,9 +57,12 @@ export default defineConfig(() => {
         },
       }),
     ],
+    build: {
+      chunkSizeWarningLimit: 1500,
+    },
     resolve: {
       alias: {
-        '@': path.resolve(import.meta.dirname || __dirname, '.'),
+        '@': path.resolve(import.meta.dirname, '.'),
       },
     },
     server: {

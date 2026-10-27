@@ -121,6 +121,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
   const {
     myLocation,
     userLocations,
+    activeAlerts,
     gpsAccuracy,
     isGpsActive,
     gpsError,
@@ -140,11 +141,12 @@ export const LiveMap: React.FC<LiveMapProps> = ({
   const [debugNowMs, setDebugNowMs] = useState<number>(() => Date.now());
 
   useEffect(() => {
+    if (!isDebugMode) return;
     const interval = setInterval(() => {
       setDebugNowMs(Date.now());
     }, 1000);
     return () => clearInterval(interval);
-  }, []);
+  }, [isDebugMode]);
 
   const mapUid = useRef(Math.random().toString(36).slice(2, 8)).current;
   const mapContainerRef = useRef<HTMLDivElement>(null);
@@ -152,6 +154,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
   const tileLayerRef = useRef<L.TileLayer | null>(null);
   const userMarkersRef = useRef<Map<string, L.Marker>>(new Map());
   const userAccuracyCirclesRef = useRef<Map<string, L.Circle>>(new Map());
+  const emergencyAlertLayersRef = useRef<L.Layer[]>([]);
   const myMarkerRef = useRef<L.Marker | null>(null);
   const accuracyCircleRef = useRef<L.Circle | null>(null);
   const savedPlacesMarkersRef = useRef<L.Marker[]>([]);
@@ -159,6 +162,79 @@ export const LiveMap: React.FC<LiveMapProps> = ({
   const nearbyPoiMarkersRef = useRef<L.Marker[]>([]);
   const [nearbyPoisOnMap, setNearbyPoisOnMap] = useState<PlaceResult[]>([]);
   const [fetchedRoomDetails, setFetchedRoomDetails] = useState<Room | null>(null);
+
+  // Render active emergency SOS alerts with coordinates and accuracy circles on the map
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+
+    emergencyAlertLayersRef.current.forEach((layer) => layer.remove());
+    emergencyAlertLayersRef.current = [];
+
+    activeAlerts.forEach((alert) => {
+      if (
+        alert.status !== 'active' ||
+        !Number.isFinite(alert.latitude) ||
+        !Number.isFinite(alert.longitude) ||
+        (alert.latitude === 0 && alert.longitude === 0)
+      ) {
+        return;
+      }
+
+      if (Number.isFinite(alert.accuracy) && alert.accuracy > 0) {
+        const circle = L.circle([alert.latitude, alert.longitude], {
+          radius: alert.accuracy,
+          color: '#e11d48',
+          weight: 2,
+          fillColor: '#f43f5e',
+          fillOpacity: 0.2,
+        }).addTo(map);
+        emergencyAlertLayersRef.current.push(circle);
+      }
+
+      const sosPin = L.divIcon({
+        className: 'live-map-sos-pin',
+        html: `
+          <div style="position:relative;width:46px;height:46px;display:flex;align-items:center;justify-content:center;">
+            <div style="position:absolute;inset:0;border-radius:9999px;background:rgba(225,29,72,0.5);animation:ping 1.3s cubic-bezier(0,0,0.2,1) infinite;"></div>
+            <div style="position:relative;width:34px;height:34px;border-radius:9999px;background:#e11d48;border:3px solid #ffffff;box-shadow:0 4px 16px rgba(225,29,72,0.75);display:flex;align-items:center;justify-content:center;color:#ffffff;font-weight:900;font-size:10px;">
+              SOS
+            </div>
+          </div>
+        `,
+        iconSize: [46, 46],
+        iconAnchor: [23, 23],
+      });
+
+      const marker = L.marker([alert.latitude, alert.longitude], {
+        icon: sosPin,
+        zIndexOffset: 2500,
+      }).addTo(map);
+
+      const navUrl = `https://www.google.com/maps/dir/?api=1&destination=${alert.latitude},${alert.longitude}&travelmode=driving`;
+
+      marker.bindPopup(`
+        <div style="font-family:system-ui,sans-serif;min-width:195px;">
+          <div style="font-weight:900;color:#be123c;font-size:12px;">EMERGENCY SOS: ${alert.senderName}</div>
+          <div style="font-size:11px;color:#1e293b;margin-top:3px;font-weight:600;">"${alert.message}"</div>
+          <div style="margin-top:6px;padding:6px;border-radius:8px;background:#f8fafc;border:1px solid #e2e8f0;">
+            <div style="font-size:10px;color:#64748b;text-transform:uppercase;font-weight:700;">Coordinates (Lat, Lng)</div>
+            <div style="font-family:monospace;font-size:11px;color:#0f172a;font-weight:800;margin-top:1px;">
+              ${alert.latitude.toFixed(6)}, ${alert.longitude.toFixed(6)}
+            </div>
+            <div style="font-size:10px;color:#475569;margin-top:2px;">
+              Accuracy ±${Math.round(alert.accuracy)} m
+            </div>
+          </div>
+          <a href="${navUrl}" target="_blank" rel="noopener noreferrer" style="margin-top:8px;display:block;text-align:center;padding:6px 10px;border-radius:8px;background:#059669;color:#ffffff;font-weight:800;font-size:11px;text-decoration:none;">
+            Get Directions
+          </a>
+        </div>
+      `);
+
+      emergencyAlertLayersRef.current.push(marker);
+    });
+  }, [activeAlerts]);
 
   // Multi-user Breadcrumb Trail Palette & Layer Groups
   interface TrailLayerGroup {

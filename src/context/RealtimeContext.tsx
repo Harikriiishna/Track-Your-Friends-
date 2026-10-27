@@ -155,6 +155,54 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const myLocationRef = useRef<UserLocation | null>(null);
   myLocationRef.current = myLocation;
   const hasPreciseFixRef = useRef<boolean>(false);
+  const notifiedAlertIdsRef = useRef<Set<string>>(new Set());
+
+  // Evaluate incoming emergency alert and trigger device pop-up notification for users within 5 km
+  const handleIncomingEmergencyAlert = useCallback(
+    (alert: EmergencyAlert) => {
+      setActiveAlerts((prev) => [alert, ...prev.filter((a) => a.id !== alert.id)]);
+      if (alert.status !== 'active') return;
+
+      const myLoc = myLocationRef.current;
+      const hasValidAlertCoords =
+        Number.isFinite(alert.latitude) &&
+        Number.isFinite(alert.longitude) &&
+        !(alert.latitude === 0 && alert.longitude === 0);
+      const hasValidMyCoords =
+        Boolean(myLoc) &&
+        Number.isFinite(myLoc!.latitude) &&
+        Number.isFinite(myLoc!.longitude);
+
+      const distanceMeters =
+        hasValidAlertCoords && hasValidMyCoords
+          ? calculateDistanceMeters(
+              myLoc!.latitude,
+              myLoc!.longitude,
+              alert.latitude,
+              alert.longitude
+            )
+          : null;
+
+      // Trigger pop-up device notification & siren if user is within 5 km (5000m) of the alert (or is sender / awaiting GPS)
+      const isWithin5km =
+        alert.senderId === user?.id ||
+        distanceMeters === null ||
+        distanceMeters <= 5000;
+
+      if (isWithin5km && !notifiedAlertIdsRef.current.has(alert.id)) {
+        notifiedAlertIdsRef.current.add(alert.id);
+        setLatestAlert(alert);
+        sound.startEmergencySiren();
+        notifications.notifyEmergency(alert.senderName, alert.message, {
+          latitude: alert.latitude,
+          longitude: alert.longitude,
+          accuracy: alert.accuracy,
+          distanceMeters,
+        });
+      }
+    },
+    [user?.id]
+  );
 
   // Send WebSocket message helper
   const sendWs = useCallback((msg: WsClientMessage) => {
@@ -175,6 +223,26 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
 
     let isMounted = true;
+
+    const syncActiveAlerts = () => {
+      api
+        .get<{ alerts: EmergencyAlert[] }>('/api/alerts/active')
+        .then((res) => {
+          if (isMounted && res?.alerts) {
+            setActiveAlerts(res.alerts);
+            res.alerts.forEach((a) => {
+              if (a.status === 'active' && !notifiedAlertIdsRef.current.has(a.id)) {
+                handleIncomingEmergencyAlert(a);
+              }
+            });
+          }
+        })
+        .catch(() => {});
+    };
+
+    // Fetch any active emergency alerts on connect and poll every 6s for mobile resilience
+    syncActiveAlerts();
+    const alertPollInterval = setInterval(syncActiveAlerts, 6000);
 
     if (api.isUsingLocalBackend()) {
       setIsConnected(true);
@@ -262,13 +330,14 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
     return () => {
       isMounted = false;
+      clearInterval(alertPollInterval);
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
       if (socketRef.current) {
         socketRef.current.close();
         socketRef.current = null;
       }
     };
-  }, [token, user?.id]);
+  }, [token, user?.id, handleIncomingEmergencyAlert]);
 
   // Handle incoming Server WebSocket messages
   const handleServerMessage = (data: WsServerMessage) => {
@@ -408,12 +477,7 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
 
       case 'emergency:broadcast': {
-        setActiveAlerts((prev) => [data.alert, ...prev.filter((a) => a.id !== data.alert.id)]);
-        setLatestAlert(data.alert);
-        sound.startEmergencySiren();
-        if (data.alert.senderId !== user?.id) {
-          notifications.notifyEmergency(data.alert.senderName, data.alert.message);
-        }
+        handleIncomingEmergencyAlert(data.alert);
         break;
       }
 
@@ -993,40 +1057,57 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   // Emergency SOS Actions
   const triggerEmergencySos = useCallback(
     (message: string, roomId?: string) => {
-      const currentLoc = myLocationRef.current;
-      const lat = currentLoc ? currentLoc.latitude : 0;
-      const lng = currentLoc ? currentLoc.longitude : 0;
-      const acc = currentLoc ? currentLoc.accuracy : 10;
-
-      if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-        sendWs({
-          type: 'emergency:sos',
-          message,
-          latitude: lat,
-          longitude: lng,
-          accuracy: acc,
-          roomId,
-        });
-      } else {
-        api
-          .post<{ alert: EmergencyAlert }>('/api/alerts/emergency', {
+      const dispatchSos = (lat: number, lng: number, acc: number) => {
+        if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+          sendWs({
+            type: 'emergency:sos',
             message,
             latitude: lat,
             longitude: lng,
             accuracy: acc,
             roomId,
-          })
-          .then((res) => {
-            if (res?.alert) {
-              setActiveAlerts((prev) => [res.alert, ...prev.filter((a) => a.id !== res.alert.id)]);
-              setLatestAlert(res.alert);
-              sound.startEmergencySiren();
-            }
-          })
-          .catch(() => {});
+          });
+        } else {
+          api
+            .post<{ alert: EmergencyAlert }>('/api/alerts/emergency', {
+              message,
+              latitude: lat,
+              longitude: lng,
+              accuracy: acc,
+              roomId,
+            })
+            .then((res) => {
+              if (res?.alert) {
+                setActiveAlerts((prev) => [res.alert, ...prev.filter((a) => a.id !== res.alert.id)]);
+                setLatestAlert(res.alert);
+                sound.startEmergencySiren();
+              }
+            })
+            .catch(() => {});
+        }
+      };
+
+      const currentLoc = myLocationRef.current;
+      if (
+        currentLoc &&
+        Number.isFinite(currentLoc.latitude) &&
+        Number.isFinite(currentLoc.longitude)
+      ) {
+        dispatchSos(currentLoc.latitude, currentLoc.longitude, currentLoc.accuracy);
+      } else if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            processPositionFix(pos, true);
+            dispatchSos(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy);
+          },
+          (err) => {
+            handleGeolocationError({ code: err.code, message: err.message });
+          },
+          { enableHighAccuracy: true, maximumAge: 0, timeout: 15000 }
+        );
       }
     },
-    [sendWs]
+    [sendWs, processPositionFix, handleGeolocationError]
   );
 
   const acknowledgeEmergency = useCallback(
