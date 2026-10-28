@@ -1,4 +1,8 @@
-import firebaseConfig from '../../firebase-applet-config.json';
+const firebaseConfig = {
+  projectId: 'gen-lang-client-0914373991',
+  firestoreDatabaseId: 'ai-studio-nexuspoint-bb482c10-9426-424c-8259-807bce4cb7da',
+  apiKey: 'AIzaSyDytVqEQzabXfZPoBRd35E9VNdXOq3KZLo',
+};
 
 const FIRESTORE_SYNC_URL = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${firebaseConfig.firestoreDatabaseId}/documents/beacon_sync/global_state?key=${firebaseConfig.apiKey}`;
 
