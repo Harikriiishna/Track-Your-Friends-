@@ -103,7 +103,14 @@ button, a, [role="button"] {
   -webkit-transform: translate3d(0, 0, 0);
 }
 .leaflet-marker-icon, .leaflet-marker-shadow {
-  transition: transform 0.08s linear;
+  will-change: transform;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+.beacon-google-blue-dot-marker,
+.beacon-peer-marker,
+.beacon-place-marker {
+  contain: layout style;
 }
 
 /* Smooth theme transition */

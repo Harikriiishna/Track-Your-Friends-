@@ -1631,6 +1631,9 @@ export const LiveMap: React.FC<LiveMapProps> = ({
     };
   }, []);
 
+  const selfIconSignatureRef = useRef<string>('');
+  const peerIconHtmlMapRef = useRef<Map<string, string>>(new Map());
+
   // Update Current User GPS Marker & Accuracy Circle (Steps 3d, 3e, 3g)
   useEffect(() => {
     const map = mapInstanceRef.current;
@@ -1640,6 +1643,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
       if (myMarkerRef.current) {
         map.removeLayer(myMarkerRef.current);
         myMarkerRef.current = null;
+        selfIconSignatureRef.current = '';
       }
       if (accuracyCircleRef.current) {
         map.removeLayer(accuracyCircleRef.current);
@@ -1727,12 +1731,16 @@ export const LiveMap: React.FC<LiveMapProps> = ({
     const userIcon = user?.markerIcon || 'person';
     const userRoleEmoji = getMemberIconEmoji(userIcon);
     const userDisplayName = user?.markerLabel || user?.fullName?.split(' ')[0] || 'You';
+    const roundedAcc = Math.round(currentAcc);
+    const roundedHeading = effectiveHeading !== null ? Math.round(effectiveHeading) : null;
+
+    const selfSignature = `${userDisplayName}|${userIcon}|${selfSignalInfo.isLowSignal}|${isServerLive}|${roundedAcc}|${roundedHeading !== null}`;
 
     const myIcon = L.divIcon({
       className: 'beacon-google-blue-dot-marker',
       html: `
         <div class="relative flex items-center justify-center w-20 h-20 pointer-events-none cursor-pointer">
-          <div class="absolute inset-0 flex items-center justify-center pointer-events-none transition-transform duration-200 ease-out" style="transform: rotate(${visualAngle}deg);">
+          <div class="beacon-self-heading-cone absolute inset-0 flex items-center justify-center pointer-events-none transition-transform duration-150 ease-out" style="transform: rotate(${visualAngle}deg);">
             <svg class="absolute -top-7 w-28 h-28 overflow-visible pointer-events-none opacity-85" viewBox="0 0 100 100">
               <defs>
                 <radialGradient id="googleBlueDotBeam" cx="50%" cy="100%" r="90%">
@@ -1764,8 +1772,8 @@ export const LiveMap: React.FC<LiveMapProps> = ({
             <span class="w-1.5 h-1.5 rounded-full ${isServerLive ? 'bg-emerald-400 animate-pulse' : 'bg-slate-400'}"></span>
             <span>${userDisplayName}</span>
             ${isServerLive ? `<span class="text-emerald-300 font-mono text-[9px]">· Live</span>` : ''}
-            <span class="text-sky-300 font-mono text-[9px]">· Accuracy ±${Math.round(currentAcc)} m</span>
-            ${effectiveHeading !== null ? `<span class="text-blue-300 font-mono text-[9px]">· ${Math.round(effectiveHeading)}°</span>` : ''}
+            <span class="text-sky-300 font-mono text-[9px]">· Accuracy ±${roundedAcc} m</span>
+            ${roundedHeading !== null ? `<span class="beacon-self-heading-text text-blue-300 font-mono text-[9px]">· ${roundedHeading}°</span>` : ''}
           </div>
         </div>
       `,
@@ -1776,7 +1784,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
     const selfTarget: MarkerContextMenuTarget = {
       type: 'self',
       title: `${user?.fullName || 'You'} (Your Location)`,
-      subtitle: `Accuracy ±${Math.round(currentAcc)} m${isServerLive ? ' · Live' : ''}`,
+      subtitle: `Accuracy ±${roundedAcc} m${isServerLive ? ' · Live' : ''}`,
       lat: markerCoords[0],
       lng: markerCoords[1],
       avatarUrl: user?.avatarUrl,
@@ -1790,6 +1798,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         zIndexOffset: 1000,
         draggable: true,
       }).addTo(map);
+      selfIconSignatureRef.current = selfSignature;
       myMarkerRef.current.on('click', () => {
         setSelectedUser(myLocation);
       });
@@ -1803,8 +1812,25 @@ export const LiveMap: React.FC<LiveMapProps> = ({
       attachMarkerLongPress(myMarkerRef.current, selfTarget);
     } else {
       animateMarkerPosition(myMarkerRef.current, markerCoords[0], markerCoords[1], 'my_marker');
-      myMarkerRef.current.setIcon(myIcon);
-      attachMarkerLongPress(myMarkerRef.current, selfTarget);
+      if (selfIconSignatureRef.current !== selfSignature) {
+        selfIconSignatureRef.current = selfSignature;
+        myMarkerRef.current.setIcon(myIcon);
+        attachMarkerLongPress(myMarkerRef.current, selfTarget);
+      } else {
+        const el = myMarkerRef.current.getElement();
+        if (el) {
+          const cone = el.querySelector('.beacon-self-heading-cone') as HTMLElement | null;
+          if (cone) {
+            cone.style.transform = `rotate(${visualAngle}deg)`;
+          }
+          if (roundedHeading !== null) {
+            const headingText = el.querySelector('.beacon-self-heading-text') as HTMLElement | null;
+            if (headingText) {
+              headingText.textContent = `· ${roundedHeading}°`;
+            }
+          }
+        }
+      }
     }
   }, [myLocation, user?.avatarUrl, user?.fullName, hasCenteredOnce, userHeading, bearing, debugNowMs]);
 
@@ -1897,15 +1923,13 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         );
       }
 
-      const peerIcon = L.divIcon({
-        className: 'beacon-peer-marker',
-        html: `
+      const peerHtml = `
           <div class="group relative flex flex-col items-center cursor-pointer hover:scale-105 transition-transform">
             ${peerSignalInfo.isLowSignal ? `
               <div class="absolute -inset-2 rounded-full border-2 border-dashed animate-pulse pointer-events-none" style="border-color: ${peerSignalInfo.circleColor}; background-color: ${peerSignalInfo.circleColor}22;"></div>
             ` : ''}
             ${peerVisualAngle !== null ? `
-              <div class="absolute inset-0 flex items-center justify-center pointer-events-none transition-transform duration-150" style="transform: rotate(${peerVisualAngle}deg);">
+              <div class="absolute inset-0 flex items-center justify-center pointer-events-none transition-transform duration-150" style="transform: rotate(${Math.round(peerVisualAngle)}deg);">
                 <div class="absolute -top-3 w-0 h-0 border-l-[5px] border-l-transparent border-r-[5px] border-r-transparent border-b-[9px]" style="border-bottom-color: ${peerColor}; filter: drop-shadow(0 0 4px ${peerColor});"></div>
               </div>
             ` : ''}
@@ -1926,7 +1950,11 @@ export const LiveMap: React.FC<LiveMapProps> = ({
               ${peerHeading != null ? `<span class="text-emerald-400 font-mono text-[9px]">· ${Math.round(peerHeading)}°</span>` : ''}
             </div>
           </div>
-        `,
+        `;
+
+      const peerIcon = L.divIcon({
+        className: 'beacon-peer-marker',
+        html: peerHtml,
         iconSize: [40, 56],
         iconAnchor: [20, 20],
       });
@@ -1947,6 +1975,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
       if (!currentMarkers.has(peerLoc.userId)) {
         // Step 3d: Leaflet L.marker([lat, lng])
         const marker = L.marker(peerCoords, { icon: peerIcon }).addTo(map);
+        peerIconHtmlMapRef.current.set(peerLoc.userId, peerHtml);
         marker.on('click', () => {
           setSelectedUser(peerLoc);
         });
@@ -1955,8 +1984,11 @@ export const LiveMap: React.FC<LiveMapProps> = ({
       } else {
         const existingMarker = currentMarkers.get(peerLoc.userId)!;
         animateMarkerPosition(existingMarker, peerCoords[0], peerCoords[1], peerLoc.userId);
-        existingMarker.setIcon(peerIcon);
-        attachMarkerLongPress(existingMarker, peerTarget);
+        if (peerIconHtmlMapRef.current.get(peerLoc.userId) !== peerHtml) {
+          peerIconHtmlMapRef.current.set(peerLoc.userId, peerHtml);
+          existingMarker.setIcon(peerIcon);
+          attachMarkerLongPress(existingMarker, peerTarget);
+        }
       }
     }
 
@@ -1968,6 +2000,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         }
         map.removeLayer(marker);
         currentMarkers.delete(userId);
+        peerIconHtmlMapRef.current.delete(userId);
       }
     }
 

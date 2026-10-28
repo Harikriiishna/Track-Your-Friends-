@@ -64,7 +64,16 @@ function MainApp() {
   const [, startTransition] = React.useTransition();
   const [visitedTabs, setVisitedTabs] = useState<Set<string>>(() => new Set(['map']));
 
-  const [selectedRoomId, setSelectedRoomId] = useState<string | null>(null);
+  const [selectedRoomId, setSelectedRoomId] = useState<string | null>(() => {
+    try {
+      const savedUserRaw = localStorage.getItem('beacon_user_profile');
+      const uid = savedUserRaw ? JSON.parse(savedUserRaw)?.id : null;
+      if (uid) {
+        return localStorage.getItem(`beacon_selected_room_${uid}`);
+      }
+    } catch {}
+    return null;
+  });
   const [selectedChatUser, setSelectedChatUser] = useState<{ id: string; name: string; avatar: string } | null>(null);
   const [savedPlaces, setSavedPlaces] = useState<SavedPlace[]>([]);
   const [userRooms, setUserRooms] = useState<Room[]>([]);
@@ -72,6 +81,22 @@ function MainApp() {
   const [pendingReminder, setPendingReminder] = useState<{ lat: number; lng: number; title?: string } | null>(null);
   const [showOverlaySharePanel, setShowOverlaySharePanel] = useState<boolean>(false);
   const [devicePopup, setDevicePopup] = useState<DevicePopupNotification | null>(null);
+
+  const handleSelectRoomId = React.useCallback(
+    (roomId: string | null) => {
+      setSelectedRoomId(roomId);
+      if (user?.id) {
+        try {
+          if (roomId) {
+            localStorage.setItem(`beacon_selected_room_${user.id}`, roomId);
+          } else {
+            localStorage.removeItem(`beacon_selected_room_${user.id}`);
+          }
+        } catch {}
+      }
+    },
+    [user?.id]
+  );
 
   // Check if user opened a temporary secure SOS live tracking link (?sos_track=...)
   const [sosTrackParams, setSosTrackParams] = useState<{
@@ -182,32 +207,76 @@ function MainApp() {
     });
   }, [isLiteMode]);
 
-  const refreshSavedPlaces = () => {
+  const applyRoomsIfChanged = React.useCallback(
+    (rooms: Room[]) => {
+      if (!Array.isArray(rooms)) return;
+      setUserRooms((prev) => {
+        const prevSig = prev.map((r) => `${r.id}:${r.name}:${r.memberCount}`).join('|');
+        const nextSig = rooms.map((r) => `${r.id}:${r.name}:${r.memberCount}`).join('|');
+        return prevSig === nextSig ? prev : rooms;
+      });
+      if (rooms.length > 0) {
+        setSelectedRoomId((prevSelected) => {
+          const savedId = user?.id
+            ? localStorage.getItem(`beacon_selected_room_${user.id}`)
+            : null;
+          const candidate = prevSelected || savedId;
+          if (candidate && rooms.some((r) => r.id === candidate)) {
+            return candidate;
+          }
+          // Prefer a custom joined room over Universal Lounge if user has joined one and had no selection
+          const nonUniversal = rooms.find((r) => r.id !== 'room-universal');
+          const chosen = nonUniversal ? nonUniversal.id : rooms[0].id;
+          if (user?.id && chosen) {
+            try {
+              localStorage.setItem(`beacon_selected_room_${user.id}`, chosen);
+            } catch {}
+          }
+          return chosen;
+        });
+      }
+    },
+    [user?.id]
+  );
+
+  const refreshSavedPlaces = React.useCallback(() => {
     if (!user || !api.getToken()) return;
     api
       .get<{ places: SavedPlace[] }>('/api/saved-places')
       .then((res) => {
-        setSavedPlaces(res.places);
+        if (!Array.isArray(res?.places)) return;
+        setSavedPlaces((prev) => {
+          const prevSig = prev.map((p) => `${p.id}:${p.name}:${p.latitude}:${p.longitude}`).join('|');
+          const nextSig = res.places.map((p) => `${p.id}:${p.name}:${p.latitude}:${p.longitude}`).join('|');
+          return prevSig === nextSig ? prev : res.places;
+        });
         prefetchedDataRef.current.add('saved');
       })
       .catch(() => {});
-  };
+  }, [user]);
 
   useEffect(() => {
-    if (user && api.getToken()) {
+    if (!user || !api.getToken()) return;
+
+    const refreshRoomsAndPlaces = () => {
       refreshSavedPlaces();
       api
         .get<{ rooms: Room[] }>('/api/rooms')
         .then((res) => {
-          setUserRooms(res.rooms);
-          prefetchedDataRef.current.add('rooms');
-          if (!selectedRoomId && res.rooms.length > 0) {
-            setSelectedRoomId(res.rooms[0].id);
+          if (res?.rooms) {
+            applyRoomsIfChanged(res.rooms);
+            prefetchedDataRef.current.add('rooms');
           }
         })
         .catch(() => {});
-    }
-  }, [user]);
+    };
+
+    refreshRoomsAndPlaces();
+    window.addEventListener('beacon:cloud-sync-updated', refreshRoomsAndPlaces);
+    return () => {
+      window.removeEventListener('beacon:cloud-sync-updated', refreshRoomsAndPlaces);
+    };
+  }, [user?.id, refreshSavedPlaces, applyRoomsIfChanged]);
 
   useEffect(() => {
     if (!user || isLiteMode) return;
@@ -562,15 +631,17 @@ function MainApp() {
                 savedPlaces={savedPlaces}
                 onRefreshSavedPlaces={refreshSavedPlaces}
                 onSelectRoom={(roomId) => {
-                  setSelectedRoomId(roomId);
-                  api.get<{ rooms: Room[] }>('/api/rooms').then((res) => setUserRooms(res.rooms));
+                  handleSelectRoomId(roomId);
+                  api.get<{ rooms: Room[] }>('/api/rooms').then((res) => {
+                    if (res?.rooms) applyRoomsIfChanged(res.rooms);
+                  });
                 }}
                 onSelectUserForChat={(targetUserId) => {
                   setSelectedChatUser({ id: targetUserId, name: 'Peer', avatar: '' });
                   handleSelectTab('chat');
                 }}
                 onOpenChat={(roomId) => {
-                  if (roomId) setSelectedRoomId(roomId);
+                  if (roomId) handleSelectRoomId(roomId);
                   setSelectedChatUser(null);
                   handleSelectTab('chat');
                 }}
@@ -602,7 +673,7 @@ function MainApp() {
                 selectedRoomId={selectedRoomId}
                 selectedChatUser={selectedChatUser}
                 onSelectRoom={(id) => {
-                  setSelectedRoomId(id);
+                  handleSelectRoomId(id);
                   setSelectedChatUser(null);
                 }}
                 onSelectChatUser={(u) => setSelectedChatUser(u)}

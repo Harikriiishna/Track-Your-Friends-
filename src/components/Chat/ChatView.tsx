@@ -201,41 +201,67 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const recordingTimerRef = useRef<any>(null);
   const typingTimeoutRef = useRef<any>(null);
 
+  const lastTypingSentRef = useRef<number>(0);
+
   // Effective conversation key
   const effectiveRoomId = activeDirectUser ? undefined : activeRoomId;
   const effectiveRecipientId = activeDirectUser ? activeDirectUser.id : undefined;
   const conversationKey = effectiveRoomId || effectiveRecipientId || 'room-universal';
 
-  // Load room details & message history
+  // Load room details & keep synced on Cloud Firestore updates with signature diffing
   useEffect(() => {
     if (!effectiveRoomId) return;
+    let active = true;
     async function fetchDetails() {
       try {
         const res = await api.get<{ room: Room }>(`/api/rooms/${effectiveRoomId}`);
-        setRoomDetails(res.room);
+        if (!active || !res?.room) return;
+        setRoomDetails((prev) => {
+          if (!prev || prev.id !== res.room.id) return res.room;
+          const prevMem = (prev.members || []).map((m) => `${m.userId}:${m.role}`).join('|');
+          const nextMem = (res.room.members || []).map((m) => `${m.userId}:${m.role}`).join('|');
+          if (
+            prev.name === res.room.name &&
+            prev.description === res.room.description &&
+            prev.memberCount === res.room.memberCount &&
+            prevMem === nextMem
+          ) {
+            return prev;
+          }
+          return res.room;
+        });
       } catch (err) {
         console.error('Failed to load room details:', err);
       }
     }
     fetchDetails();
+    window.addEventListener('beacon:cloud-sync-updated', fetchDetails);
+    return () => {
+      active = false;
+      window.removeEventListener('beacon:cloud-sync-updated', fetchDetails);
+    };
   }, [effectiveRoomId]);
 
-  // Load conversation messages from REST
+  // Load initial conversation messages from REST (real-time updates arrive automatically via RealtimeContext)
   useEffect(() => {
+    let active = true;
     async function loadHistory() {
       try {
         if (effectiveRoomId) {
           const res = await api.get<{ messages: ChatMessage[] }>(`/api/rooms/${effectiveRoomId}/messages`);
-          setConversationMessages(effectiveRoomId, res.messages);
+          if (active && res?.messages) setConversationMessages(effectiveRoomId, res.messages);
         } else if (effectiveRecipientId) {
           const res = await api.get<{ messages: ChatMessage[] }>(`/api/direct-messages/${effectiveRecipientId}`);
-          setConversationMessages(effectiveRecipientId, res.messages);
+          if (active && res?.messages) setConversationMessages(effectiveRecipientId, res.messages);
         }
       } catch (err) {
         console.error('Failed to load message history:', err);
       }
     }
     loadHistory();
+    return () => {
+      active = false;
+    };
   }, [effectiveRoomId, effectiveRecipientId, setConversationMessages]);
 
   // Merge local channel state with incoming real-time socket messages without duplicate rendering
@@ -306,7 +332,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
     }
 
     return [...convertedRemote, ...pendingLocal];
-  }, [channelMessages, activeChannelId, chatMessages, conversationKey, user]);
+  }, [channelMessages, activeChannelId, chatMessages, conversationKey, user, effectiveRoomId]);
 
   const displayMessages: DisplayChatMessage[] = useMemo(() => {
     if (!searchQuery.trim()) return activeChannelMessages;
@@ -320,14 +346,19 @@ export const ChatView: React.FC<ChatViewProps> = ({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [displayMessages.length, activeChannelId]);
 
-  // Handle typing indicator
+  // Handle typing indicator (throttled to max 1 WS frame per 1.8s for zero-lag input)
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setInputVal(e.target.value);
-    sendTyping({ roomId: effectiveRoomId, recipientId: effectiveRecipientId, isTyping: true });
+    const now = performance.now();
+    if (now - lastTypingSentRef.current > 1800) {
+      lastTypingSentRef.current = now;
+      sendTyping({ roomId: effectiveRoomId, recipientId: effectiveRecipientId, isTyping: true });
+    }
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     typingTimeoutRef.current = setTimeout(() => {
+      lastTypingSentRef.current = 0;
       sendTyping({ roomId: effectiveRoomId, recipientId: effectiveRecipientId, isTyping: false });
-    }, 2000);
+    }, 2200);
   };
 
   // Voice note recording flow

@@ -1,10 +1,11 @@
-const firebaseConfig = {
-  projectId: 'gen-lang-client-0914373991',
-  firestoreDatabaseId: 'ai-studio-nexuspoint-bb482c10-9426-424c-8259-807bce4cb7da',
-  apiKey: 'AIzaSyDytVqEQzabXfZPoBRd35E9VNdXOq3KZLo',
-};
+import {
+  FIREBASE_PRODUCTION_CONFIG,
+  FIRESTORE_SYNC_DOC_URL,
+  syncLogger,
+} from '../config/env.ts';
 
-const FIRESTORE_SYNC_URL = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${firebaseConfig.firestoreDatabaseId}/documents/beacon_sync/global_state?key=${firebaseConfig.apiKey}`;
+export const firebaseConfig = FIREBASE_PRODUCTION_CONFIG;
+const FIRESTORE_SYNC_URL = FIRESTORE_SYNC_DOC_URL;
 
 export interface SyncableDatabaseState {
   users: any[];
@@ -23,6 +24,33 @@ export interface SyncableDatabaseState {
   passwordResets: any[];
   locationHistory: any[];
   deletedIds?: string[];
+}
+
+type SyncListener = (state: SyncableDatabaseState) => void;
+const syncListeners = new Set<SyncListener>();
+
+export function onCloudStateSynced(listener: SyncListener): () => void {
+  syncListeners.add(listener);
+  return () => {
+    syncListeners.delete(listener);
+  };
+}
+
+function notifySyncListeners(state: SyncableDatabaseState): void {
+  for (const listener of syncListeners) {
+    try {
+      listener(state);
+    } catch {
+      // ignore listener errors
+    }
+  }
+  if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
+    try {
+      window.dispatchEvent(new CustomEvent('beacon:cloud-sync-updated', { detail: state }));
+    } catch {
+      // ignore
+    }
+  }
 }
 
 // Pre-seeded initial user & rooms from the server database so even before the first network packet completes on a fresh APK install, the user's account and rooms exist.
@@ -82,11 +110,26 @@ export const INITIAL_SEED_ROOM_MEMBERS = [
   },
 ];
 
+function getItemTimestampMs(item: any): number {
+  if (!item || typeof item !== 'object') return 0;
+  const raw =
+    item.updatedAt ||
+    item.updated_at ||
+    item.lastSeen ||
+    item.timestamp ||
+    item.createdAt ||
+    item.joinedAt;
+  if (!raw) return 0;
+  const ms = new Date(raw).getTime();
+  return Number.isFinite(ms) ? ms : 0;
+}
+
 function mergeArrayById<T extends Record<string, any>>(
   localArr: T[] = [],
   remoteArr: T[] = [],
   idKey = 'id',
-  deletedSet?: Set<string>
+  deletedSet?: Set<string>,
+  preferRemoteOnTie = false
 ): T[] {
   const map = new Map<string, T>();
   for (const item of remoteArr) {
@@ -99,9 +142,20 @@ function mergeArrayById<T extends Record<string, any>>(
     if (!item || !item[idKey]) continue;
     const key = String(item[idKey]);
     if (deletedSet?.has(key)) continue;
-    const existing = map.get(key);
-    if (existing) {
-      map.set(key, { ...existing, ...item });
+    const existingRemote = map.get(key);
+    if (existingRemote) {
+      const localTs = getItemTimestampMs(item);
+      const remoteTs = getItemTimestampMs(existingRemote);
+      if (localTs > remoteTs) {
+        map.set(key, { ...existingRemote, ...item });
+      } else if (remoteTs > localTs) {
+        map.set(key, { ...item, ...existingRemote });
+      } else {
+        map.set(
+          key,
+          preferRemoteOnTie ? { ...item, ...existingRemote } : { ...existingRemote, ...item }
+        );
+      }
     } else {
       map.set(key, { ...item });
     }
@@ -122,7 +176,10 @@ export function mergeDatabaseStates(
   ]);
   target.deletedIds = Array.from(deletedSet).slice(-500);
 
-  // 1. Merge Users (match by id or email)
+  // Track any user ID aliases if the same email/username was registered with different IDs across devices
+  const userIdAliasMap = new Map<string, string>();
+
+  // 1. Merge Users (match by id, email, or username; preserve canonical ID and latest profile updates)
   if (Array.isArray(incoming.users)) {
     for (const rUser of incoming.users) {
       if (!rUser || (!rUser.id && !rUser.email)) continue;
@@ -134,13 +191,54 @@ export function mergeDatabaseStates(
       );
       if (idx >= 0) {
         const localUser = target.users[idx];
-        const merged = preferIncoming
-          ? { ...localUser, ...rUser }
-          : { ...rUser, ...localUser };
-        // Always preserve password credentials from whichever side has them
-        if (rUser.password && !merged.password) merged.password = rUser.password;
-        if (localUser.password && !merged.password) merged.password = localUser.password;
-        if (rUser.passwordHash && !merged.passwordHash) {
+        // Determine canonical ID: prefer seed ID or earlier createdAt ID so user identity never shifts
+        const seedMatch = INITIAL_SEED_USERS.find(
+          (s) =>
+            s.email.toLowerCase() === (localUser.email || rUser.email || '').toLowerCase() ||
+            s.username.toLowerCase() === (localUser.username || rUser.username || '').toLowerCase()
+        );
+        const localCreatedMs = new Date(localUser.createdAt || 0).getTime() || Number.MAX_SAFE_INTEGER;
+        const remoteCreatedMs = new Date(rUser.createdAt || 0).getTime() || Number.MAX_SAFE_INTEGER;
+        const canonicalId = seedMatch
+          ? seedMatch.id
+          : localCreatedMs <= remoteCreatedMs
+            ? localUser.id
+            : rUser.id;
+
+        if (localUser.id && localUser.id !== canonicalId) {
+          userIdAliasMap.set(localUser.id, canonicalId);
+        }
+        if (rUser.id && rUser.id !== canonicalId) {
+          userIdAliasMap.set(rUser.id, canonicalId);
+        }
+
+        const localTs = getItemTimestampMs(localUser);
+        const remoteTs = getItemTimestampMs(rUser);
+        const remoteIsNewer = remoteTs > localTs || (remoteTs === localTs && preferIncoming);
+
+        const merged = remoteIsNewer
+          ? { ...localUser, ...rUser, id: canonicalId }
+          : { ...rUser, ...localUser, id: canonicalId };
+
+        // Keep most recent lastSeen
+        const maxLastSeenMs = Math.max(
+          new Date(localUser.lastSeen || 0).getTime() || 0,
+          new Date(rUser.lastSeen || 0).getTime() || 0
+        );
+        if (maxLastSeenMs > 0) {
+          merged.lastSeen = new Date(maxLastSeenMs).toISOString();
+        }
+
+        // Preserve password credentials from whichever side has them
+        if (remoteIsNewer && rUser.password) {
+          merged.password = rUser.password;
+        } else if (localUser.password && !merged.password) {
+          merged.password = localUser.password;
+        } else if (rUser.password && !merged.password) {
+          merged.password = rUser.password;
+        }
+
+        if (rUser.passwordHash && (!merged.passwordHash || remoteIsNewer)) {
           merged.passwordHash = rUser.passwordHash;
           merged.salt = rUser.salt;
         }
@@ -148,6 +246,7 @@ export function mergeDatabaseStates(
           merged.passwordHash = localUser.passwordHash;
           merged.salt = localUser.salt;
         }
+
         target.users[idx] = merged;
       } else {
         target.users.push({ ...rUser });
@@ -155,50 +254,152 @@ export function mergeDatabaseStates(
     }
   }
 
+  const normalizeUid = (uid?: string): string | undefined => {
+    if (!uid) return uid;
+    return userIdAliasMap.get(uid) || uid;
+  };
+
+  // Deduplicate target.users by canonical id
+  const uniqueUsersMap = new Map<string, any>();
+  for (const u of target.users) {
+    if (!u || !u.id) continue;
+    const cid = normalizeUid(u.id)!;
+    u.id = cid;
+    uniqueUsersMap.set(cid, u);
+  }
+  target.users = Array.from(uniqueUsersMap.values());
+
   // 2. Merge Sessions (by token)
   if (Array.isArray(incoming.sessions)) {
-    target.sessions = mergeArrayById(
-      preferIncoming ? incoming.sessions : target.sessions,
-      preferIncoming ? target.sessions : incoming.sessions,
+    const mergedSessions = mergeArrayById(
+      target.sessions,
+      incoming.sessions,
       'token',
-      deletedSet
-    ).slice(-100);
+      deletedSet,
+      preferIncoming
+    ).map((s) => ({
+      ...s,
+      userId: normalizeUid(s.userId) || s.userId,
+    }));
+    target.sessions = mergedSessions.slice(-150);
   }
 
   // 3. Merge Rooms (by id)
   if (Array.isArray(incoming.rooms)) {
     target.rooms = mergeArrayById(
-      preferIncoming ? incoming.rooms : target.rooms,
-      preferIncoming ? target.rooms : incoming.rooms,
+      target.rooms,
+      incoming.rooms,
       'id',
-      deletedSet
-    );
+      deletedSet,
+      preferIncoming
+    ).map((r) => ({
+      ...r,
+      ownerId: normalizeUid(r.ownerId) || r.ownerId,
+    }));
   }
 
-  // 4. Merge Room Members (by roomId + userId)
-  if (Array.isArray(incoming.roomMembers)) {
-    const memberMap = new Map<string, any>();
-    for (const m of [...(incoming.roomMembers || []), ...(target.roomMembers || [])]) {
-      if (!m || !m.roomId || !m.userId) continue;
-      if (deletedSet.has(m.roomId)) continue;
-      memberMap.set(`${m.roomId}_${m.userId}`, m);
+  // 4. Merge Room Members (by roomId + userId) — users stay in rooms permanently until they press Leave
+  const memberMap = new Map<string, any>();
+  const allMembers = [
+    ...(Array.isArray(incoming.roomMembers) ? incoming.roomMembers : []),
+    ...(Array.isArray(target.roomMembers) ? target.roomMembers : []),
+  ];
+  for (const m of allMembers) {
+    if (!m || !m.roomId || !m.userId) continue;
+    if (deletedSet.has(m.roomId)) continue;
+    const uid = normalizeUid(m.userId)!;
+    const leaveKey = `leave_${m.roomId}_${uid}`;
+    if (m.roomId !== 'room-universal' && deletedSet.has(leaveKey)) {
+      continue;
     }
-    target.roomMembers = Array.from(memberMap.values());
+    const mapKey = `${m.roomId}_${uid}`;
+    const existing = memberMap.get(mapKey);
+    if (!existing) {
+      memberMap.set(mapKey, { ...m, userId: uid });
+    } else {
+      // Preserve highest privilege role (OWNER > ADMIN > MEMBER) and latest joinedAt
+      const roleRank: Record<string, number> = { OWNER: 3, ADMIN: 2, MEMBER: 1 };
+      const bestRole =
+        (roleRank[m.role] || 1) >= (roleRank[existing.role] || 1) ? m.role : existing.role;
+      memberMap.set(mapKey, { ...existing, ...m, userId: uid, role: bestRole });
+    }
+  }
+  // Ensure every room owner is always a member of their own room
+  for (const r of target.rooms) {
+    if (!r || !r.id || !r.ownerId || r.ownerId === 'system') continue;
+    const ownerUid = normalizeUid(r.ownerId)!;
+    const ownerKey = `${r.id}_${ownerUid}`;
+    if (!memberMap.has(ownerKey) && !deletedSet.has(`leave_${r.id}_${ownerUid}`)) {
+      memberMap.set(ownerKey, {
+        roomId: r.id,
+        userId: ownerUid,
+        role: 'OWNER',
+        joinedAt: r.createdAt || new Date().toISOString(),
+      });
+    }
+  }
+  for (const u of target.users) {
+    if (!u?.id) continue;
+    const uniKey = `room-universal_${u.id}`;
+    if (!memberMap.has(uniKey)) {
+      memberMap.set(uniKey, {
+        roomId: 'room-universal',
+        userId: u.id,
+        role: u.isAdmin ? 'ADMIN' : 'MEMBER',
+        joinedAt: u.createdAt || new Date().toISOString(),
+      });
+    }
+  }
+  target.roomMembers = Array.from(memberMap.values());
+  // Keep room.memberCount accurate for all rooms
+  for (const r of target.rooms) {
+    if (!r || !r.id) continue;
+    const count = target.roomMembers.filter((m) => m.roomId === r.id).length;
+    if (count > 0) {
+      r.memberCount = count;
+    }
   }
 
-  // 5. Merge Live Locations (always keep newer timestamp per userId)
+  // 5. Merge Live Locations (always keep newer timestamp per canonical userId)
+  if (!target.locations || Array.isArray(target.locations)) {
+    const converted: Record<string, any> = {};
+    if (Array.isArray(target.locations)) {
+      for (const loc of target.locations) {
+        if (loc && loc.userId) {
+          const cid = normalizeUid(loc.userId) || loc.userId;
+          converted[cid] = { ...loc, userId: cid };
+        }
+      }
+    }
+    target.locations = converted;
+  } else {
+    for (const [rawKey, loc] of Object.entries(target.locations)) {
+      const cid = normalizeUid(loc?.userId || rawKey) || rawKey;
+      if (cid !== rawKey) {
+        delete target.locations[rawKey];
+      }
+      if (loc) {
+        target.locations[cid] = { ...loc, userId: cid };
+      }
+    }
+  }
   if (incoming.locations && typeof incoming.locations === 'object') {
-    if (!target.locations) target.locations = {};
-    for (const [uid, rLoc] of Object.entries(incoming.locations)) {
+    const entries = Array.isArray(incoming.locations)
+      ? incoming.locations.map((l: any) => [l?.userId, l] as const)
+      : Object.entries(incoming.locations);
+    for (const [rawUid, rLoc] of entries) {
       if (!rLoc || typeof rLoc.latitude !== 'number' || typeof rLoc.longitude !== 'number') continue;
+      const uid = normalizeUid(rLoc.userId || rawUid) || rawUid;
+      if (!uid) continue;
+      const normalizedRemoteLoc = { ...rLoc, userId: uid };
       const lLoc = target.locations[uid];
       if (!lLoc) {
-        target.locations[uid] = rLoc;
+        target.locations[uid] = normalizedRemoteLoc;
       } else {
-        const rTime = new Date(rLoc.updated_at || rLoc.timestamp || 0).getTime();
-        const lTime = new Date(lLoc.updated_at || lLoc.timestamp || 0).getTime();
+        const rTime = new Date(rLoc.updated_at || rLoc.timestamp || 0).getTime() || 0;
+        const lTime = new Date(lLoc.updated_at || lLoc.timestamp || 0).getTime() || 0;
         if (rTime >= lTime) {
-          target.locations[uid] = rLoc;
+          target.locations[uid] = normalizedRemoteLoc;
         }
       }
     }
@@ -207,23 +408,75 @@ export function mergeDatabaseStates(
   // 6. Merge Saved Places (Wishlist)
   if (Array.isArray(incoming.savedPlaces)) {
     target.savedPlaces = mergeArrayById(
-      preferIncoming ? incoming.savedPlaces : target.savedPlaces,
-      preferIncoming ? target.savedPlaces : incoming.savedPlaces,
+      target.savedPlaces,
+      incoming.savedPlaces,
       'id',
-      deletedSet
-    );
+      deletedSet,
+      preferIncoming
+    ).map((p) => ({
+      ...p,
+      userId: normalizeUid(p.userId) || p.userId,
+    }));
   }
 
-  // 7. Merge Chat Messages (chronological)
+  // 7. Merge Chat Messages (chronological by createdAt, preserving edits, reactions, and deletions)
   if (Array.isArray(incoming.messages)) {
-    const mergedMsgs = mergeArrayById(
-      preferIncoming ? incoming.messages : target.messages,
-      preferIncoming ? target.messages : incoming.messages,
-      'id',
-      deletedSet
-    );
+    const msgMap = new Map<string, any>();
+    for (const m of [...(target.messages || []), ...(incoming.messages || [])]) {
+      if (!m || !m.id) continue;
+      if (deletedSet.has(m.id)) continue;
+      const resolvedSenderId = normalizeUid(m.senderId || m.userId) || m.senderId || m.userId;
+      const normalizedMsg = {
+        ...m,
+        senderId: resolvedSenderId,
+        ...(m.userId ? { userId: resolvedSenderId } : {}),
+        recipientId: normalizeUid(m.recipientId) || m.recipientId,
+      };
+      const existing = msgMap.get(m.id);
+      if (!existing) {
+        msgMap.set(m.id, normalizedMsg);
+      } else {
+        const isDeleted = Boolean(existing.isDeleted || normalizedMsg.isDeleted);
+        const isEdited = Boolean(existing.isEdited || normalizedMsg.isEdited);
+        const existingTs = getItemTimestampMs(existing);
+        const incomingTs = getItemTimestampMs(normalizedMsg);
+        const newer = incomingTs >= existingTs ? normalizedMsg : existing;
+        const older = incomingTs >= existingTs ? existing : normalizedMsg;
+
+        // Merge reactions per emoji
+        const mergedReactions: Record<string, string[]> = {};
+        const allEmojis = new Set([
+          ...Object.keys(existing.reactions || {}),
+          ...Object.keys(normalizedMsg.reactions || {}),
+        ]);
+        for (const emoji of allEmojis) {
+          const usersForEmoji = Array.from(
+            new Set([
+              ...((existing.reactions && existing.reactions[emoji]) || []),
+              ...((normalizedMsg.reactions && normalizedMsg.reactions[emoji]) || []),
+            ])
+          ).map((id) => normalizeUid(id) || id);
+          if (usersForEmoji.length > 0) {
+            mergedReactions[emoji] = usersForEmoji;
+          }
+        }
+
+        msgMap.set(m.id, {
+          ...older,
+          ...newer,
+          isDeleted,
+          isEdited,
+          text: isDeleted ? '[Message deleted]' : newer.text,
+          reactions: mergedReactions,
+        });
+      }
+    }
+
+    const mergedMsgs = Array.from(msgMap.values());
     mergedMsgs.sort(
-      (a, b) => new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime()
+      (a, b) =>
+        (new Date(a.createdAt || a.timestamp || 0).getTime() || 0) -
+        (new Date(b.createdAt || b.timestamp || 0).getTime() || 0)
     );
     target.messages = mergedMsgs.slice(-300);
   }
@@ -231,19 +484,27 @@ export function mergeDatabaseStates(
   // 8. Merge Reminders & Meetings
   if (Array.isArray(incoming.reminders)) {
     target.reminders = mergeArrayById(
-      preferIncoming ? incoming.reminders : target.reminders,
-      preferIncoming ? target.reminders : incoming.reminders,
+      target.reminders,
+      incoming.reminders,
       'id',
-      deletedSet
-    );
+      deletedSet,
+      preferIncoming
+    ).map((r) => ({
+      ...r,
+      userId: normalizeUid(r.userId) || r.userId,
+    }));
   }
   if (Array.isArray(incoming.meetings)) {
     target.meetings = mergeArrayById(
-      preferIncoming ? incoming.meetings : target.meetings,
-      preferIncoming ? target.meetings : incoming.meetings,
+      target.meetings,
+      incoming.meetings,
       'id',
-      deletedSet
-    );
+      deletedSet,
+      preferIncoming
+    ).map((m) => ({
+      ...m,
+      creatorId: normalizeUid(m.creatorId) || m.creatorId,
+    }));
   }
 
   // 9. Merge Emergency Alerts (respect resolved status & acknowledgements)
@@ -253,18 +514,31 @@ export function mergeDatabaseStates(
       if (!a || !a.id || deletedSet.has(a.id)) continue;
       const existing = alertMap.get(a.id);
       if (!existing) {
-        alertMap.set(a.id, { ...a });
+        alertMap.set(a.id, {
+          ...a,
+          senderId: normalizeUid(a.senderId) || a.senderId,
+        });
       } else {
-        const ackSet = new Set<string>([
+        const ackMap = new Map<string, any>();
+        for (const ack of [
           ...(Array.isArray(existing.acknowledgedBy) ? existing.acknowledgedBy : []),
           ...(Array.isArray(a.acknowledgedBy) ? a.acknowledgedBy : []),
-        ]);
+        ]) {
+          if (ack && ack.userId) {
+            const uid = normalizeUid(ack.userId) || ack.userId;
+            ackMap.set(uid, { ...ack, userId: uid });
+          } else if (typeof ack === 'string') {
+            const uid = normalizeUid(ack) || ack;
+            ackMap.set(uid, { userId: uid, name: 'Member', timestamp: new Date().toISOString() });
+          }
+        }
         const isResolved = existing.status === 'resolved' || a.status === 'resolved';
         alertMap.set(a.id, {
           ...existing,
           ...a,
+          senderId: normalizeUid(a.senderId || existing.senderId) || a.senderId,
           status: isResolved ? 'resolved' : 'active',
-          acknowledgedBy: Array.from(ackSet),
+          acknowledgedBy: Array.from(ackMap.values()),
         });
       }
     }
@@ -276,10 +550,11 @@ export function mergeDatabaseStates(
   // 10. Merge Location Share Requests
   if (Array.isArray(incoming.locationShareRequests)) {
     target.locationShareRequests = mergeArrayById(
-      preferIncoming ? incoming.locationShareRequests : target.locationShareRequests,
-      preferIncoming ? target.locationShareRequests : incoming.locationShareRequests,
+      target.locationShareRequests,
+      incoming.locationShareRequests,
       'id',
-      deletedSet
+      deletedSet,
+      preferIncoming
     ).slice(0, 100);
   }
 
@@ -289,8 +564,12 @@ export function mergeDatabaseStates(
       target.locationHistory || [],
       incoming.locationHistory || [],
       'id',
-      deletedSet
-    );
+      deletedSet,
+      preferIncoming
+    ).map((h) => ({
+      ...h,
+      userId: normalizeUid(h.userId) || h.userId,
+    }));
     hist.sort(
       (a, b) => new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime()
     );
@@ -299,6 +578,7 @@ export function mergeDatabaseStates(
 }
 
 let lastPullTime = 0;
+let lastRemoteUpdatedAt = '';
 let inFlightPull: Promise<boolean> | null = null;
 let pushTimeoutId: any = null;
 
@@ -307,10 +587,11 @@ let pushTimeoutId: any = null;
  */
 export async function pullAndMergeCloudState(
   targetState: SyncableDatabaseState,
-  force = false
+  force = false,
+  silentNotify = false
 ): Promise<boolean> {
   const now = Date.now();
-  if (!force && now - lastPullTime < 2000) {
+  if (!force && now - lastPullTime < 1200) {
     return false;
   }
   if (inFlightPull) {
@@ -324,20 +605,41 @@ export async function pullAndMergeCloudState(
       const res = await fetch(FIRESTORE_SYNC_URL, {
         method: 'GET',
         headers: { Accept: 'application/json', 'Cache-Control': 'no-cache' },
+        cache: 'no-store',
         signal: controller.signal,
       });
       clearTimeout(timer);
 
-      if (!res.ok) return false;
+      if (!res.ok) {
+        syncLogger.log('firestore', 'warn', 'pull_non_200', { status: res.status });
+        return false;
+      }
       const doc = await res.json();
+      const remoteUpdatedAt = doc?.fields?.updatedAt?.stringValue || doc?.updateTime || '';
       const rawPayload = doc?.fields?.payload?.stringValue;
       if (!rawPayload || typeof rawPayload !== 'string') return false;
 
-      const remoteState = JSON.parse(rawPayload) as Partial<SyncableDatabaseState>;
-      mergeDatabaseStates(targetState, remoteState, true);
       lastPullTime = Date.now();
+
+      // Fast path: if remote document timestamp has not changed since last pull/push and this is a background poll, skip JSON.parse & re-renders
+      if (!force && remoteUpdatedAt && remoteUpdatedAt === lastRemoteUpdatedAt) {
+        return false;
+      }
+
+      const remoteState = JSON.parse(rawPayload) as Partial<SyncableDatabaseState>;
+      mergeDatabaseStates(targetState, remoteState, false);
+      if (remoteUpdatedAt) {
+        lastRemoteUpdatedAt = remoteUpdatedAt;
+      }
+
+      if (!silentNotify) {
+        notifySyncListeners(targetState);
+      }
       return true;
-    } catch {
+    } catch (err: any) {
+      syncLogger.log('firestore', 'warn', 'pull_failed', {
+        message: err?.message || 'Network error',
+      });
       return false;
     } finally {
       inFlightPull = null;
@@ -348,7 +650,7 @@ export async function pullAndMergeCloudState(
 }
 
 /**
- * Pushes the merged state to Cloud Firestore (debounced so rapid mutations coalesce cleanly)
+ * Pushes the merged state to Cloud Firestore (debounced or immediate)
  */
 export function schedulePushCloudState(
   localState: SyncableDatabaseState,
@@ -361,8 +663,8 @@ export function schedulePushCloudState(
 
   const executePush = async () => {
     try {
-      // First pull and merge so we never overwrite another device's concurrent updates
-      await pullAndMergeCloudState(localState, true);
+      // Pull and merge without letting older remote fields overwrite newer local fields
+      await pullAndMergeCloudState(localState, true, true);
 
       // Trim history arrays so Firestore document stays well under 900KB
       const compactState: SyncableDatabaseState = {
@@ -370,36 +672,46 @@ export function schedulePushCloudState(
         messages: (localState.messages || []).slice(-250),
         locationHistory: (localState.locationHistory || []).slice(-180),
         auditLogs: (localState.auditLogs || []).slice(-80),
-        sessions: (localState.sessions || []).slice(-80),
+        sessions: (localState.sessions || []).slice(-120),
         deletedIds: (localState.deletedIds || []).slice(-400),
       };
 
       const serialized = JSON.stringify(compactState);
       if (serialized.length >= 940000) return;
 
+      const pushTimestamp = new Date().toISOString();
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 7000);
-      await fetch(FIRESTORE_SYNC_URL, {
+      const res = await fetch(FIRESTORE_SYNC_URL, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           fields: {
             payload: { stringValue: serialized },
-            updatedAt: { stringValue: new Date().toISOString() },
+            updatedAt: { stringValue: pushTimestamp },
           },
         }),
         signal: controller.signal,
       });
       clearTimeout(timer);
-    } catch {
-      // ignore offline or transient errors
+
+      if (res.ok) {
+        lastRemoteUpdatedAt = pushTimestamp;
+        notifySyncListeners(localState);
+      } else {
+        syncLogger.log('firestore', 'warn', 'push_non_200', { status: res.status });
+      }
+    } catch (err: any) {
+      syncLogger.log('firestore', 'warn', 'push_failed', {
+        message: err?.message || 'Network error',
+      });
     }
   };
 
   if (immediate) {
     void executePush();
   } else {
-    pushTimeoutId = setTimeout(executePush, 350);
+    pushTimeoutId = setTimeout(executePush, 250);
   }
 }
 

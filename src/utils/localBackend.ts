@@ -121,7 +121,7 @@ class LocalBackendEngine {
     this.data = this.load();
     this.ensureUniversalRoom();
     this.syncCachedAuthFromStorage();
-    // Immediately pull latest cloud state and set up background sync every 4 seconds
+    // Immediately pull latest cloud state and set up real-time background sync every 2.5 seconds
     void pullAndMergeCloudState(this.data, true).then((updated) => {
       if (updated) {
         this.ensureUniversalRoom();
@@ -136,8 +136,252 @@ class LocalBackendEngine {
             this.saveLocalOnly();
           }
         });
-      }, 4000);
+      }, 2500);
     }
+  }
+
+  public async forceSyncNow(): Promise<boolean> {
+    const updated = await pullAndMergeCloudState(this.data, true);
+    if (updated) {
+      this.ensureUniversalRoom();
+      this.saveLocalOnly();
+    }
+    return updated;
+  }
+
+  public getAllMessages(): ChatMessage[] {
+    return (this.data.messages || []).filter((m) => !m.isDeleted);
+  }
+
+  public getActiveOnlineUserIds(currentUserId?: string): string[] {
+    const now = Date.now();
+    const onlineWindowMs = 5 * 60 * 1000;
+    const ids = new Set<string>();
+    if (currentUserId) ids.add(currentUserId);
+    for (const u of this.data.users) {
+      if (!u?.id) continue;
+      const lastSeenMs = new Date(u.lastSeen || 0).getTime() || 0;
+      if (u.isOnline || now - lastSeenMs <= onlineWindowMs) {
+        ids.add(u.id);
+      }
+    }
+    for (const [uid, loc] of Object.entries(this.data.locations || {})) {
+      const locMs = new Date(loc?.updated_at || loc?.timestamp || 0).getTime() || 0;
+      if (now - locMs <= onlineWindowMs) {
+        ids.add(uid);
+      }
+    }
+    return Array.from(ids);
+  }
+
+  public getLiveLocationsSnapshot(currentUserId?: string): UserLocation[] {
+    const out: UserLocation[] = [];
+    for (const [uid, loc] of Object.entries(this.data.locations || {})) {
+      if (!loc || !Number.isFinite(loc.latitude) || !Number.isFinite(loc.longitude)) continue;
+      const acc = Number(loc.accuracy_m ?? loc.accuracy);
+      if (!Number.isFinite(acc) || acc <= 0 || acc > 100) continue;
+      const usr = this.data.users.find((u) => u.id === (loc.userId || uid));
+      out.push({
+        ...loc,
+        userId: loc.userId || uid,
+        username: loc.username || usr?.username || 'member',
+        fullName: loc.fullName || usr?.fullName || 'Member',
+        avatarUrl:
+          loc.avatarUrl ||
+          usr?.avatarUrl ||
+          `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(loc.userId || uid)}`,
+        markerColor: loc.markerColor || usr?.markerColor,
+        markerIcon: loc.markerIcon || usr?.markerIcon,
+        markerLabel: loc.markerLabel || usr?.markerLabel,
+      });
+    }
+    return out;
+  }
+
+  public getActiveAlertsSnapshot(): EmergencyAlert[] {
+    return (this.data.emergencyAlerts || []).filter((a) => a && a.status === 'active');
+  }
+
+  public recordJoinedRoom(userId: string, roomId: string, role: UserRole = 'MEMBER') {
+    if (!userId || !roomId) return;
+    if (Array.isArray(this.data.deletedIds)) {
+      this.data.deletedIds = this.data.deletedIds.filter(
+        (id) => id !== `leave_${roomId}_${userId}`
+      );
+    }
+    const existing = this.data.roomMembers.find(
+      (m) => m.roomId === roomId && m.userId === userId
+    );
+    if (!existing) {
+      this.data.roomMembers.push({
+        roomId,
+        userId,
+        role,
+        joinedAt: new Date().toISOString(),
+      });
+    }
+    if (typeof localStorage !== 'undefined') {
+      try {
+        const key = `beacon_joined_rooms_v1_${userId}`;
+        const list: string[] = JSON.parse(localStorage.getItem(key) || '[]');
+        if (!list.includes(roomId)) {
+          list.push(roomId);
+          localStorage.setItem(key, JSON.stringify(list));
+        }
+      } catch {
+        // ignore storage error
+      }
+    }
+  }
+
+  public recordLeftRoom(userId: string, roomId: string) {
+    if (!userId || !roomId || roomId === UNIVERSAL_ROOM_ID) return;
+    this.data.roomMembers = this.data.roomMembers.filter(
+      (m) => !(m.roomId === roomId && m.userId === userId)
+    );
+    if (!Array.isArray(this.data.deletedIds)) this.data.deletedIds = [];
+    const leaveKey = `leave_${roomId}_${userId}`;
+    if (!this.data.deletedIds.includes(leaveKey)) {
+      this.data.deletedIds.push(leaveKey);
+    }
+    if (typeof localStorage !== 'undefined') {
+      try {
+        const key = `beacon_joined_rooms_v1_${userId}`;
+        const list: string[] = JSON.parse(localStorage.getItem(key) || '[]');
+        const filtered = list.filter((id) => id !== roomId);
+        localStorage.setItem(key, JSON.stringify(filtered));
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  public restorePersistedJoinedRooms(userId: string) {
+    if (!userId || userId === 'guest') return;
+    const leaveSet = new Set(this.data.deletedIds || []);
+    // Ensure owner rooms are always enrolled
+    for (const r of this.data.rooms) {
+      if (r.ownerId === userId && !leaveSet.has(`leave_${r.id}_${userId}`)) {
+        const hasMem = this.data.roomMembers.some((m) => m.roomId === r.id && m.userId === userId);
+        if (!hasMem) {
+          this.data.roomMembers.push({
+            roomId: r.id,
+            userId,
+            role: 'OWNER',
+            joinedAt: r.createdAt || new Date().toISOString(),
+          });
+        }
+      }
+    }
+    // Ensure rooms in localStorage joined list are always enrolled unless explicitly left
+    if (typeof localStorage !== 'undefined') {
+      try {
+        const key = `beacon_joined_rooms_v1_${userId}`;
+        const joinedIds: string[] = JSON.parse(localStorage.getItem(key) || '[]');
+        for (const rId of joinedIds) {
+          if (!rId || leaveSet.has(`leave_${rId}_${userId}`)) continue;
+          const roomExists = this.data.rooms.some((r) => r.id === rId);
+          if (!roomExists) continue;
+          const hasMem = this.data.roomMembers.some(
+            (m) => m.roomId === rId && m.userId === userId
+          );
+          if (!hasMem) {
+            const room = this.data.rooms.find((r) => r.id === rId);
+            this.data.roomMembers.push({
+              roomId: rId,
+              userId,
+              role: room?.ownerId === userId ? 'OWNER' : 'MEMBER',
+              joinedAt: new Date().toISOString(),
+            });
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  public ingestExternalMessage(msg: ChatMessage, pushToCloud = false) {
+    if (!msg || !msg.id) return;
+    const idx = this.data.messages.findIndex((m) => m.id === msg.id);
+    if (idx >= 0) {
+      this.data.messages[idx] = { ...this.data.messages[idx], ...msg };
+    } else {
+      this.data.messages.push(msg);
+    }
+    if (pushToCloud) {
+      this.save(true);
+    } else {
+      this.saveLocalOnly();
+    }
+  }
+
+  public ingestExternalLocation(loc: UserLocation, pushToCloud = false) {
+    if (!loc || !loc.userId) return;
+    this.data.locations[loc.userId] = loc;
+    if (pushToCloud) {
+      this.save(true);
+    } else {
+      this.saveLocalOnly();
+    }
+  }
+
+  public ingestExternalRoom(room: Room, token?: string | null, isMutation = false) {
+    if (!room || !room.id) return;
+    const idx = this.data.rooms.findIndex((r) => r.id === room.id);
+    if (idx >= 0) {
+      this.data.rooms[idx] = { ...this.data.rooms[idx], ...room };
+    } else {
+      this.data.rooms.push({ ...room });
+    }
+    const leaveSet = new Set(this.data.deletedIds || []);
+    if (Array.isArray(room.members)) {
+      for (const mem of room.members) {
+        if (!mem || !mem.userId) continue;
+        if (room.id !== UNIVERSAL_ROOM_ID && leaveSet.has(`leave_${room.id}_${mem.userId}`)) {
+          continue;
+        }
+        const exists = this.data.roomMembers.some(
+          (m) => m.roomId === room.id && m.userId === mem.userId
+        );
+        if (!exists) {
+          this.data.roomMembers.push({
+            roomId: room.id,
+            userId: mem.userId,
+            role: mem.role || 'MEMBER',
+            joinedAt: mem.joinedAt || new Date().toISOString(),
+          });
+        }
+      }
+    }
+    const currentUser = this.getAuthenticatedUser(token || null);
+    if (currentUser && isMutation) {
+      this.recordJoinedRoom(
+        currentUser.id,
+        room.id,
+        room.ownerId === currentUser.id ? 'OWNER' : 'MEMBER'
+      );
+      this.save(true);
+    } else {
+      this.saveLocalOnly();
+    }
+  }
+
+  public ingestExternalRooms(rooms: Room[], token?: string | null) {
+    if (!Array.isArray(rooms)) return;
+    const currentUser = this.getAuthenticatedUser(token || null);
+    for (const r of rooms) {
+      if (!r || !r.id) continue;
+      this.ingestExternalRoom(r, token, false);
+      if (currentUser) {
+        this.recordJoinedRoom(
+          currentUser.id,
+          r.id,
+          r.ownerId === currentUser.id ? 'OWNER' : 'MEMBER'
+        );
+      }
+    }
+    this.saveLocalOnly();
   }
 
   private getInitialSchema(): LocalDatabaseSchema {
@@ -349,13 +593,18 @@ class LocalBackendEngine {
       const savedUserRaw = localStorage.getItem('beacon_user_profile');
       if (savedUserRaw) {
         const parsed = JSON.parse(savedUserRaw) as UserProfile;
-        const found = this.data.users.find((u) => u.id === parsed.id || u.email === parsed.email);
+        const found = this.data.users.find(
+          (u) =>
+            u.id === parsed.id ||
+            (u.email && parsed.email && u.email.toLowerCase() === parsed.email.toLowerCase()) ||
+            (u.username && parsed.username && u.username.toLowerCase() === parsed.username.toLowerCase())
+        );
         if (found) return found;
       }
     } catch {
       // ignore
     }
-    return this.data.users[0] || null;
+    return null;
   }
 
   private createSession(userId: string): string {
@@ -410,9 +659,12 @@ class LocalBackendEngine {
       pathname.startsWith('/api/meetings') ||
       pathname.startsWith('/api/alerts') ||
       pathname.startsWith('/api/messages') ||
-      pathname.startsWith('/api/users')
+      pathname.startsWith('/api/direct-messages') ||
+      pathname.startsWith('/api/users') ||
+      pathname.startsWith('/api/admin')
     ) {
       const forceSync =
+        method !== 'GET' ||
         pathname === '/api/auth/login' ||
         pathname === '/api/auth/register' ||
         pathname === '/api/auth/quick-reset';
@@ -757,14 +1009,16 @@ class LocalBackendEngine {
       if (body.privacy !== undefined) {
         currentUser.privacy = { ...currentUser.privacy, ...body.privacy };
       }
-      this.save();
+      currentUser.lastSeen = new Date().toISOString();
+      this.save(true);
       return { user: this.sanitizeUser(currentUser) } as unknown as T;
     }
 
     if (method === 'PUT' && pathname === '/api/privacy/update') {
       if (!currentUser) throw this.createError('Unauthorized', 401);
       currentUser.privacy = { ...currentUser.privacy, ...body };
-      this.save();
+      currentUser.lastSeen = new Date().toISOString();
+      this.save(true);
       return { user: this.sanitizeUser(currentUser) } as unknown as T;
     }
 
@@ -783,9 +1037,20 @@ class LocalBackendEngine {
     if (method === 'GET' && pathname === '/api/rooms') {
       const uid = currentUser?.id || 'guest';
       this.ensureUniversalRoom(uid);
-      const memberships = this.data.roomMembers.filter((m) => m.userId === uid);
+      this.restorePersistedJoinedRooms(uid);
+      const leaveSet = new Set(this.data.deletedIds || []);
+      const memberships = this.data.roomMembers.filter(
+        (m) => m.userId === uid && (m.roomId === UNIVERSAL_ROOM_ID || !leaveSet.has(`leave_${m.roomId}_${uid}`))
+      );
       const roomIds = new Set(memberships.map((m) => m.roomId));
       roomIds.add(UNIVERSAL_ROOM_ID);
+
+      // Persist all current roomIds into user's joined rooms cache so they stay joined until they press Leave
+      if (uid !== 'guest') {
+        for (const rId of roomIds) {
+          this.recordJoinedRoom(uid, rId);
+        }
+      }
 
       const rooms = this.data.rooms
         .filter((r) => roomIds.has(r.id) || r.id === UNIVERSAL_ROOM_ID)
@@ -833,13 +1098,8 @@ class LocalBackendEngine {
       };
 
       this.data.rooms.push(newRoom);
-      this.data.roomMembers.push({
-        roomId,
-        userId: currentUser.id,
-        role: 'OWNER',
-        joinedAt: new Date().toISOString(),
-      });
-      this.save();
+      this.recordJoinedRoom(currentUser.id, roomId, 'OWNER');
+      this.save(true);
       return { room: this.sanitizeRoom(newRoom) } as unknown as T;
     }
 
@@ -863,18 +1123,13 @@ class LocalBackendEngine {
         throw this.createError('Incorrect room password', 400);
       }
 
-      const isMember = this.data.roomMembers.some(
-        (m) => m.roomId === room!.id && m.userId === currentUser.id
+      this.recordJoinedRoom(
+        currentUser.id,
+        room.id,
+        room.ownerId === currentUser.id ? 'OWNER' : 'MEMBER'
       );
-      if (!isMember) {
-        this.data.roomMembers.push({
-          roomId: room.id,
-          userId: currentUser.id,
-          role: 'MEMBER',
-          joinedAt: new Date().toISOString(),
-        });
-      }
-      this.save();
+      room.memberCount = this.data.roomMembers.filter((m) => m.roomId === room!.id).length;
+      this.save(true);
       return { room: this.sanitizeRoom(room) } as unknown as T;
     }
 
@@ -883,6 +1138,8 @@ class LocalBackendEngine {
       const roomId = decodeURIComponent(roomDetailMatch[1]);
       if (roomId === UNIVERSAL_ROOM_ID) {
         this.ensureUniversalRoom(currentUser?.id);
+      } else if (currentUser) {
+        this.restorePersistedJoinedRooms(currentUser.id);
       }
       const room = this.data.rooms.find(
         (r) => r.id === roomId || r.id.toLowerCase() === roomId.toLowerCase()
@@ -895,10 +1152,8 @@ class LocalBackendEngine {
     if (method === 'POST' && roomLeaveMatch) {
       const roomId = decodeURIComponent(roomLeaveMatch[1]);
       if (currentUser) {
-        this.data.roomMembers = this.data.roomMembers.filter(
-          (m) => !(m.roomId === roomId && m.userId === currentUser.id)
-        );
-        this.save();
+        this.recordLeftRoom(currentUser.id, roomId);
+        this.save(true);
       }
       return { success: true } as unknown as T;
     }
@@ -912,7 +1167,7 @@ class LocalBackendEngine {
       );
       if (mem) {
         mem.role = newRole;
-        this.save();
+        this.save(true);
       }
       return { success: true } as unknown as T;
     }
@@ -921,10 +1176,8 @@ class LocalBackendEngine {
     if (method === 'POST' && roomKickMatch) {
       const roomId = decodeURIComponent(roomKickMatch[1]);
       const { targetUserId } = body;
-      this.data.roomMembers = this.data.roomMembers.filter(
-        (m) => !(m.roomId === roomId && m.userId === targetUserId)
-      );
-      this.save();
+      this.recordLeftRoom(targetUserId, roomId);
+      this.save(true);
       return { success: true } as unknown as T;
     }
 
@@ -978,7 +1231,7 @@ class LocalBackendEngine {
         clientMsgId,
       };
       this.data.messages.push(message);
-      this.save();
+      this.save(true);
       return { message } as unknown as T;
     }
 
@@ -998,7 +1251,8 @@ class LocalBackendEngine {
       } else {
         msg.reactions[emoji].push(currentUser.id);
       }
-      this.save();
+      msg.updatedAt = new Date().toISOString();
+      this.save(true);
       return { message: msg } as unknown as T;
     }
 
@@ -1010,7 +1264,7 @@ class LocalBackendEngine {
       msg.text = String(body.text || '').trim();
       msg.isEdited = true;
       msg.updatedAt = new Date().toISOString();
-      this.save();
+      this.save(true);
       return { message: msg } as unknown as T;
     }
 
@@ -1021,7 +1275,8 @@ class LocalBackendEngine {
       if (msg) {
         msg.isDeleted = true;
         msg.text = '[Message deleted]';
-        this.save();
+        msg.updatedAt = new Date().toISOString();
+        this.save(true);
       }
       return { success: true } as unknown as T;
     }
@@ -1191,6 +1446,8 @@ class LocalBackendEngine {
         isStale: false,
       };
       this.data.locations[currentUser.id] = loc;
+      currentUser.isOnline = true;
+      currentUser.lastSeen = serverNowIso;
       this.data.locationHistory.push({
         id: generateId('loc'),
         userId: currentUser.id,
@@ -1202,7 +1459,7 @@ class LocalBackendEngine {
         speed: loc.speed,
         timestamp: loc.timestamp,
       });
-      this.save();
+      this.save(true);
       return { location: loc } as unknown as T;
     }
 

@@ -108,16 +108,29 @@ export const UNIVERSAL_ROOM: RoomRecord = {
   isUniversal: true,
 };
 
+export interface ExternalSyncDiff {
+  newMessages: ChatMessage[];
+  updatedLocations: UserLocation[];
+  newAlerts: EmergencyAlert[];
+}
+
 class Database {
   private data: DatabaseSchema;
+  private externalSyncListeners: Array<(diff: ExternalSyncDiff) => void> = [];
+  private knownMessageIds = new Set<string>();
+  private knownLocationTimestamps = new Map<string, string>();
+  private knownAlertIds = new Set<string>();
 
   constructor() {
     this.data = this.load();
     this.ensureUniversalRoom();
+    this.snapshotKnownEntities();
+
     void pullAndMergeCloudState(this.data, true).then((updated) => {
       if (updated) {
         this.ensureUniversalRoom();
         this.saveDiskOnly();
+        this.detectAndEmitExternalDiff();
       }
     });
     setInterval(() => {
@@ -125,9 +138,88 @@ class Database {
         if (updated) {
           this.ensureUniversalRoom();
           this.saveDiskOnly();
+          this.detectAndEmitExternalDiff();
         }
       });
-    }, 4000);
+    }, 2000);
+  }
+
+  private snapshotKnownEntities() {
+    for (const m of this.data.messages || []) {
+      if (m?.id) this.knownMessageIds.add(m.id);
+    }
+    for (const [uid, loc] of Object.entries(this.data.locations || {})) {
+      if (loc) {
+        this.knownLocationTimestamps.set(uid, loc.updated_at || loc.timestamp || '');
+      }
+    }
+    for (const a of this.data.emergencyAlerts || []) {
+      if (a?.id) this.knownAlertIds.add(a.id);
+    }
+  }
+
+  private detectAndEmitExternalDiff() {
+    const newMessages: ChatMessage[] = [];
+    const updatedLocations: UserLocation[] = [];
+    const newAlerts: EmergencyAlert[] = [];
+
+    for (const m of this.data.messages || []) {
+      if (m?.id && !m.isDeleted && !this.knownMessageIds.has(m.id)) {
+        this.knownMessageIds.add(m.id);
+        newMessages.push(m);
+      }
+    }
+
+    for (const [uid, loc] of Object.entries(this.data.locations || {})) {
+      if (!loc) continue;
+      const ts = loc.updated_at || loc.timestamp || '';
+      const prevTs = this.knownLocationTimestamps.get(uid);
+      if (ts && ts !== prevTs) {
+        this.knownLocationTimestamps.set(uid, ts);
+        updatedLocations.push(loc);
+      }
+    }
+
+    for (const a of this.data.emergencyAlerts || []) {
+      if (a?.id && a.status === 'active' && !this.knownAlertIds.has(a.id)) {
+        this.knownAlertIds.add(a.id);
+        newAlerts.push(a);
+      }
+    }
+
+    if (newMessages.length > 0 || updatedLocations.length > 0 || newAlerts.length > 0) {
+      for (const cb of this.externalSyncListeners) {
+        try {
+          cb({ newMessages, updatedLocations, newAlerts });
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }
+
+  public onExternalCloudSync(cb: (diff: ExternalSyncDiff) => void) {
+    this.externalSyncListeners.push(cb);
+  }
+
+  public getRecentlyActiveUserIds(): string[] {
+    const now = Date.now();
+    const activeWindowMs = 5 * 60 * 1000;
+    const ids = new Set<string>();
+    for (const u of this.data.users || []) {
+      if (!u?.id) continue;
+      const lastSeenMs = new Date(u.lastSeen || 0).getTime() || 0;
+      if (u.isOnline && now - lastSeenMs <= activeWindowMs) {
+        ids.add(u.id);
+      }
+    }
+    for (const [uid, loc] of Object.entries(this.data.locations || {})) {
+      const locMs = new Date(loc?.updated_at || loc?.timestamp || 0).getTime() || 0;
+      if (now - locMs <= activeWindowMs) {
+        ids.add(uid);
+      }
+    }
+    return Array.from(ids);
   }
 
   private load(): DatabaseSchema {
@@ -157,8 +249,9 @@ class Database {
   }
 
   private save(dataToSave: DatabaseSchema = this.data) {
+    this.snapshotKnownEntities();
     this.saveDiskOnly(dataToSave);
-    schedulePushCloudState(dataToSave);
+    schedulePushCloudState(dataToSave, true);
   }
 
   // Password & Token utilities (NIST SP 800-63B / OWASP compliant PBKDF2 with SHA-512)
@@ -802,6 +895,11 @@ class Database {
     };
 
     this.data.rooms.push(room);
+    if (Array.isArray(this.data.deletedIds)) {
+      this.data.deletedIds = this.data.deletedIds.filter(
+        (id) => id !== `leave_${roomId}_${ownerId}` && id !== roomId
+      );
+    }
     this.data.roomMembers.push({
       roomId,
       userId: ownerId,
@@ -827,6 +925,13 @@ class Database {
     if (!room) throw new Error('Room not found. Check the Room ID or Name.');
 
     const targetRoomId = room.id;
+    // Clear any previous leave tombstone so the user remains permanently joined until they press Leave
+    if (Array.isArray(this.data.deletedIds)) {
+      this.data.deletedIds = this.data.deletedIds.filter(
+        (id) => id !== `leave_${targetRoomId}_${userId}`
+      );
+    }
+
     const isMember = this.data.roomMembers.some((m) => m.roomId === targetRoomId && m.userId === userId);
     if (isMember) {
       return this.sanitizeRoom(room, userId);
@@ -844,7 +949,7 @@ class Database {
     this.data.roomMembers.push({
       roomId: targetRoomId,
       userId,
-      role: 'MEMBER',
+      role: room.ownerId === userId ? 'OWNER' : 'MEMBER',
       joinedAt: new Date().toISOString(),
     });
 
@@ -855,10 +960,16 @@ class Database {
   }
 
   public leaveRoom(userId: string, roomId: string) {
+    if (roomId === UNIVERSAL_ROOM_ID) return;
     const room = this.data.rooms.find((r) => r.id === roomId);
     if (!room) return;
 
     this.data.roomMembers = this.data.roomMembers.filter((m) => !(m.roomId === roomId && m.userId === userId));
+    if (!Array.isArray(this.data.deletedIds)) this.data.deletedIds = [];
+    const leaveKey = `leave_${roomId}_${userId}`;
+    if (!this.data.deletedIds.includes(leaveKey)) {
+      this.data.deletedIds.push(leaveKey);
+    }
     room.memberCount = this.data.roomMembers.filter((m) => m.roomId === roomId).length;
     this.save();
   }
@@ -883,6 +994,11 @@ class Database {
     }
 
     this.data.roomMembers = this.data.roomMembers.filter((m) => !(m.roomId === roomId && m.userId === targetUserId));
+    if (!Array.isArray(this.data.deletedIds)) this.data.deletedIds = [];
+    const leaveKey = `leave_${roomId}_${targetUserId}`;
+    if (!this.data.deletedIds.includes(leaveKey)) {
+      this.data.deletedIds.push(leaveKey);
+    }
     const room = this.data.rooms.find((r) => r.id === roomId);
     if (room) {
       room.memberCount = this.data.roomMembers.filter((m) => m.roomId === roomId).length;
@@ -950,10 +1066,12 @@ class Database {
   }
 
   public ensureUniversalRoom(userId?: string): RoomRecord {
+    let changed = false;
     let room = this.data.rooms.find((r) => r.id === UNIVERSAL_ROOM_ID);
     if (!room) {
       room = { ...UNIVERSAL_ROOM };
       this.data.rooms.unshift(room);
+      changed = true;
     } else {
       room.isUniversal = true;
       room.hasPassword = false;
@@ -972,6 +1090,7 @@ class Database {
           role: u.isAdmin ? 'ADMIN' : 'MEMBER',
           joinedAt: u.createdAt || new Date().toISOString(),
         });
+        changed = true;
       }
     }
 
@@ -984,18 +1103,41 @@ class Database {
           role: 'MEMBER',
           joinedAt: new Date().toISOString(),
         });
+        changed = true;
       }
     }
 
     const universalMembers = this.data.roomMembers.filter((m) => m.roomId === UNIVERSAL_ROOM_ID);
-    room.memberCount = universalMembers.length || Math.max(1, this.data.users.length);
-    this.save();
+    const nextCount = universalMembers.length || Math.max(1, this.data.users.length);
+    if (room.memberCount !== nextCount) {
+      room.memberCount = nextCount;
+      changed = true;
+    }
+    if (changed) {
+      this.save();
+    }
     return room;
   }
 
   public getUserRooms(userId: string): Room[] {
     this.ensureUniversalRoom(userId);
-    const memberships = this.data.roomMembers.filter((m) => m.userId === userId);
+    const leaveSet = new Set(this.data.deletedIds || []);
+    for (const r of this.data.rooms) {
+      if (r.ownerId === userId && !leaveSet.has(`leave_${r.id}_${userId}`)) {
+        const hasMem = this.data.roomMembers.some((m) => m.roomId === r.id && m.userId === userId);
+        if (!hasMem) {
+          this.data.roomMembers.push({
+            roomId: r.id,
+            userId,
+            role: 'OWNER',
+            joinedAt: r.createdAt || new Date().toISOString(),
+          });
+        }
+      }
+    }
+    const memberships = this.data.roomMembers.filter(
+      (m) => m.userId === userId && (m.roomId === UNIVERSAL_ROOM_ID || !leaveSet.has(`leave_${m.roomId}_${userId}`))
+    );
     const roomIds = new Set(memberships.map((m) => m.roomId));
     roomIds.add(UNIVERSAL_ROOM_ID);
 

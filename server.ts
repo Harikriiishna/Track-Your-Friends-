@@ -127,6 +127,47 @@ function broadcastGlobalEmergency(alertMessage: WsServerMessage) {
   }
 }
 
+function getCombinedOnlineUsers(): string[] {
+  const wsOnline = Array.from(clients.values()).map((c) => c.userId);
+  const cloudActive = db.getRecentlyActiveUserIds();
+  return Array.from(new Set([...wsOnline, ...cloudActive]));
+}
+
+// Broadcast real-time events when Android APK or external clients sync via Cloud Firestore
+db.onExternalCloudSync(({ newMessages, updatedLocations, newAlerts }) => {
+  for (const chatMsg of newMessages) {
+    if (chatMsg.roomId) {
+      broadcastToRoom(chatMsg.roomId, { type: 'chat:message', message: chatMsg });
+    } else if (chatMsg.recipientId) {
+      broadcastToUser(chatMsg.recipientId, { type: 'chat:message', message: chatMsg });
+      broadcastToUser(chatMsg.senderId, { type: 'chat:message', message: chatMsg });
+    }
+  }
+
+  if (updatedLocations.length > 0) {
+    const onlineUsers = getCombinedOnlineUsers();
+    for (const session of clients.values()) {
+      if (session.ws.readyState === WebSocket.OPEN) {
+        session.ws.send(
+          JSON.stringify({
+            type: 'presence:update',
+            userLocations: db.getVisibleLocationsForUser(session.userId),
+            onlineUsers,
+          })
+        );
+      }
+    }
+  }
+
+  for (const alert of newAlerts) {
+    if (alert.roomId) {
+      broadcastToRoom(alert.roomId, { type: 'emergency:broadcast', alert });
+    } else {
+      broadcastGlobalEmergency({ type: 'emergency:broadcast', alert });
+    }
+  }
+});
+
 // WebSocket connection lifecycle
 wss.on('connection', (ws: WebSocket, req) => {
   let authenticatedUserId: string | null = null;
@@ -160,7 +201,7 @@ wss.on('connection', (ws: WebSocket, req) => {
 
         // Broadcast initial presence and visible locations
         const visibleLocations = db.getVisibleLocationsForUser(user.id);
-        const onlineUsers = Array.from(new Set(Array.from(clients.values()).map((c) => c.userId)));
+        const onlineUsers = getCombinedOnlineUsers();
         ws.send(JSON.stringify({ type: 'presence:update', userLocations: visibleLocations, onlineUsers }));
 
         // Notify peers that this user is online

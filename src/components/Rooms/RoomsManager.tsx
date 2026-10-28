@@ -460,57 +460,95 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
     return Array.from(memberMap.values());
   }, [searchQuery, activeRoomDetails, userLocations, onlineUserIds, user, myLocation]);
 
-  // Fetch rooms
-  const loadRooms = async () => {
+  // Fetch rooms with signature diffing
+  const loadRooms = React.useCallback(async (showSpinner = false) => {
     try {
-      setIsLoading(true);
+      if (showSpinner) setIsLoading(true);
       const res = await api.get<{ rooms: Room[] }>('/api/rooms');
-      setRooms(res.rooms);
-      if (!selectedRoomId && res.rooms.length > 0) {
-        onSelectRoom(res.rooms[0].id);
+      if (Array.isArray(res?.rooms)) {
+        setRooms((prev) => {
+          const prevSig = prev.map((r) => `${r.id}:${r.name}:${r.memberCount}`).join('|');
+          const nextSig = res.rooms.map((r) => `${r.id}:${r.name}:${r.memberCount}`).join('|');
+          return prevSig === nextSig ? prev : res.rooms;
+        });
+        if (!selectedRoomId && res.rooms.length > 0) {
+          const customRoom = res.rooms.find((r) => r.id !== 'room-universal');
+          onSelectRoom(customRoom ? customRoom.id : res.rooms[0].id);
+        }
       }
     } catch (err) {
       console.error('Failed to load rooms:', err);
     } finally {
-      setIsLoading(false);
+      if (showSpinner) setIsLoading(false);
     }
-  };
+  }, [selectedRoomId, onSelectRoom]);
 
   useEffect(() => {
-    loadRooms();
-  }, []);
+    loadRooms(true);
+    const onSync = () => {
+      loadRooms(false);
+    };
+    window.addEventListener('beacon:cloud-sync-updated', onSync);
+    return () => {
+      window.removeEventListener('beacon:cloud-sync-updated', onSync);
+    };
+  }, [loadRooms]);
 
-  // Fetch room details when selected
+  // Fetch room details when selectedRoomId changes or when Cloud Firestore syncs new members
   useEffect(() => {
     if (!selectedRoomId) {
       setActiveRoomDetails(null);
       return;
     }
+    let mounted = true;
     async function loadDetails() {
       try {
         const res = await api.get<{ room: Room }>(`/api/rooms/${selectedRoomId}`);
-        setActiveRoomDetails(res.room);
+        if (!mounted || !res?.room) return;
+        setActiveRoomDetails((prev) => {
+          if (!prev || prev.id !== res.room.id) return res.room;
+          const prevMemSig = (prev.members || []).map((m) => `${m.userId}:${m.role}`).join('|');
+          const nextMemSig = (res.room.members || []).map((m) => `${m.userId}:${m.role}`).join('|');
+          if (
+            prev.name === res.room.name &&
+            prev.description === res.room.description &&
+            prev.memberCount === res.room.memberCount &&
+            prevMemSig === nextMemSig
+          ) {
+            return prev;
+          }
+          return res.room;
+        });
       } catch (err) {
-        console.error('Failed to load room details:', err);
+        if (!mounted) return;
         if (selectedRoomId === 'room-universal') {
-          const fallback = rooms.find((r) => r.id === 'room-universal') || {
-            id: 'room-universal',
-            name: '🌐 Universal Lounge',
-            description: 'The open global town square for everyone on Beacon. Coordinate live locations, chat across channels, and meet members worldwide.',
-            ownerId: 'system',
-            hasPassword: false,
-            createdAt: '2026-01-01T00:00:00.000Z',
-            memberCount: Math.max(1, onlineUserIds.length),
-            isPrivate: false,
-            isUniversal: true,
-            members: [],
-          };
-          setActiveRoomDetails(fallback as Room);
+          setActiveRoomDetails((prev) =>
+            prev?.id === 'room-universal'
+              ? prev
+              : ({
+                  id: 'room-universal',
+                  name: '🌐 Universal Lounge',
+                  description:
+                    'The open global town square for everyone on Beacon. Coordinate live locations, chat across channels, and meet members worldwide.',
+                  ownerId: 'system',
+                  hasPassword: false,
+                  createdAt: '2026-01-01T00:00:00.000Z',
+                  memberCount: 1,
+                  isPrivate: false,
+                  isUniversal: true,
+                  members: [],
+                } as Room)
+          );
         }
       }
     }
     loadDetails();
-  }, [selectedRoomId, rooms, onlineUserIds]);
+    window.addEventListener('beacon:cloud-sync-updated', loadDetails);
+    return () => {
+      mounted = false;
+      window.removeEventListener('beacon:cloud-sync-updated', loadDetails);
+    };
+  }, [selectedRoomId]);
 
   const handleCreateRoom = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -521,13 +559,14 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
         description: newRoomDesc,
         password: newRoomPassword,
       });
-      setRooms((prev) => [...prev, res.room]);
+      setRooms((prev) => (prev.some((r) => r.id === res.room.id) ? prev : [...prev, res.room]));
+      setActiveRoomDetails(res.room);
       onSelectRoom(res.room.id);
       setShowCreateModal(false);
       setNewRoomName('');
       setNewRoomDesc('');
       setNewRoomPassword('');
-      toast.success(`Room "${res.room.name}" created`);
+      toast.success(`Room "${res.room.name}" created — you are now inside`);
     } catch (err: any) {
       setErrorMsg(err.message || 'Failed to create room');
       toast.error(err.message || 'Failed to create room');
@@ -542,12 +581,17 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
         roomId: joinRoomId,
         password: joinPassword,
       });
-      setRooms((prev) => (prev.some((r) => r.id === res.room.id) ? prev : [...prev, res.room]));
+      setRooms((prev) =>
+        prev.some((r) => r.id === res.room.id)
+          ? prev.map((r) => (r.id === res.room.id ? res.room : r))
+          : [...prev, res.room]
+      );
+      setActiveRoomDetails(res.room);
       onSelectRoom(res.room.id);
       setShowJoinModal(false);
       setJoinRoomId('');
       setJoinPassword('');
-      toast.success(`Joined "${res.room.name}"`);
+      toast.success(`Joined "${res.room.name}" — you will stay in this room until you press Leave`);
     } catch (err: any) {
       setErrorMsg(err.message || 'Failed to join room');
       toast.error(err.message || 'Failed to join room');
@@ -557,9 +601,11 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
   const handleLeaveRoom = async (roomId: string) => {
     try {
       await api.post(`/api/rooms/${roomId}/leave`);
-      setRooms((prev) => prev.filter((r) => r.id !== roomId));
+      const remaining = rooms.filter((r) => r.id !== roomId);
+      setRooms(remaining);
       if (selectedRoomId === roomId) {
-        onSelectRoom(rooms.find((r) => r.id !== roomId)?.id || '');
+        const nextRoom = remaining.find((r) => r.id !== 'room-universal') || remaining[0];
+        onSelectRoom(nextRoom ? nextRoom.id : 'room-universal');
       }
       toast.success('You left the room');
     } catch (err: any) {
@@ -1057,10 +1103,11 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
                     </button>
                     <button
                       onClick={() => handleLeaveRoom(activeRoomDetails.id)}
-                      className="p-2 text-rose-600 hover:bg-rose-50 rounded-xl transition-colors cursor-pointer"
+                      className="px-3 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer active:scale-95"
                       title="Leave Room"
                     >
-                      <LogOut className="w-4 h-4" />
+                      <LogOut className="w-3.5 h-3.5" />
+                      <span>Leave</span>
                     </button>
                   </>
                 ) : (

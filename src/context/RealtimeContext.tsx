@@ -11,7 +11,9 @@ import type {
 import { calculateDistanceMeters } from '../utils/geo.ts';
 import { sound } from '../utils/audio.ts';
 import { api } from '../utils/api.ts';
+import { localBackend } from '../utils/localBackend.ts';
 import { notifications } from '../utils/notifications.ts';
+import { getProductionWsUrl, syncLogger } from '../config/env.ts';
 
 interface VoiceParticipant {
   peerId: string;
@@ -156,6 +158,8 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   myLocationRef.current = myLocation;
   const hasPreciseFixRef = useRef<boolean>(false);
   const notifiedAlertIdsRef = useRef<Set<string>>(new Set());
+  const seenMessageIdsRef = useRef<Set<string>>(new Set());
+  const initializedMsgSyncRef = useRef<boolean>(false);
 
   // Evaluate incoming emergency alert and trigger device pop-up notification for users within 5 km
   const handleIncomingEmergencyAlert = useCallback(
@@ -211,7 +215,7 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   }, []);
 
-  // Initialize and maintain WebSocket connection
+  // Initialize and maintain WebSocket + Cloud Firestore Real-Time Synchronization
   useEffect(() => {
     if (!token || !user) {
       if (socketRef.current) {
@@ -223,79 +227,212 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
 
     let isMounted = true;
+    const currentUserId = user.id;
 
-    const syncActiveAlerts = () => {
+    const msgSignature = (m: ChatMessage) =>
+      `${m.id}|${m.text}|${m.isEdited ? 1 : 0}|${m.isDeleted ? 1 : 0}|${Object.keys(m.reactions || {}).length}`;
+
+    // Sync messages from localBackend / Cloud Firestore into React state and notify on new peer messages
+    const syncMessagesFromStore = () => {
+      if (!isMounted) return;
+      const allMsgs = localBackend.getAllMessages();
+      const grouped: Record<string, ChatMessage[]> = {};
+      const nowMs = Date.now();
+
+      for (const m of allMsgs) {
+        if (!m || !m.id || m.isDeleted) continue;
+        let key: string | undefined;
+        if (m.roomId) {
+          key = m.roomId;
+        } else if (m.senderId === currentUserId && m.recipientId) {
+          key = m.recipientId;
+        } else if (m.recipientId === currentUserId && m.senderId) {
+          key = m.senderId;
+        }
+        if (!key) continue;
+
+        if (!grouped[key]) grouped[key] = [];
+        grouped[key].push(m);
+
+        if (!seenMessageIdsRef.current.has(m.id)) {
+          seenMessageIdsRef.current.add(m.id);
+          if (initializedMsgSyncRef.current && m.senderId !== currentUserId) {
+            const msgAgeMs = nowMs - (new Date(m.createdAt || 0).getTime() || 0);
+            if (msgAgeMs >= -10000 && msgAgeMs <= 30000) {
+              sound.playChime();
+              notifications.notifyMessage(m.senderName, m.text);
+            }
+          }
+        }
+      }
+      initializedMsgSyncRef.current = true;
+
+      setChatMessages((prev) => {
+        let changed = false;
+        const next: Record<string, ChatMessage[]> = { ...prev };
+        for (const [k, incomingList] of Object.entries(grouped)) {
+          const existing = next[k] || [];
+          const map = new Map<string, ChatMessage>();
+          for (const item of existing) {
+            if (item && item.id && !item.isDeleted) map.set(item.id, item);
+          }
+          for (const item of incomingList) {
+            if (item && item.id && !item.isDeleted) map.set(item.id, item);
+          }
+          const merged = Array.from(map.values()).sort(
+            (a, b) =>
+              (new Date(a.createdAt || 0).getTime() || 0) -
+              (new Date(b.createdAt || 0).getTime() || 0)
+          );
+          if (
+            merged.length !== existing.length ||
+            merged.some((m, idx) => msgSignature(m) !== msgSignature(existing[idx]))
+          ) {
+            next[k] = merged;
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+    };
+
+    const applyAlertsList = (alerts: EmergencyAlert[]) => {
+      if (!isMounted || !Array.isArray(alerts)) return;
+      setActiveAlerts((prev) => {
+        const prevSig = prev.map((a) => `${a.id}:${a.status}:${a.acknowledgedBy?.length || 0}`).join('|');
+        const nextSig = alerts.map((a) => `${a.id}:${a.status}:${a.acknowledgedBy?.length || 0}`).join('|');
+        return prevSig === nextSig ? prev : alerts;
+      });
+      alerts.forEach((a) => {
+        if (a.status === 'active' && !notifiedAlertIdsRef.current.has(a.id)) {
+          handleIncomingEmergencyAlert(a);
+        }
+      });
+    };
+
+    const applyLocationsList = (locations: UserLocation[]) => {
+      if (!isMounted || !Array.isArray(locations)) return;
+      const ownRow = locations.find((l) => l.userId === currentUserId);
+      if (ownRow) {
+        setDebugTelemetry((prev) => {
+          const nextLat = ownRow.lat ?? ownRow.latitude;
+          const nextLng = ownRow.lng ?? ownRow.longitude;
+          const nextAcc = ownRow.accuracy_m ?? ownRow.accuracy;
+          const nextUpd = ownRow.updated_at ?? ownRow.timestamp;
+          if (
+            prev.readFromDb?.lat === nextLat &&
+            prev.readFromDb?.lng === nextLng &&
+            prev.readFromDb?.accuracy_m === nextAcc &&
+            prev.readFromDb?.updated_at === nextUpd
+          ) {
+            return prev;
+          }
+          return {
+            ...prev,
+            readFromDb: {
+              lat: nextLat,
+              lng: nextLng,
+              accuracy_m: nextAcc,
+              updated_at: nextUpd,
+            },
+          };
+        });
+      }
+      const peersOnly = locations.filter((l) => l.userId !== currentUserId);
+      const nextList = myLocationRef.current
+        ? [...peersOnly, myLocationRef.current]
+        : locations;
+
+      setUserLocations((prev) => {
+        if (prev.length === nextList.length) {
+          const isSame = prev.every((p, idx) => {
+            const n = nextList[idx];
+            return (
+              p.userId === n.userId &&
+              p.latitude === n.latitude &&
+              p.longitude === n.longitude &&
+              p.accuracy === n.accuracy &&
+              p.heading === n.heading &&
+              (p.updated_at || p.timestamp) === (n.updated_at || n.timestamp)
+            );
+          });
+          if (isSame) return prev;
+        }
+        return nextList;
+      });
+
+      const activeFromStore = localBackend.getActiveOnlineUserIds(currentUserId);
+      setOnlineUserIds((prev) => {
+        const mergedSet = new Set([
+          ...prev,
+          currentUserId,
+          ...activeFromStore,
+          ...nextList.map((l) => l.userId),
+        ]);
+        const nextIds = Array.from(mergedSet);
+        if (prev.length === nextIds.length && prev.every((id) => mergedSet.has(id))) {
+          return prev;
+        }
+        return nextIds;
+      });
+    };
+
+    const syncFromLocalSnapshot = () => {
+      if (!isMounted) return;
+      syncMessagesFromStore();
+      applyLocationsList(localBackend.getLiveLocationsSnapshot(currentUserId));
+      applyAlertsList(localBackend.getActiveAlertsSnapshot());
+    };
+
+    const syncFromRemoteApi = () => {
+      if (!isMounted) return;
+      syncMessagesFromStore();
+      api
+        .get<{ locations: UserLocation[] }>('/api/locations/live')
+        .then((res) => {
+          if (res?.locations) applyLocationsList(res.locations);
+        })
+        .catch(() => {
+          applyLocationsList(localBackend.getLiveLocationsSnapshot(currentUserId));
+        });
       api
         .get<{ alerts: EmergencyAlert[] }>('/api/alerts/active')
         .then((res) => {
-          if (isMounted && res?.alerts) {
-            setActiveAlerts(res.alerts);
-            res.alerts.forEach((a) => {
-              if (a.status === 'active' && !notifiedAlertIdsRef.current.has(a.id)) {
-                handleIncomingEmergencyAlert(a);
-              }
-            });
-          }
+          if (res?.alerts) applyAlertsList(res.alerts);
         })
-        .catch(() => {});
+        .catch(() => {
+          applyAlertsList(localBackend.getActiveAlertsSnapshot());
+        });
     };
 
-    // Fetch any active emergency alerts on connect and poll every 6s for mobile resilience
-    syncActiveAlerts();
-    const alertPollInterval = setInterval(syncActiveAlerts, 6000);
+    // Initial sync on mount
+    setIsConnected(true);
+    syncFromLocalSnapshot();
+    void localBackend.forceSyncNow().then(() => {
+      syncFromRemoteApi();
+    });
 
-    if (api.isUsingLocalBackend()) {
-      setIsConnected(true);
-      const syncLiveLocations = () => {
-        api
-          .get<{ locations: UserLocation[] }>('/api/locations/live')
-          .then((res) => {
-            if (isMounted && res?.locations) {
-              const ownRow = res.locations.find((l) => l.userId === user.id);
-              if (ownRow) {
-                setDebugTelemetry((prev) => ({
-                  ...prev,
-                  readFromDb: {
-                    lat: ownRow.lat ?? ownRow.latitude,
-                    lng: ownRow.lng ?? ownRow.longitude,
-                    accuracy_m: ownRow.accuracy_m ?? ownRow.accuracy,
-                    updated_at: ownRow.updated_at ?? ownRow.timestamp,
-                  },
-                }));
-              }
-              const peersOnly = res.locations.filter((l) => l.userId !== user.id);
-              const nextList = myLocationRef.current
-                ? [...peersOnly, myLocationRef.current]
-                : res.locations;
-              setUserLocations(nextList);
-              setOnlineUserIds(
-                Array.from(new Set([user.id, ...nextList.map((l) => l.userId)]))
-              );
-            }
-          })
-          .catch(() => {});
-      };
-      syncLiveLocations();
-      const locPollInterval = setInterval(syncLiveLocations, 5000);
-      return () => {
-        isMounted = false;
-        clearInterval(alertPollInterval);
-        clearInterval(locPollInterval);
-      };
-    }
+    // Listen to immediate Cloud Firestore sync updates (only fires when remote state actually changed)
+    const onCloudSyncUpdated = () => {
+      if (!isMounted) return;
+      syncFromLocalSnapshot();
+    };
+    window.addEventListener('beacon:cloud-sync-updated', onCloudSyncUpdated);
 
     function connect() {
       if (!isMounted) return;
       if (api.isUsingLocalBackend()) {
         setIsConnected(true);
+        reconnectTimeoutRef.current = setTimeout(connect, 10000);
         return;
       }
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = `${protocol}//${window.location.host}/ws`;
+
+      const wsUrl = getProductionWsUrl();
       let ws: WebSocket;
       try {
         ws = new WebSocket(wsUrl);
-      } catch {
+      } catch (err: any) {
+        syncLogger.log('ws', 'warn', 'ws_init_error', { error: err?.message });
         setIsConnected(true);
         return;
       }
@@ -303,7 +440,7 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       ws.onopen = () => {
         if (!isMounted) return;
         setIsConnected(true);
-        // Authenticate immediately
+        syncLogger.log('ws', 'info', 'ws_connected', { url: wsUrl });
         ws.send(JSON.stringify({ type: 'auth', token }));
       };
 
@@ -319,17 +456,15 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
       ws.onclose = () => {
         if (!isMounted) return;
-        if (api.isUsingLocalBackend()) {
-          setIsConnected(true);
-          return;
-        }
-        setIsConnected(false);
-        // Reconnect after 3 seconds
-        reconnectTimeoutRef.current = setTimeout(connect, 3000);
+        setIsConnected(true);
+        if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = setTimeout(connect, 5000);
       };
 
       ws.onerror = () => {
-        ws.close();
+        try {
+          ws.close();
+        } catch {}
       };
 
       socketRef.current = ws;
@@ -337,9 +472,31 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
     connect();
 
+    // App Lifecycle & Network Reconnection Handlers (Foreground resume, unlock screen, Wi-Fi <-> Cellular switch)
+    const handleLifecycleResume = () => {
+      if (!isMounted) return;
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      syncLogger.log('lifecycle', 'info', 'app_resumed_or_network_online');
+      setIsConnected(true);
+      void localBackend.forceSyncNow().then(() => {
+        syncFromRemoteApi();
+      });
+      if (!socketRef.current || socketRef.current.readyState === WebSocket.CLOSED) {
+        if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+        connect();
+      }
+    };
+
+    window.addEventListener('online', handleLifecycleResume);
+    window.addEventListener('focus', handleLifecycleResume);
+    document.addEventListener('visibilitychange', handleLifecycleResume);
+
     return () => {
       isMounted = false;
-      clearInterval(alertPollInterval);
+      window.removeEventListener('beacon:cloud-sync-updated', onCloudSyncUpdated);
+      window.removeEventListener('online', handleLifecycleResume);
+      window.removeEventListener('focus', handleLifecycleResume);
+      document.removeEventListener('visibilitychange', handleLifecycleResume);
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
       if (socketRef.current) {
         socketRef.current.close();
@@ -937,49 +1094,56 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   }, [user, processPositionFix, handleGeolocationError]);
 
-  // Chat Actions
+  // Chat Actions (Always persist through API + Cloud Firestore AND broadcast over WebSocket)
   const sendMessage = useCallback(
     (data: { roomId?: string; channelId?: string; recipientId?: string; text: string; attachments?: ChatMessage['attachments']; replyToId?: string; clientMsgId?: string }) => {
-      if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-        sendWs({
-          type: 'chat:message',
-          roomId: data.roomId,
-          channelId: data.channelId,
-          recipientId: data.recipientId,
-          text: data.text,
-          attachments: data.attachments,
-          replyToId: data.replyToId,
-          clientMsgId: data.clientMsgId,
-        });
-      } else {
-        api
-          .post<{ message: ChatMessage }>('/api/messages/create', data)
-          .then((res) => {
-            if (res?.message) {
-              const key = res.message.roomId || res.message.recipientId || 'room-universal';
-              setChatMessages((prev) => {
-                const list = prev[key] || [];
-                if (list.some((m) => m.id === res.message.id)) return prev;
-                return { ...prev, [key]: [...list, res.message] };
-              });
-            }
-          })
-          .catch((e) => console.warn('Fallback message send error:', e));
-      }
+      api
+        .post<{ message: ChatMessage }>('/api/messages/create', data)
+        .then((res) => {
+          if (res?.message) {
+            seenMessageIdsRef.current.add(res.message.id);
+            const key = res.message.roomId || res.message.recipientId || 'room-universal';
+            setChatMessages((prev) => {
+              const list = prev[key] || [];
+              if (list.some((m) => m.id === res.message.id)) return prev;
+              return { ...prev, [key]: [...list, res.message] };
+            });
+          }
+        })
+        .catch((e) => console.warn('Message send error:', e));
     },
-    [sendWs]
+    []
   );
 
   const setConversationMessages = useCallback((key: string, messages: ChatMessage[]) => {
+    for (const m of messages) {
+      if (m?.id) seenMessageIdsRef.current.add(m.id);
+    }
     setChatMessages((prev) => {
       const existing = prev[key] || [];
-      const existingIds = new Set(existing.map((m) => m.id));
-      const merged = [...existing];
+      const map = new Map<string, ChatMessage>();
+      for (const item of existing) {
+        if (item && item.id && !item.isDeleted) map.set(item.id, item);
+      }
       for (const msg of messages) {
-        if (!existingIds.has(msg.id)) {
-          merged.push(msg);
-          existingIds.add(msg.id);
-        }
+        if (msg && msg.id && !msg.isDeleted) map.set(msg.id, msg);
+      }
+      const merged = Array.from(map.values()).sort(
+        (a, b) =>
+          (new Date(a.createdAt || 0).getTime() || 0) -
+          (new Date(b.createdAt || 0).getTime() || 0)
+      );
+      if (
+        merged.length === existing.length &&
+        merged.every(
+          (m, idx) =>
+            m.id === existing[idx]?.id &&
+            m.text === existing[idx]?.text &&
+            m.isEdited === existing[idx]?.isEdited &&
+            Object.keys(m.reactions || {}).length === Object.keys(existing[idx]?.reactions || {}).length
+        )
+      ) {
+        return prev;
       }
       return { ...prev, [key]: merged };
     });
@@ -999,101 +1163,78 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   const sendReaction = useCallback(
     (messageId: string, emoji: string) => {
-      if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-        sendWs({ type: 'chat:reaction', messageId, emoji });
-      } else {
-        api
-          .post<{ message: ChatMessage }>(`/api/messages/${messageId}/react`, { emoji })
-          .then((res) => {
-            if (res?.message) {
-              const key = res.message.roomId || res.message.recipientId || res.message.senderId;
-              setChatMessages((prev) => {
-                const list = prev[key] || [];
-                return { ...prev, [key]: list.map((m) => (m.id === res.message.id ? res.message : m)) };
-              });
-            }
-          })
-          .catch(() => {});
-      }
+      api
+        .post<{ message: ChatMessage }>(`/api/messages/${messageId}/react`, { emoji })
+        .then((res) => {
+          if (res?.message) {
+            const key = res.message.roomId || res.message.recipientId || res.message.senderId;
+            setChatMessages((prev) => {
+              const list = prev[key] || [];
+              return { ...prev, [key]: list.map((m) => (m.id === res.message.id ? res.message : m)) };
+            });
+          }
+        })
+        .catch(() => {});
     },
-    [sendWs]
+    []
   );
 
   const deleteMessage = useCallback(
     (messageId: string) => {
-      if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-        sendWs({ type: 'chat:delete', messageId });
-      } else {
-        api
-          .delete(`/api/messages/${messageId}`)
-          .then(() => {
-            setChatMessages((prev) => {
-              const next: Record<string, ChatMessage[]> = {};
-              for (const [k, list] of Object.entries(prev)) {
-                next[k] = list.filter((m) => m.id !== messageId);
-              }
-              return next;
-            });
-          })
-          .catch(() => {});
-      }
+      api
+        .delete(`/api/messages/${messageId}`)
+        .then(() => {
+          setChatMessages((prev) => {
+            const next: Record<string, ChatMessage[]> = {};
+            for (const [k, list] of Object.entries(prev)) {
+              next[k] = list.filter((m) => m.id !== messageId);
+            }
+            return next;
+          });
+        })
+        .catch(() => {});
     },
-    [sendWs]
+    []
   );
 
   const editMessage = useCallback(
     (messageId: string, text: string) => {
-      if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-        sendWs({ type: 'chat:edit', messageId, text });
-      } else {
-        api
-          .put<{ message: ChatMessage }>(`/api/messages/${messageId}/edit`, { text })
-          .then((res) => {
-            if (res?.message) {
-              const key = res.message.roomId || res.message.recipientId || res.message.senderId;
-              setChatMessages((prev) => {
-                const list = prev[key] || [];
-                return { ...prev, [key]: list.map((m) => (m.id === res.message.id ? res.message : m)) };
-              });
-            }
-          })
-          .catch(() => {});
-      }
+      api
+        .put<{ message: ChatMessage }>(`/api/messages/${messageId}/edit`, { text })
+        .then((res) => {
+          if (res?.message) {
+            const key = res.message.roomId || res.message.recipientId || res.message.senderId;
+            setChatMessages((prev) => {
+              const list = prev[key] || [];
+              return { ...prev, [key]: list.map((m) => (m.id === res.message.id ? res.message : m)) };
+            });
+          }
+        })
+        .catch(() => {});
     },
-    [sendWs]
+    []
   );
 
   // Emergency SOS Actions
   const triggerEmergencySos = useCallback(
     (message: string, roomId?: string) => {
       const dispatchSos = (lat: number, lng: number, acc: number) => {
-        if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-          sendWs({
-            type: 'emergency:sos',
+        api
+          .post<{ alert: EmergencyAlert }>('/api/alerts/emergency', {
             message,
             latitude: lat,
             longitude: lng,
             accuracy: acc,
             roomId,
-          });
-        } else {
-          api
-            .post<{ alert: EmergencyAlert }>('/api/alerts/emergency', {
-              message,
-              latitude: lat,
-              longitude: lng,
-              accuracy: acc,
-              roomId,
-            })
-            .then((res) => {
-              if (res?.alert) {
-                setActiveAlerts((prev) => [res.alert, ...prev.filter((a) => a.id !== res.alert.id)]);
-                setLatestAlert(res.alert);
-                sound.startEmergencySiren();
-              }
-            })
-            .catch(() => {});
-        }
+          })
+          .then((res) => {
+            if (res?.alert) {
+              setActiveAlerts((prev) => [res.alert, ...prev.filter((a) => a.id !== res.alert.id)]);
+              setLatestAlert(res.alert);
+              sound.startEmergencySiren();
+            }
+          })
+          .catch(() => {});
       };
 
       const currentLoc = myLocationRef.current;
@@ -1116,25 +1257,21 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         );
       }
     },
-    [sendWs, processPositionFix, handleGeolocationError]
+    [processPositionFix, handleGeolocationError]
   );
 
   const acknowledgeEmergency = useCallback(
     (alertId: string) => {
-      if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-        sendWs({ type: 'emergency:ack', alertId });
-      } else {
-        api
-          .post<{ alert: EmergencyAlert }>(`/api/alerts/emergency/${alertId}/ack`)
-          .then((res) => {
-            if (res?.alert) {
-              setActiveAlerts((prev) => prev.map((a) => (a.id === res.alert.id ? res.alert : a)));
-            }
-          })
-          .catch(() => {});
-      }
+      api
+        .post<{ alert: EmergencyAlert }>(`/api/alerts/emergency/${alertId}/ack`)
+        .then((res) => {
+          if (res?.alert) {
+            setActiveAlerts((prev) => prev.map((a) => (a.id === res.alert.id ? res.alert : a)));
+          }
+        })
+        .catch(() => {});
     },
-    [sendWs]
+    []
   );
 
   const dismissLatestAlert = useCallback(() => {
@@ -1354,48 +1491,86 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   };
 
+  const contextValue = React.useMemo<RealtimeContextType>(
+    () => ({
+      isConnected,
+      myLocation,
+      gpsAccuracy,
+      isGpsActive,
+      gpsError,
+      locationStatus,
+      debugTelemetry,
+      setDebugMarkerLatLng,
+      simulatePositionFix,
+      gpsPermissionState,
+      userLocations,
+      onlineUserIds,
+      activeAlerts,
+      latestAlert,
+      triggerEmergencySos,
+      acknowledgeEmergency,
+      deleteEmergencyAlert,
+      dismissLatestAlert,
+      chatMessages,
+      typingUsers,
+      sendMessage,
+      setConversationMessages,
+      sendTyping,
+      sendReaction,
+      deleteMessage,
+      clearChat,
+      editMessage,
+      activeVoiceRoomId,
+      isVoiceConnected,
+      isMicMuted,
+      isSpeaking,
+      voiceParticipants,
+      joinVoiceChannel,
+      leaveVoiceChannel,
+      toggleMicMute,
+      requestLocationUpdate,
+      setManualLocation,
+    }),
+    [
+      isConnected,
+      myLocation,
+      gpsAccuracy,
+      isGpsActive,
+      gpsError,
+      locationStatus,
+      debugTelemetry,
+      setDebugMarkerLatLng,
+      simulatePositionFix,
+      gpsPermissionState,
+      userLocations,
+      onlineUserIds,
+      activeAlerts,
+      latestAlert,
+      triggerEmergencySos,
+      acknowledgeEmergency,
+      deleteEmergencyAlert,
+      dismissLatestAlert,
+      chatMessages,
+      typingUsers,
+      sendMessage,
+      setConversationMessages,
+      sendTyping,
+      sendReaction,
+      deleteMessage,
+      clearChat,
+      editMessage,
+      activeVoiceRoomId,
+      isVoiceConnected,
+      isMicMuted,
+      isSpeaking,
+      voiceParticipants,
+      requestLocationUpdate,
+      setManualLocation,
+    ]
+  );
+
   return (
-    <RealtimeContext.Provider
-      value={{
-        isConnected,
-        myLocation,
-        gpsAccuracy,
-        isGpsActive,
-        gpsError,
-        locationStatus,
-        debugTelemetry,
-        setDebugMarkerLatLng,
-        simulatePositionFix,
-        gpsPermissionState,
-        userLocations,
-        onlineUserIds,
-        activeAlerts,
-        latestAlert,
-        triggerEmergencySos,
-        acknowledgeEmergency,
-        deleteEmergencyAlert,
-        dismissLatestAlert,
-        chatMessages,
-        typingUsers,
-        sendMessage,
-        setConversationMessages,
-        sendTyping,
-        sendReaction,
-        deleteMessage,
-        clearChat,
-        editMessage,
-        activeVoiceRoomId,
-        isVoiceConnected,
-        isMicMuted,
-        isSpeaking,
-        voiceParticipants,
-        joinVoiceChannel,
-        leaveVoiceChannel,
-        toggleMicMute,
-        requestLocationUpdate,
-        setManualLocation,
-      }}
-    >
+    <RealtimeContext.Provider value={contextValue}>
       {children}
     </RealtimeContext.Provider>
   );

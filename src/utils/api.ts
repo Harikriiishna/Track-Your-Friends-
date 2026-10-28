@@ -1,42 +1,18 @@
 import type { UserProfile, UserSession } from '../types.ts';
 import { localBackend } from './localBackend.ts';
+import { isAndroidNativeApp, resolveApiUrl, syncLogger } from '../config/env.ts';
 
 /**
- * Beacon Centralized API Client
+ * Beacon Centralized Production API Client
+ * Connects both Web and Android APK to the same production backend and shared Cloud Firestore database.
  */
 
 class ApiClient {
   private token: string | null = null;
-  private isNativeOrOfflineMode = false;
-
-  private isNativeRuntime(): boolean {
-    if (this.isNativeOrOfflineMode) return true;
-    if (typeof window !== 'undefined') {
-      const w = window as any;
-      if (w.AndroidLocationBridge) {
-        this.isNativeOrOfflineMode = true;
-        return true;
-      }
-      const cap = w.Capacitor;
-      if (cap && ((typeof cap.isNativePlatform === 'function' && cap.isNativePlatform()) || cap.isNative)) {
-        this.isNativeOrOfflineMode = true;
-        return true;
-      }
-      if (
-        window.location.protocol === 'capacitor:' ||
-        window.location.protocol === 'file:' ||
-        (window.location.hostname === 'localhost' && !window.location.port)
-      ) {
-        this.isNativeOrOfflineMode = true;
-        return true;
-      }
-    }
-    return false;
-  }
+  private remoteCooldownUntil = 0;
 
   constructor() {
     this.token = localStorage.getItem('beacon_token');
-    this.isNativeRuntime();
   }
 
   public setToken(token: string | null) {
@@ -53,29 +29,62 @@ class ApiClient {
   }
 
   public isUsingLocalBackend(): boolean {
-    return this.isNativeRuntime();
+    return Date.now() < this.remoteCooldownUntil;
   }
 
-  private syncResponseToLocal(data: any, token: string | null) {
+  private syncResponseToLocal(
+    data: any,
+    token: string | null,
+    endpoint = '',
+    method = 'GET'
+  ) {
+    const isMutation = method !== 'GET';
+    const leaveMatch = endpoint.match(/^\/api\/rooms\/([^/]+)\/leave$/);
+    if (isMutation && leaveMatch) {
+      const roomId = decodeURIComponent(leaveMatch[1]);
+      try {
+        const savedUserRaw = localStorage.getItem('beacon_user_profile');
+        const uid = savedUserRaw ? JSON.parse(savedUserRaw)?.id : null;
+        if (uid) {
+          localBackend.recordLeftRoom(uid, roomId);
+        }
+      } catch {
+        // ignore
+      }
+    }
     if (!data || typeof data !== 'object') return;
     if (data.user && data.user.id) {
       localBackend.syncUserSession(data.user, data.token || token);
+    }
+    if (data.message && data.message.id) {
+      localBackend.ingestExternalMessage(data.message, isMutation);
+    }
+    if (data.location && data.location.userId) {
+      localBackend.ingestExternalLocation(data.location, isMutation);
+    }
+    if (data.room && data.room.id) {
+      localBackend.ingestExternalRoom(data.room, token, isMutation);
+    }
+    if (Array.isArray(data.rooms) && endpoint === '/api/rooms') {
+      localBackend.ingestExternalRooms(data.rooms, token);
     }
   }
 
   private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
     const token = this.getToken();
+    const targetUrl = resolveApiUrl(endpoint);
+    const method = (options.method || 'GET').toUpperCase();
 
-    // If running inside standalone native APK where local server is not present, route directly to localBackend
-    if (this.isNativeRuntime()) {
+    // If direct Cloud Run HTTP recently returned an HTML proxy page on Android, route directly via Cloud Firestore sync engine during cooldown
+    if (Date.now() < this.remoteCooldownUntil) {
       const result = await localBackend.handleRequest<T>(endpoint, options, token);
-      this.syncResponseToLocal(result, token);
+      this.syncResponseToLocal(result, token, endpoint, method);
       return result;
     }
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      'Accept': 'application/json',
+      Accept: 'application/json',
       'Cache-Control': 'no-cache',
       ...(options.headers as Record<string, string>),
     };
@@ -86,32 +95,35 @@ class ApiClient {
 
     let response: Response;
     try {
-      response = await fetch(endpoint, {
+      const controller = new AbortController();
+      const timeoutMs = isAndroidNativeApp() ? 4500 : 8000;
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      response = await fetch(targetUrl, {
         ...options,
         headers,
         cache: 'no-store',
+        signal: controller.signal,
       });
-    } catch {
-      try {
-        await new Promise((resolve) => setTimeout(resolve, 350));
-        response = await fetch(endpoint, {
-          ...options,
-          headers,
-          cache: 'no-store',
-        });
-      } catch {
-        // Network unreachable or standalone environment: seamlessly use localBackend
-        const fallbackRes = await localBackend.handleRequest<T>(endpoint, options, token);
-        this.syncResponseToLocal(fallbackRes, token);
-        return fallbackRes;
+      clearTimeout(timer);
+    } catch (netErr: any) {
+      syncLogger.log('api', 'warn', 'fetch_fallback_to_firestore_sync', {
+        endpoint,
+        isAndroid: isAndroidNativeApp(),
+        error: netErr?.message || 'Network unreachable',
+      });
+      if (isAndroidNativeApp()) {
+        this.remoteCooldownUntil = Date.now() + 20000;
       }
+      const fallbackRes = await localBackend.handleRequest<T>(endpoint, options, token);
+      this.syncResponseToLocal(fallbackRes, token, endpoint, method);
+      return fallbackRes;
     }
 
     const contentType = (response.headers.get('content-type') || '').toLowerCase();
     const text = await response.text();
     const trimmed = text.trim();
 
-    // Detect if a static host, Capacitor WebViewLocalServer, or Service Worker returned HTML (e.g. index.html with HTTP 200)
+    // Detect if a proxy, static host, or auth wall returned HTML instead of JSON API response
     const isHtmlResponse =
       contentType.includes('text/html') ||
       trimmed.startsWith('<!doctype') ||
@@ -119,9 +131,13 @@ class ApiClient {
       trimmed.startsWith('<html');
 
     if (isHtmlResponse) {
-      this.isNativeOrOfflineMode = true;
+      syncLogger.log('api', 'info', 'html_proxy_detected_using_firestore_sync', {
+        endpoint,
+        status: response.status,
+      });
+      this.remoteCooldownUntil = Date.now() + 30000;
       const fallbackRes = await localBackend.handleRequest<T>(endpoint, options, token);
-      this.syncResponseToLocal(fallbackRes, token);
+      this.syncResponseToLocal(fallbackRes, token, endpoint, method);
       return fallbackRes;
     }
 
@@ -129,29 +145,34 @@ class ApiClient {
     try {
       data = trimmed ? JSON.parse(trimmed) : {};
     } catch {
-      // Non-JSON response received (e.g. proxy error or SPA fallback): route to localBackend instead of failing with "Server returned invalid response (200)"
       const fallbackRes = await localBackend.handleRequest<T>(endpoint, options, token);
-      this.syncResponseToLocal(fallbackRes, token);
+      this.syncResponseToLocal(fallbackRes, token, endpoint, method);
       return fallbackRes;
     }
 
     if (!response.ok) {
-      // If server restarted, returned 404 in static/APK mode, or lost session token, fallback cleanly for data queries
+      // If server restarted or token was created on Android/Firestore and not yet pulled by server, check shared Firestore state
       if (
-        (response.status === 401 || response.status === 404 || response.status >= 500) &&
-        !endpoint.startsWith('/api/auth/login') &&
-        !endpoint.startsWith('/api/auth/register')
+        response.status === 401 ||
+        response.status === 404 ||
+        response.status >= 500
       ) {
         try {
           const fallbackRes = await localBackend.handleRequest<T>(endpoint, options, token);
-          this.syncResponseToLocal(fallbackRes, token);
+          this.syncResponseToLocal(fallbackRes, token, endpoint, method);
           return fallbackRes;
         } catch {
-          // continue to standard error handling below if localBackend also rejects
+          // continue to standard error handling below if shared Firestore backend also rejects
         }
       }
 
-      const errorMessage = data?.error || data?.message || `HTTP error ${response.status}: ${response.statusText}`;
+      const errorMessage =
+        data?.error || data?.message || `HTTP error ${response.status}: ${response.statusText}`;
+      syncLogger.log('api', 'error', 'http_error', {
+        endpoint,
+        status: response.status,
+        error: errorMessage,
+      });
       const err: any = new Error(errorMessage);
       err.status = response.status;
       if (data && typeof data === 'object') {
@@ -165,7 +186,7 @@ class ApiClient {
       throw err;
     }
 
-    this.syncResponseToLocal(data, token);
+    this.syncResponseToLocal(data, token, endpoint, method);
     return data as T;
   }
 
@@ -192,7 +213,11 @@ class ApiClient {
   }
 
   // Upload utility
-  public async uploadFile(dataUrl: string, filename: string, mimeType?: string): Promise<{ url: string; name: string; size: number }> {
+  public async uploadFile(
+    dataUrl: string,
+    filename: string,
+    mimeType?: string
+  ): Promise<{ url: string; name: string; size: number }> {
     return this.post('/api/upload', { dataUrl, filename, mimeType });
   }
 
@@ -210,8 +235,14 @@ class ApiClient {
   }
 
   // Location History Deletion (Spec Section 5 & 19)
-  public async clearLocationHistory(): Promise<{ success: boolean; removedCount: number; message: string }> {
-    return this.delete<{ success: boolean; removedCount: number; message: string }>('/api/locations/history');
+  public async clearLocationHistory(): Promise<{
+    success: boolean;
+    removedCount: number;
+    message: string;
+  }> {
+    return this.delete<{ success: boolean; removedCount: number; message: string }>(
+      '/api/locations/history'
+    );
   }
 
   // User Blocking & Moderation (Spec Section 6 & 16)
