@@ -20,27 +20,13 @@ import type { SavedPlace, Room } from './types.ts';
 import { api } from './utils/api.ts';
 import { ToastProvider } from './context/ToastContext.tsx';
 
-const RoomsManager = React.lazy(() =>
-  import('./components/Rooms/RoomsManager.tsx').then((m) => ({ default: m.RoomsManager }))
-);
-const ChatView = React.lazy(() =>
-  import('./components/Chat/ChatView.tsx').then((m) => ({ default: m.ChatView }))
-);
-const SavedPlacesManager = React.lazy(() =>
-  import('./components/SavedPlaces/SavedPlacesManager.tsx').then((m) => ({ default: m.SavedPlacesManager }))
-);
-const RemindersManager = React.lazy(() =>
-  import('./components/Reminders/RemindersManager.tsx').then((m) => ({ default: m.RemindersManager }))
-);
-const MeetingsManager = React.lazy(() =>
-  import('./components/Meetings/MeetingsManager.tsx').then((m) => ({ default: m.MeetingsManager }))
-);
-const ProfilePrivacyView = React.lazy(() =>
-  import('./components/Profile/ProfilePrivacyView.tsx').then((m) => ({ default: m.ProfilePrivacyView }))
-);
-const AdminDashboard = React.lazy(() =>
-  import('./components/Admin/AdminDashboard.tsx').then((m) => ({ default: m.AdminDashboard }))
-);
+import { RoomsManager } from './components/Rooms/RoomsManager.tsx';
+import { ChatView } from './components/Chat/ChatView.tsx';
+import { SavedPlacesManager } from './components/SavedPlaces/SavedPlacesManager.tsx';
+import { RemindersManager } from './components/Reminders/RemindersManager.tsx';
+import { MeetingsManager } from './components/Meetings/MeetingsManager.tsx';
+import { ProfilePrivacyView } from './components/Profile/ProfilePrivacyView.tsx';
+import { AdminDashboard } from './components/Admin/AdminDashboard.tsx';
 
 function TabFallback() {
   return (
