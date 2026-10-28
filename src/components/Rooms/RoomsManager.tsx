@@ -3,6 +3,7 @@ import { useAuth } from '../../context/AuthContext.tsx';
 import { useRealtime } from '../../context/RealtimeContext.tsx';
 import type { Room, RoomMember, UserRole, SavedPlace } from '../../types.ts';
 import { api } from '../../utils/api.ts';
+import { localBackend } from '../../utils/localBackend.ts';
 import { calculateDistanceMeters, formatDistance } from '../../utils/geo.ts';
 import { sound } from '../../utils/audio.ts';
 import { notifications } from '../../utils/notifications.ts';
@@ -462,6 +463,7 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
 
   // Fetch rooms with signature diffing
   const loadRooms = React.useCallback(async (showSpinner = false) => {
+    if (!user?.id) return;
     try {
       if (showSpinner) setIsLoading(true);
       const res = await api.get<{ rooms: Room[] }>('/api/rooms');
@@ -477,11 +479,19 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
         }
       }
     } catch (err) {
-      console.error('Failed to load rooms:', err);
+      console.warn('Could not load rooms from backend, using cached rooms:', err);
+      const fallbackRooms = localBackend.getUserRooms(user.id);
+      if (fallbackRooms.length > 0) {
+        setRooms((prev) => (prev.length > 0 ? prev : fallbackRooms));
+        if (!selectedRoomId) {
+          const customRoom = fallbackRooms.find((r) => r.id !== 'room-universal');
+          onSelectRoom(customRoom ? customRoom.id : fallbackRooms[0].id);
+        }
+      }
     } finally {
       if (showSpinner) setIsLoading(false);
     }
-  }, [selectedRoomId, onSelectRoom]);
+  }, [user?.id, selectedRoomId, onSelectRoom]);
 
   useEffect(() => {
     loadRooms(true);

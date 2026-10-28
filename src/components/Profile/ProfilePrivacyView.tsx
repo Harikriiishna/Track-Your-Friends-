@@ -40,6 +40,7 @@ import {
 } from 'lucide-react';
 import { notifications } from '../../utils/notifications.ts';
 import { PWAInstallButton } from '../Navigation/PWAInstallButton.tsx';
+import { BackendDiagnosticPanel } from '../Navigation/BackendDiagnosticPanel.tsx';
 import { useToast } from '../../context/ToastContext.tsx';
 import { useTheme, GLASS_THEMES, GlassThemeId } from '../../context/ThemeContext.tsx';
 import { MARKER_COLORS, MEMBER_ICONS, getMemberIconEmoji } from '../../utils/markerStyles.ts';
@@ -353,6 +354,8 @@ export const ProfilePrivacyView: React.FC = () => {
           })}
         </div>
       </div>
+
+      <BackendDiagnosticPanel compactByDefault={false} />
 
       <form onSubmit={handleSaveProfile} className="space-y-6">
         {/* Profile Card */}

@@ -130,22 +130,24 @@ class LocalBackendEngine {
     });
     if (typeof window !== 'undefined') {
       setInterval(() => {
+        if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+        if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
         void pullAndMergeCloudState(this.data).then((updated) => {
           if (updated) {
             this.ensureUniversalRoom();
             this.saveLocalOnly();
           }
         });
-      }, 2500);
+      }, 60000);
     }
   }
 
   public async forceSyncNow(): Promise<boolean> {
+    this.syncCachedAuthFromStorage();
     const updated = await pullAndMergeCloudState(this.data, true);
-    if (updated) {
-      this.ensureUniversalRoom();
-      this.saveLocalOnly();
-    }
+    this.ensureUniversalRoom();
+    this.saveLocalOnly();
+    schedulePushCloudState(this.data, true);
     return updated;
   }
 

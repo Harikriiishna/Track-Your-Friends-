@@ -15,6 +15,7 @@ import { localBackend } from '../utils/localBackend.ts';
 import { notifications } from '../utils/notifications.ts';
 import { getProductionWsUrl, syncLogger, type RealtimeDiagnosticState } from '../config/env.ts';
 import { getCloudDatabaseHealth } from '../utils/cloudSync.ts';
+import { checkBackendConnectivity } from '../utils/connectivity.ts';
 
 interface VoiceParticipant {
   peerId: string;
@@ -52,6 +53,8 @@ interface RealtimeContextType {
   isConnected: boolean;
   wsConnected: boolean;
   realtimeState: RealtimeDiagnosticState;
+  connectionError: string | null;
+  clearConnectionError: () => void;
   myLocation: UserLocation | null;
   gpsAccuracy: number | null;
   isGpsActive: boolean;
@@ -109,6 +112,8 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [isConnected, setIsConnected] = useState(false);
   const [wsConnected, setWsConnected] = useState(false);
   const [realtimeState, setRealtimeState] = useState<RealtimeDiagnosticState>('REALTIME_DISCONNECTED');
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+  const clearConnectionError = useCallback(() => setConnectionError(null), []);
   const [myLocation, setMyLocation] = useState<UserLocation | null>(null);
   const [gpsAccuracy, setGpsAccuracy] = useState<number | null>(null);
   const [isGpsActive, setIsGpsActive] = useState(false);
@@ -433,7 +438,7 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
     let heartbeatTimer: any = null;
 
-    function connect(isReconnect = false) {
+    async function connect(isReconnect = false) {
       if (!isMounted) return;
       const nextState: RealtimeDiagnosticState = isReconnect
         ? 'REALTIME_RECONNECTING'
@@ -443,12 +448,37 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         setRealtimeState(nextState);
       }
 
+      // Run strict 5-second health check before attempting WebSocket initialization
+      const healthResult = await checkBackendConnectivity();
+      if (!isMounted) return;
+
+      if (!healthResult.ok) {
+        const errMsg =
+          healthResult.error ||
+          'Unable to reach the production backend health endpoint. Please check your connection.';
+        setConnectionError(errMsg);
+        setWsConnected(false);
+        const dbConnected = getCloudDatabaseHealth().connected;
+        setRealtimeState(dbConnected ? 'REALTIME_CONNECTED' : 'REALTIME_ERROR');
+        setIsConnected(dbConnected || api.isUsingLocalBackend());
+        if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = setTimeout(() => {
+          void connect(true);
+        }, 10000);
+        return;
+      }
+
+      setConnectionError(null);
+
       if (api.isUsingLocalBackend()) {
         setIsConnected(true);
         if (getCloudDatabaseHealth().connected) {
           setRealtimeState('REALTIME_CONNECTED');
         }
-        reconnectTimeoutRef.current = setTimeout(() => connect(true), 10000);
+        if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = setTimeout(() => {
+          void connect(true);
+        }, 10000);
         return;
       }
 
@@ -458,6 +488,7 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         ws = new WebSocket(wsUrl);
       } catch (err: any) {
         syncLogger.log('ws', 'warn', 'REALTIME_ERROR', { error: err?.message });
+        setConnectionError(err?.message || 'Failed to initialize WebSocket connection.');
         setWsConnected(false);
         setRealtimeState(getCloudDatabaseHealth().connected ? 'REALTIME_CONNECTED' : 'REALTIME_ERROR');
         setIsConnected(true);
@@ -466,11 +497,12 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
       ws.onopen = () => {
         if (!isMounted) return;
+        setConnectionError(null);
         setIsConnected(true);
         setWsConnected(true);
         setRealtimeState('REALTIME_CONNECTED');
         syncLogger.log('ws', 'info', 'REALTIME_CONNECTED', { url: wsUrl });
-        ws.send(JSON.stringify({ type: 'auth', token }));
+        ws.send(JSON.stringify({ type: 'auth', token, userId: user.id, email: user.email }));
 
         if (heartbeatTimer) clearInterval(heartbeatTimer);
         heartbeatTimer = setInterval(() => {
@@ -516,7 +548,9 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         setRealtimeState(dbConnected ? 'REALTIME_CONNECTED' : 'REALTIME_RECONNECTING');
         setIsConnected(true);
         if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
-        reconnectTimeoutRef.current = setTimeout(() => connect(true), 5000);
+        reconnectTimeoutRef.current = setTimeout(() => {
+          void connect(true);
+        }, 5000);
       };
 
       ws.onerror = () => {
@@ -529,7 +563,7 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       socketRef.current = ws;
     }
 
-    connect(false);
+    void connect(false);
 
     // App Lifecycle & Network Reconnection Handlers (Foreground resume, unlock screen, Wi-Fi <-> Cellular switch)
     const handleLifecycleResume = () => {
@@ -550,6 +584,7 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       if (!isMounted) return;
       setWsConnected(false);
       setIsConnected(false);
+      setConnectionError('Device is offline. Waiting for network connection...');
       setRealtimeState('REALTIME_DISCONNECTED');
       syncLogger.log('lifecycle', 'warn', 'REALTIME_DISCONNECTED', { reason: 'network_offline' });
     };
@@ -1566,6 +1601,8 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       isConnected,
       wsConnected,
       realtimeState,
+      connectionError,
+      clearConnectionError,
       myLocation,
       gpsAccuracy,
       isGpsActive,
@@ -1607,6 +1644,8 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       isConnected,
       wsConnected,
       realtimeState,
+      connectionError,
+      clearConnectionError,
       myLocation,
       gpsAccuracy,
       isGpsActive,

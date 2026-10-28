@@ -10,6 +10,8 @@ export const DEFAULT_PRODUCTION_BACKEND_ORIGIN =
 export const DEV_PREVIEW_BACKEND_ORIGIN =
   'https://ais-dev-dkfhfrzboel3a3xnlpek5a-752786783113.asia-northeast1.run.app';
 
+const RUNTIME_API_OVERRIDE_KEY = 'beacon_production_api_url_override';
+
 function getEnvVar(name: string): string {
   try {
     const metaEnv = typeof import.meta !== 'undefined' ? (import.meta as any).env : undefined;
@@ -52,6 +54,8 @@ export const FIRESTORE_BASE_DOCS_URL = `https://firestore.googleapis.com/v1/proj
 
 export const FIRESTORE_SYNC_DOC_URL = `${FIRESTORE_BASE_DOCS_URL}/beacon_sync/global_state?key=${FIREBASE_PRODUCTION_CONFIG.apiKey}`;
 
+export const FIRESTORE_TEST_DOC_URL = `${FIRESTORE_BASE_DOCS_URL}/test/connection?key=${FIREBASE_PRODUCTION_CONFIG.apiKey}`;
+
 export function getFirestoreEntityDocUrl(collectionKey: string): string {
   return `${FIRESTORE_BASE_DOCS_URL}/beacon_sync/${encodeURIComponent(collectionKey)}?key=${FIREBASE_PRODUCTION_CONFIG.apiKey}`;
 }
@@ -75,16 +79,50 @@ export function isAndroidNativeApp(): boolean {
   return false;
 }
 
-function isPlaceholderEndpoint(url: string): boolean {
-  const lower = url.toLowerCase();
+export function isInvalidOrLocalEndpoint(url: string): boolean {
+  const lower = url.trim().toLowerCase();
+  if (!lower.startsWith('https://') && !lower.startsWith('http://')) return true;
   return (
     lower.includes('your_production') ||
     lower.includes('myapp-backend.onrender.com') ||
     lower.includes('example.com') ||
     lower.includes('localhost') ||
     lower.includes('127.0.0.1') ||
-    lower.includes('0.0.0.0')
+    lower.includes('0.0.0.0') ||
+    lower.includes('10.0.2.2')
   );
+}
+
+/**
+ * Allows setting or clearing a runtime HTTPS production backend URL from the Diagnostic Panel
+ * (e.g., when switching to a public `--allow-unauthenticated` Cloud Run service URL).
+ */
+export function setProductionApiBaseUrlOverride(url: string | null): void {
+  if (typeof localStorage === 'undefined') return;
+  if (!url || !url.trim()) {
+    localStorage.removeItem(RUNTIME_API_OVERRIDE_KEY);
+    return;
+  }
+  const cleaned = url.trim().replace(/\/+$/, '');
+  if (!cleaned.startsWith('https://') || isInvalidOrLocalEndpoint(cleaned)) {
+    throw new Error(
+      'Production Backend URL must start with https:// and cannot be localhost, 127.0.0.1, or 0.0.0.0.'
+    );
+  }
+  localStorage.setItem(RUNTIME_API_OVERRIDE_KEY, cleaned);
+}
+
+export function getProductionApiBaseUrlOverride(): string {
+  if (typeof localStorage === 'undefined') return '';
+  try {
+    const val = localStorage.getItem(RUNTIME_API_OVERRIDE_KEY) || '';
+    if (val && val.startsWith('https://') && !isInvalidOrLocalEndpoint(val)) {
+      return val.replace(/\/+$/, '');
+    }
+  } catch {
+    // ignore storage read error
+  }
+  return '';
 }
 
 /**
@@ -92,8 +130,13 @@ function isPlaceholderEndpoint(url: string): boolean {
  * Guarantees Android APK never calls localhost, 127.0.0.1, 0.0.0.0, or placeholder URLs.
  */
 export function getProductionApiBaseUrl(): string {
+  const runtimeOverride = getProductionApiBaseUrlOverride();
+  if (runtimeOverride) {
+    return runtimeOverride;
+  }
+
   const configuredUrl = getEnvVar('VITE_API_BASE_URL') || getEnvVar('VITE_API_URL');
-  if (configuredUrl && !isPlaceholderEndpoint(configuredUrl)) {
+  if (configuredUrl && !isInvalidOrLocalEndpoint(configuredUrl)) {
     return configuredUrl.replace(/\/+$/, '');
   }
 
@@ -123,11 +166,42 @@ export const PRODUCTION_API_URL = getProductionApiBaseUrl();
 export const PRODUCTION_BACKEND_ORIGIN = DEFAULT_PRODUCTION_BACKEND_ORIGIN;
 
 /**
+ * Returns a visible, sanitized representation of a backend URL without exposing any secrets, tokens, or API keys.
+ */
+export function getMaskedBackendUrl(rawUrl?: string): string {
+  const target = rawUrl || getProductionApiBaseUrl();
+  try {
+    const parsed = new URL(target);
+    parsed.username = '';
+    parsed.password = '';
+    for (const key of Array.from(parsed.searchParams.keys())) {
+      const lower = key.toLowerCase();
+      if (
+        lower.includes('key') ||
+        lower.includes('token') ||
+        lower.includes('secret') ||
+        lower.includes('auth') ||
+        lower.includes('pass')
+      ) {
+        parsed.searchParams.set(key, '[MASKED]');
+      }
+    }
+    return parsed.toString().replace(/\/+$/, '');
+  } catch {
+    return target.replace(/([?&](?:key|token|secret|password)=)[^&]+/gi, '$1[MASKED]');
+  }
+}
+
+/**
  * Resolves a relative API endpoint (e.g. `/api/rooms`) to a full production URL.
  */
 export function resolveApiUrl(endpoint: string): string {
   if (/^https?:\/\//i.test(endpoint)) return endpoint;
   const path = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+  const override = getProductionApiBaseUrlOverride();
+  if (override) {
+    return `${override}${path}`;
+  }
   if (typeof window !== 'undefined' && !isAndroidNativeApp()) {
     return path;
   }
@@ -139,7 +213,7 @@ export function resolveApiUrl(endpoint: string): string {
  */
 export function getProductionWsUrl(): string {
   const configuredWs = getEnvVar('VITE_WS_URL');
-  if (configuredWs && !isPlaceholderEndpoint(configuredWs)) {
+  if (configuredWs && !isInvalidOrLocalEndpoint(configuredWs)) {
     return configuredWs.endsWith('/ws') ? configuredWs : `${configuredWs.replace(/\/+$/, '')}/ws`;
   }
 

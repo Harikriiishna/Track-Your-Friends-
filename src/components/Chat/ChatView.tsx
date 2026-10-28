@@ -231,7 +231,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
           return res.room;
         });
       } catch (err) {
-        console.error('Failed to load room details:', err);
+        console.warn('Could not load room details:', err);
       }
     }
     fetchDetails();
@@ -255,7 +255,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
           if (active && res?.messages) setConversationMessages(effectiveRecipientId, res.messages);
         }
       } catch (err) {
-        console.error('Failed to load message history:', err);
+        console.warn('Could not load message history:', err);
       }
     }
     loadHistory();

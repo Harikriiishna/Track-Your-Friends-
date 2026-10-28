@@ -14,6 +14,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
+import android.webkit.CookieManager;
 import android.webkit.GeolocationPermissions;
 import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
@@ -29,6 +30,13 @@ import androidx.core.content.ContextCompat;
 import com.getcapacitor.BridgeActivity;
 
 import org.json.JSONObject;
+
+import java.io.BufferedReader;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.InetAddress;
+import java.net.URL;
 
 public class MainActivity extends BridgeActivity {
     private static final int LOCATION_PERMISSION_REQUEST_CODE = 1001;
@@ -77,6 +85,12 @@ public class MainActivity extends BridgeActivity {
             settings.setJavaScriptEnabled(true);
             settings.setDomStorageEnabled(true);
             settings.setDatabaseEnabled(true);
+
+            try {
+                CookieManager cookieManager = CookieManager.getInstance();
+                cookieManager.setAcceptCookie(true);
+                cookieManager.setAcceptThirdPartyCookies(webView, true);
+            } catch (Exception ignored) {}
 
             try {
                 webView.addJavascriptInterface(new AndroidLocationBridge(), "AndroidLocationBridge");
@@ -524,6 +538,125 @@ public class MainActivity extends BridgeActivity {
                 return locationToJsonString(latestNativeLocation);
             }
             return "";
+        }
+
+        @JavascriptInterface
+        public String diagnoseBackend(String baseUrl) {
+            JSONObject result = new JSONObject();
+            try {
+                String cleanBase = baseUrl != null ? baseUrl.trim().replaceAll("/+$", "") : "";
+                result.put("backendUrl", cleanBase);
+
+                URL parsed = new URL(cleanBase + "/api/health");
+                String host = parsed.getHost();
+                String protocol = parsed.getProtocol();
+
+                // 1. Test DNS resolution directly from Android OS
+                try {
+                    InetAddress addr = InetAddress.getByName(host);
+                    result.put("dns", "OK");
+                    result.put("resolvedIp", addr.getHostAddress());
+                } catch (Exception dnsEx) {
+                    result.put("dns", "FAILED");
+                    result.put("https", "FAILED");
+                    result.put("backendHealth", "FAILED");
+                    result.put("httpStatus", "DNS_RESOLUTION_FAILED");
+                    result.put("reason", dnsEx.getMessage() != null ? dnsEx.getMessage() : "Unable to resolve hostname");
+                    return result.toString();
+                }
+
+                if (!"https".equalsIgnoreCase(protocol)) {
+                    result.put("https", "FAILED");
+                    result.put("backendHealth", "FAILED");
+                    result.put("httpStatus", "NON_HTTPS_BLOCKED");
+                    result.put("reason", "Protocol must be HTTPS");
+                    return result.toString();
+                }
+
+                // 2. Test HTTPS handshake & raw HTTP response status on /api/health without following proxy redirects
+                HttpURLConnection conn = null;
+                try {
+                    conn = (HttpURLConnection) parsed.openConnection();
+                    conn.setInstanceFollowRedirects(false);
+                    conn.setConnectTimeout(6000);
+                    conn.setReadTimeout(6000);
+                    conn.setRequestMethod("GET");
+                    conn.setRequestProperty("Accept", "application/json");
+                    conn.setRequestProperty("Cache-Control", "no-cache");
+
+                    try {
+                        String cookies = CookieManager.getInstance().getCookie(cleanBase);
+                        if (cookies != null && !cookies.isEmpty()) {
+                            conn.setRequestProperty("Cookie", cookies);
+                        }
+                    } catch (Exception ignored) {}
+
+                    int code = conn.getResponseCode();
+                    String contentType = conn.getContentType() != null ? conn.getContentType() : "";
+                    String locationHeader = conn.getHeaderField("Location");
+
+                    result.put("https", "OK");
+                    result.put("rawStatusCode", code);
+                    result.put("contentType", contentType);
+                    if (locationHeader != null) {
+                        result.put("redirectLocation", locationHeader);
+                    }
+
+                    InputStream is = (code >= 200 && code < 400) ? conn.getInputStream() : conn.getErrorStream();
+                    StringBuilder sb = new StringBuilder();
+                    if (is != null) {
+                        BufferedReader reader = new BufferedReader(new InputStreamReader(is));
+                        String line;
+                        while ((line = reader.readLine()) != null && sb.length() < 2048) {
+                            sb.append(line);
+                        }
+                        reader.close();
+                    }
+                    String body = sb.toString().trim();
+
+                    if (code == 200 && contentType.toLowerCase().contains("application/json") && body.contains("\"ok\":true")) {
+                        result.put("backendHealth", "OK");
+                        result.put("httpStatus", "200 OK (application/json)");
+                        result.put("reason", "Production backend health check passed");
+                    } else if (code == 301 || code == 302 || code == 303 || code == 307 || code == 308) {
+                        result.put("backendHealth", "FAILED");
+                        String locShort = locationHeader != null ? locationHeader : "redirect";
+                        if (locShort.contains("__cookie_check.html") || locShort.contains("applet-auth-bridge")) {
+                            result.put("httpStatus", code + " Found (Redirect to AI Studio Cookie Check / Auth Bridge)");
+                            result.put("reason", "Cloud Run URL is behind Google AI Studio's applet-auth-bridge proxy. Unauthenticated APK requests are redirected (HTTP 302) to /__cookie_check.html instead of reaching server.ts.");
+                        } else {
+                            result.put("httpStatus", code + " Redirect");
+                            result.put("reason", "Redirected to " + locShort);
+                        }
+                    } else if (contentType.toLowerCase().contains("text/html") || body.toLowerCase().startsWith("<!doctype") || body.toLowerCase().startsWith("<html")) {
+                        result.put("backendHealth", "FAILED");
+                        result.put("httpStatus", code + " (text/html proxy page instead of JSON)");
+                        result.put("reason", "Endpoint returned an HTML page instead of JSON health response.");
+                    } else {
+                        result.put("backendHealth", "FAILED");
+                        result.put("httpStatus", String.valueOf(code));
+                        result.put("reason", "Unexpected response from /api/health");
+                    }
+                } catch (Exception tlsEx) {
+                    result.put("https", "FAILED");
+                    result.put("backendHealth", "FAILED");
+                    result.put("httpStatus", "TLS_OR_SOCKET_ERROR");
+                    result.put("reason", tlsEx.getMessage() != null ? tlsEx.getMessage() : "HTTPS connection failed");
+                } finally {
+                    if (conn != null) {
+                        conn.disconnect();
+                    }
+                }
+            } catch (Exception e) {
+                try {
+                    result.put("dns", "FAILED");
+                    result.put("https", "FAILED");
+                    result.put("backendHealth", "FAILED");
+                    result.put("httpStatus", "INVALID_URL");
+                    result.put("reason", e.getMessage() != null ? e.getMessage() : "Diagnostic error");
+                } catch (Exception ignored) {}
+            }
+            return result.toString();
         }
     }
 }

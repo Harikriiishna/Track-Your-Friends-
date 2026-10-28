@@ -2,7 +2,6 @@ import {
   FIREBASE_PRODUCTION_CONFIG,
   FIRESTORE_SYNC_DOC_URL,
   PRODUCTION_API_URL,
-  getFirestoreEntityDocUrl,
   resolveApiUrl,
   syncLogger,
 } from '../config/env.ts';
@@ -597,18 +596,26 @@ let pushTimeoutId: any = null;
 let cloudConnected = false;
 let lastSuccessfulSyncMs = 0;
 let firestoreQuotaCooldownUntil = 0;
+let lastFirestoreHttpStatus = 0;
+let lastFirestoreErrorMsg = '';
 
 export function getCloudDatabaseHealth(): {
   connected: boolean;
   lastSyncMs: number;
   projectId: string;
   databaseId: string;
+  httpStatus: number;
+  errorMessage: string;
+  quotaExceeded: boolean;
 } {
   return {
-    connected: cloudConnected || Date.now() - lastSuccessfulSyncMs < 30000,
+    connected: cloudConnected,
     lastSyncMs: lastSuccessfulSyncMs,
     projectId: firebaseConfig.projectId,
     databaseId: firebaseConfig.firestoreDatabaseId,
+    httpStatus: lastFirestoreHttpStatus,
+    errorMessage: lastFirestoreErrorMsg,
+    quotaExceeded: lastFirestoreHttpStatus === 429 || Date.now() < firestoreQuotaCooldownUntil,
   };
 }
 
@@ -622,12 +629,16 @@ export async function verifyCloudFirestoreConnection(): Promise<boolean> {
         method: 'GET',
         headers: { Accept: 'application/json', 'Cache-Control': 'no-cache' },
         cache: 'no-store',
+        credentials: 'include',
         signal: controller.signal,
       });
       clearTimeout(timer);
-      if (res.ok) {
+      const ct = (res.headers.get('content-type') || '').toLowerCase();
+      if (res.ok && ct.includes('application/json')) {
         cloudConnected = true;
         lastSuccessfulSyncMs = Date.now();
+        lastFirestoreHttpStatus = res.status;
+        lastFirestoreErrorMsg = '';
         return true;
       }
     } catch {
@@ -637,7 +648,7 @@ export async function verifyCloudFirestoreConnection(): Promise<boolean> {
 
   // 2. Check Cloud Firestore directly if not in daily quota cooldown
   if (Date.now() < firestoreQuotaCooldownUntil) {
-    return cloudConnected;
+    return false;
   }
 
   try {
@@ -650,20 +661,27 @@ export async function verifyCloudFirestoreConnection(): Promise<boolean> {
       signal: controller.signal,
     });
     clearTimeout(timer);
+    lastFirestoreHttpStatus = res.status;
     if (res.status === 429) {
       firestoreQuotaCooldownUntil = Date.now() + 15 * 60 * 1000;
+      lastFirestoreErrorMsg =
+        "Quota exceeded for quota metric 'Free daily read units per project (free tier database)'";
+      cloudConnected = false;
       syncLogger.log('firestore', 'warn', 'quota_cooldown_active', { status: 429 });
-      return cloudConnected;
+      return false;
     }
     if (res.ok) {
       cloudConnected = true;
       lastSuccessfulSyncMs = Date.now();
+      lastFirestoreErrorMsg = '';
       return true;
     }
     cloudConnected = false;
+    lastFirestoreErrorMsg = `Firestore HTTP ${res.status}`;
     return false;
-  } catch {
+  } catch (err: any) {
     cloudConnected = false;
+    lastFirestoreErrorMsg = err?.message || 'Firestore unreachable';
     return false;
   }
 }
@@ -729,9 +747,14 @@ export async function pullAndMergeCloudState(
           clearTimeout(timer);
 
           if (res.status === 429) {
+            lastFirestoreHttpStatus = 429;
+            lastFirestoreErrorMsg =
+              "Quota exceeded for quota metric 'Free daily read units per project (free tier database)'";
             firestoreQuotaCooldownUntil = Date.now() + 15 * 60 * 1000;
             syncLogger.log('firestore', 'warn', 'pull_quota_429_cooldown', { status: 429 });
           } else if (res.ok) {
+            lastFirestoreHttpStatus = res.status;
+            lastFirestoreErrorMsg = '';
             cloudConnected = true;
             lastSuccessfulSyncMs = Date.now();
             const doc = await res.json();
@@ -749,6 +772,8 @@ export async function pullAndMergeCloudState(
               }
             }
           } else if (!anyUpdated) {
+            lastFirestoreHttpStatus = res.status;
+            lastFirestoreErrorMsg = `Firestore HTTP ${res.status}`;
             cloudConnected = false;
             syncLogger.log('firestore', 'warn', 'pull_non_200', { status: res.status });
           }
@@ -772,44 +797,6 @@ export async function pullAndMergeCloudState(
   })();
 
   return inFlightPull;
-}
-
-/**
- * Writes structured domain partitions (users, rooms, locations, messages, alerts) to dedicated Firestore documents
- * in addition to the atomic synchronization snapshot.
- */
-async function syncStructuredEntityPartitions(
-  state: SyncableDatabaseState,
-  timestamp: string
-): Promise<void> {
-  if (Date.now() < firestoreQuotaCooldownUntil) return;
-  const partitions: Record<string, any> = {
-    entity_users: (state.users || []).map(({ password, passwordHash, salt, ...safe }) => safe),
-    entity_rooms: { rooms: state.rooms || [], roomMembers: state.roomMembers || [] },
-    entity_locations: state.locations || {},
-    entity_messages: (state.messages || []).slice(-100),
-    entity_alerts: (state.emergencyAlerts || []).slice(0, 30),
-  };
-
-  await Promise.allSettled(
-    Object.entries(partitions).map(async ([docKey, data]) => {
-      const payload = JSON.stringify(data);
-      if (payload.length >= 900000) return;
-      const res = await fetch(getFirestoreEntityDocUrl(docKey), {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          fields: {
-            payload: { stringValue: payload },
-            updatedAt: { stringValue: timestamp },
-          },
-        }),
-      });
-      if (res.status === 429) {
-        firestoreQuotaCooldownUntil = Date.now() + 15 * 60 * 1000;
-      }
-    })
-  );
 }
 
 /**
@@ -851,11 +838,13 @@ export function schedulePushCloudState(
           const res = await fetch(endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
+            credentials: 'include',
             body: JSON.stringify({ state: compactState }),
             signal: controller.signal,
           });
           clearTimeout(timer);
-          if (res.ok) {
+          const ct = (res.headers.get('content-type') || '').toLowerCase();
+          if (res.ok && ct.includes('application/json')) {
             const payload = await res.json();
             if (payload?.state && typeof payload.state === 'object') {
               mergeDatabaseStates(localState, payload.state, false);
@@ -889,15 +878,21 @@ export function schedulePushCloudState(
         clearTimeout(timer);
 
         if (res.status === 429) {
+          lastFirestoreHttpStatus = 429;
+          lastFirestoreErrorMsg =
+            "Quota exceeded for quota metric 'Free daily write units per project (free tier database)'";
           firestoreQuotaCooldownUntil = Date.now() + 15 * 60 * 1000;
           syncLogger.log('firestore', 'warn', 'push_quota_429_cooldown', { status: 429 });
         } else if (res.ok) {
+          lastFirestoreHttpStatus = res.status;
+          lastFirestoreErrorMsg = '';
           cloudConnected = true;
           lastSuccessfulSyncMs = Date.now();
           lastRemoteUpdatedAt = pushTimestamp;
           pushedSuccessfully = true;
-          void syncStructuredEntityPartitions(compactState, pushTimestamp);
         } else if (!pushedSuccessfully) {
+          lastFirestoreHttpStatus = res.status;
+          lastFirestoreErrorMsg = `Firestore HTTP ${res.status}`;
           cloudConnected = false;
           syncLogger.log('firestore', 'warn', 'push_non_200', { status: res.status });
         }

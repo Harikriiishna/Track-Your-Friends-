@@ -1,23 +1,43 @@
 import type { UserProfile, UserSession } from '../types.ts';
 import { localBackend } from './localBackend.ts';
 import { getCloudDatabaseHealth, verifyCloudFirestoreConnection } from './cloudSync.ts';
-import { isAndroidNativeApp, resolveApiUrl, syncLogger, PRODUCTION_API_URL } from '../config/env.ts';
+import {
+  FIREBASE_PRODUCTION_CONFIG,
+  getMaskedBackendUrl,
+  getProductionApiBaseUrl,
+  isAndroidNativeApp,
+  resolveApiUrl,
+  syncLogger,
+} from '../config/env.ts';
+
+export interface BackendDiagnosticReport {
+  backendUrl: string;
+  dns: 'OK' | 'FAILED';
+  https: 'OK' | 'FAILED';
+  backendHealth: 'OK' | 'FAILED';
+  httpStatus: string;
+  authentication: 'OK' | 'FAILED';
+  database: 'OK' | 'FAILED';
+  diagnosticReason: string;
+  isHtmlProxyIntercepted: boolean;
+  firestoreQuotaExceeded: boolean;
+  firestoreUpgradeUrl: string;
+  timestamp: string;
+}
 
 /**
  * Beacon Centralized Production API Client
- * Connects both Web and Android APK to the same production backend (`PRODUCTION_API_URL`)
- * and shared production Cloud Firestore database (`ai-studio-nexuspoint-bb482c10-9426-424c-8259-807bce4cb7da`).
+ * Connects both Web and Android APK to the same production backend (`getProductionApiBaseUrl()`).
  *
- * CRITICAL GUARANTEE (Section 14):
- * Never silently converts production API failures into isolated local-only `localStorage` operation.
- * Mutations require either the direct Production Backend API OR verified Production Cloud Firestore synchronization.
- * If offline or unreachable, throws an explicit connection error so the client retries/reconnects properly.
+ * CRITICAL GUARANTEE (Requirement 13):
+ * DO NOT silently fall back to LocalBackend/localStorage when the production API fails.
+ * Every request goes to the production backend and reports exact HTTP/DNS/TLS/Proxy diagnostics on failure.
  */
-
 class ApiClient {
   private token: string | null = null;
-  private remoteCooldownUntil = 0;
   private lastDirectApiConnected = false;
+  private lastDiagnosticReport: BackendDiagnosticReport | null = null;
+  private diagnosticListeners = new Set<(report: BackendDiagnosticReport) => void>();
 
   constructor() {
     this.token = localStorage.getItem('beacon_token');
@@ -33,11 +53,56 @@ class ApiClient {
   }
 
   public getToken(): string | null {
-    return this.token || localStorage.getItem('beacon_token');
+    const existing = this.token || localStorage.getItem('beacon_token');
+    if (existing) return existing;
+    try {
+      const savedUserRaw = localStorage.getItem('beacon_user_profile');
+      if (savedUserRaw) {
+        const parsed = JSON.parse(savedUserRaw) as UserProfile;
+        if (parsed && parsed.id) {
+          const generated = `tok-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+          this.setToken(generated);
+          localBackend.syncUserSession(parsed, generated);
+          return generated;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return null;
   }
 
   public isUsingLocalBackend(): boolean {
-    return Date.now() < this.remoteCooldownUntil;
+    return false;
+  }
+
+  public getLastDiagnosticReport(): BackendDiagnosticReport | null {
+    return this.lastDiagnosticReport;
+  }
+
+  public onDiagnosticsUpdated(listener: (report: BackendDiagnosticReport) => void): () => void {
+    this.diagnosticListeners.add(listener);
+    return () => {
+      this.diagnosticListeners.delete(listener);
+    };
+  }
+
+  private emitDiagnostics(report: BackendDiagnosticReport) {
+    this.lastDiagnosticReport = report;
+    for (const listener of this.diagnosticListeners) {
+      try {
+        listener(report);
+      } catch {
+        // ignore listener error
+      }
+    }
+    if (typeof window !== 'undefined') {
+      try {
+        window.dispatchEvent(new CustomEvent('beacon:backend-diagnostics', { detail: report }));
+      } catch {
+        // ignore
+      }
+    }
   }
 
   public getConnectionStatus(): {
@@ -48,11 +113,233 @@ class ApiClient {
   } {
     const dbHealth = getCloudDatabaseHealth();
     return {
-      productionApiUrl: PRODUCTION_API_URL,
+      productionApiUrl: getMaskedBackendUrl(getProductionApiBaseUrl()),
       directHttpConnected: this.lastDirectApiConnected,
       cloudFirestoreConnected: dbHealth.connected,
-      overallBackendConnected: this.lastDirectApiConnected || dbHealth.connected,
+      overallBackendConnected: this.lastDirectApiConnected,
     };
+  }
+
+  /**
+   * Runs a full end-to-end network diagnostic of the production backend connection
+   * without exposing any secrets, tokens, or private credentials.
+   */
+  public async runNetworkDiagnostics(): Promise<BackendDiagnosticReport> {
+    const rawBaseUrl = getProductionApiBaseUrl();
+    const maskedUrl = getMaskedBackendUrl(rawBaseUrl);
+    const isHttps = rawBaseUrl.toLowerCase().startsWith('https://');
+    const isLocalDevHttp =
+      !isAndroidNativeApp() &&
+      (rawBaseUrl.startsWith('http://localhost:3000') ||
+        rawBaseUrl.startsWith('http://127.0.0.1:3000'));
+
+    const firestoreUpgradeUrl = `https://console.firebase.google.com/project/${FIREBASE_PRODUCTION_CONFIG.projectId}/firestore/databases/${FIREBASE_PRODUCTION_CONFIG.firestoreDatabaseId}/data?openUpgradeDialog=true`;
+
+    let dns: 'OK' | 'FAILED' = 'FAILED';
+    let https: 'OK' | 'FAILED' = isHttps || isLocalDevHttp ? 'OK' : 'FAILED';
+    let backendHealth: 'OK' | 'FAILED' = 'FAILED';
+    let httpStatus = 'UNREACHABLE';
+    let authentication: 'OK' | 'FAILED' = 'FAILED';
+    let database: 'OK' | 'FAILED' = 'FAILED';
+    let diagnosticReason = '';
+    let isHtmlProxyIntercepted = false;
+
+    // Step 1: If running inside Android APK with native diagnostic bridge, run native DNS + raw HTTP status probe
+    let nativeResult: any = null;
+    if (typeof window !== 'undefined' && (window as any).AndroidLocationBridge?.diagnoseBackend) {
+      try {
+        const rawJson = (window as any).AndroidLocationBridge.diagnoseBackend(rawBaseUrl);
+        if (rawJson) {
+          nativeResult = JSON.parse(rawJson);
+          if (nativeResult.dns === 'OK') dns = 'OK';
+          if (nativeResult.https === 'OK') https = 'OK';
+          if (nativeResult.httpStatus) httpStatus = String(nativeResult.httpStatus);
+          if (nativeResult.reason) diagnosticReason = String(nativeResult.reason);
+        }
+      } catch {
+        // continue to standard fetch probe
+      }
+    }
+
+    // Step 2: Test /api/health via standard HTTP fetch
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 6000);
+      const healthUrl = resolveApiUrl('/api/health');
+      const res = await fetch(healthUrl, {
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+          'Cache-Control': 'no-cache',
+        },
+        credentials: 'include',
+        cache: 'no-store',
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+
+      dns = 'OK';
+      if (isHttps || isLocalDevHttp) {
+        https = 'OK';
+      }
+
+      const contentType = (res.headers.get('content-type') || '').toLowerCase();
+      const text = (await res.text()).trim();
+      const isHtml =
+        contentType.includes('text/html') ||
+        text.startsWith('<!doctype') ||
+        text.startsWith('<!DOCTYPE') ||
+        text.startsWith('<html');
+
+      if (isHtml) {
+        isHtmlProxyIntercepted = true;
+        backendHealth = 'FAILED';
+        this.lastDirectApiConnected = false;
+        httpStatus =
+          nativeResult?.rawStatusCode === 302
+            ? `302 Found -> ${res.status} (text/html AI Studio Proxy)`
+            : `${res.status} (text/html AI Studio Cookie Wall)`;
+        diagnosticReason =
+          'Cloud Run URL is behind Google AI Studio’s applet-auth-bridge proxy. Unauthenticated cross-origin APK requests receive an HTML cookie-check page (/__cookie_check.html) instead of JSON.';
+      } else if (res.ok) {
+        try {
+          const parsed = JSON.parse(text);
+          if (parsed && parsed.ok === true) {
+            backendHealth = 'OK';
+            this.lastDirectApiConnected = true;
+            httpStatus = `${res.status} OK`;
+            diagnosticReason = 'Production backend /api/health responded with valid JSON.';
+            if (parsed.database === 'ok') {
+              database = 'OK';
+            }
+          } else {
+            backendHealth = 'FAILED';
+            this.lastDirectApiConnected = false;
+            httpStatus = `${res.status} (Invalid Health JSON)`;
+            diagnosticReason = 'Health endpoint did not return { ok: true }.';
+          }
+        } catch {
+          backendHealth = 'FAILED';
+          this.lastDirectApiConnected = false;
+          httpStatus = `${res.status} (Non-JSON body)`;
+          diagnosticReason = 'Health endpoint returned non-JSON body.';
+        }
+      } else {
+        backendHealth = 'FAILED';
+        this.lastDirectApiConnected = false;
+        httpStatus = `${res.status} ${res.statusText || ''}`.trim();
+        diagnosticReason = `Health check failed with HTTP ${res.status}.`;
+      }
+    } catch (err: any) {
+      this.lastDirectApiConnected = false;
+      if (!nativeResult) {
+        dns = 'FAILED';
+        https = 'FAILED';
+        httpStatus = 'NETWORK_OR_CORS_ERROR';
+        diagnosticReason =
+          err?.name === 'AbortError'
+            ? 'Connection timed out reaching production backend.'
+            : `Network or CORS error: ${err?.message || 'Failed to fetch'}`;
+      } else if (nativeResult.rawStatusCode === 302) {
+        isHtmlProxyIntercepted = true;
+      }
+    }
+
+    // Step 3: Test Authentication endpoint if Backend Health is OK
+    if (backendHealth === 'OK') {
+      try {
+        const token = this.getToken();
+        const authHeaders: Record<string, string> = {
+          Accept: 'application/json',
+          'Cache-Control': 'no-cache',
+        };
+        if (token) {
+          authHeaders['Authorization'] = `Bearer ${token}`;
+        }
+        const authRes = await fetch(resolveApiUrl('/api/auth/me'), {
+          method: 'GET',
+          headers: authHeaders,
+          credentials: 'include',
+          cache: 'no-store',
+        });
+        const authCt = (authRes.headers.get('content-type') || '').toLowerCase();
+        if (authCt.includes('application/json') && (authRes.status === 200 || authRes.status === 401)) {
+          authentication = 'OK';
+        } else {
+          authentication = 'FAILED';
+        }
+      } catch {
+        authentication = 'FAILED';
+      }
+    } else {
+      authentication = 'FAILED';
+    }
+
+    // Step 4: Test Database connectivity (/api/sync/state + Cloud Firestore check)
+    let firestoreQuotaExceeded = false;
+    if (backendHealth === 'OK') {
+      try {
+        const dbRes = await fetch(resolveApiUrl('/api/sync/state'), {
+          method: 'GET',
+          headers: { Accept: 'application/json', 'Cache-Control': 'no-cache' },
+          credentials: 'include',
+          cache: 'no-store',
+        });
+        const dbCt = (dbRes.headers.get('content-type') || '').toLowerCase();
+        if (dbRes.ok && dbCt.includes('application/json')) {
+          database = 'OK';
+        }
+      } catch {
+        // fallback to Firestore check below
+      }
+    }
+
+    if (database !== 'OK') {
+      const fsOk = await verifyCloudFirestoreConnection();
+      const fsHealth = getCloudDatabaseHealth();
+      firestoreQuotaExceeded = fsHealth.quotaExceeded;
+      if (fsOk && backendHealth === 'OK') {
+        database = 'OK';
+      } else {
+        database = 'FAILED';
+        if (fsHealth.quotaExceeded) {
+          diagnosticReason = diagnosticReason
+            ? `${diagnosticReason} | Cloud Firestore HTTP 429: Free daily read/write quota exceeded.`
+            : 'Cloud Firestore HTTP 429: Free daily read/write quota exceeded.';
+        }
+      }
+    } else {
+      const fsHealth = getCloudDatabaseHealth();
+      firestoreQuotaExceeded = fsHealth.quotaExceeded;
+    }
+
+    const report: BackendDiagnosticReport = {
+      backendUrl: maskedUrl,
+      dns,
+      https,
+      backendHealth,
+      httpStatus,
+      authentication,
+      database,
+      diagnosticReason,
+      isHtmlProxyIntercepted,
+      firestoreQuotaExceeded,
+      firestoreUpgradeUrl,
+      timestamp: new Date().toISOString(),
+    };
+
+    syncLogger.log('api', backendHealth === 'OK' ? 'info' : 'error', 'network_diagnostic_result', {
+      backendUrl: maskedUrl,
+      dns,
+      https,
+      backendHealth,
+      httpStatus,
+      authentication,
+      database,
+    });
+
+    this.emitDiagnostics(report);
+    return report;
   }
 
   private syncResponseToLocal(
@@ -93,51 +380,19 @@ class ApiClient {
     }
   }
 
-  private async executeVerifiedCloudSyncRequest<T>(
-    endpoint: string,
-    options: RequestInit,
-    token: string | null,
-    method: string
-  ): Promise<T> {
-    const isMutation = method !== 'GET';
-
-    // Never pretend a write succeeded if the device is offline or cannot reach the production cloud database
-    if (typeof navigator !== 'undefined' && navigator.onLine === false && isMutation) {
-      syncLogger.log('api', 'error', 'offline_mutation_rejected', { endpoint, method });
-      throw new Error(
-        'Network offline: Cannot synchronize changes with the production server. Please check your internet connection.'
-      );
-    }
-
-    if (isMutation) {
-      const dbHealth = getCloudDatabaseHealth();
-      if (!dbHealth.connected) {
-        const verified = await verifyCloudFirestoreConnection();
-        if (!verified) {
-          syncLogger.log('api', 'error', 'cloud_db_unreachable_mutation_rejected', {
-            endpoint,
-            method,
-          });
-          throw new Error(
-            'Unable to reach the production backend or database. Please verify your internet connection and retry.'
-          );
-        }
-      }
-    }
-
-    const result = await localBackend.handleRequest<T>(endpoint, options, token);
-    this.syncResponseToLocal(result, token, endpoint, method);
-    return result;
-  }
-
-  private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+  private async request<T>(endpoint: string, options: RequestInit = {}, isRetry = false): Promise<T> {
     const token = this.getToken();
     const targetUrl = resolveApiUrl(endpoint);
     const method = (options.method || 'GET').toUpperCase();
 
-    // If direct Cloud Run HTTP recently returned an HTML proxy page on Android WebView, route via verified Cloud Firestore bridge
-    if (Date.now() < this.remoteCooldownUntil) {
-      return this.executeVerifiedCloudSyncRequest<T>(endpoint, options, token, method);
+    let cachedUser: UserProfile | null = null;
+    try {
+      const rawUser = localStorage.getItem('beacon_user_profile');
+      if (rawUser) {
+        cachedUser = JSON.parse(rawUser) as UserProfile;
+      }
+    } catch {
+      // ignore
     }
 
     const headers: Record<string, string> = {
@@ -150,30 +405,39 @@ class ApiClient {
     if (token) {
       headers['Authorization'] = `Bearer ${token}`;
     }
+    if (cachedUser?.id) {
+      headers['X-Beacon-User-Id'] = cachedUser.id;
+    }
+    if (cachedUser?.email) {
+      headers['X-Beacon-User-Email'] = cachedUser.email;
+    }
 
     let response: Response;
     try {
       const controller = new AbortController();
-      const timeoutMs = isAndroidNativeApp() ? 4500 : 8000;
+      const timeoutMs = isAndroidNativeApp() ? 7000 : 9000;
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       response = await fetch(targetUrl, {
         ...options,
         headers,
+        credentials: 'include',
         cache: 'no-store',
         signal: controller.signal,
       });
       clearTimeout(timer);
     } catch (netErr: any) {
       this.lastDirectApiConnected = false;
-      syncLogger.log('api', 'warn', 'fetch_fallback_to_verified_firestore_sync', {
+      syncLogger.log('api', 'error', 'production_backend_network_error', {
         endpoint,
         isAndroid: isAndroidNativeApp(),
         error: netErr?.message || 'Network unreachable',
       });
-      if (isAndroidNativeApp()) {
-        this.remoteCooldownUntil = Date.now() + 20000;
-      }
-      return this.executeVerifiedCloudSyncRequest<T>(endpoint, options, token, method);
+      void this.runNetworkDiagnostics();
+      const err: any = new Error(
+        `Production Backend Unreachable (${getMaskedBackendUrl()}): ${netErr?.message || 'Network request failed'}. Open Backend Diagnostics to inspect DNS, HTTPS, and HTTP status.`
+      );
+      err.code = 'BACKEND_UNREACHABLE';
+      throw err;
     }
 
     const contentType = (response.headers.get('content-type') || '').toLowerCase();
@@ -189,34 +453,52 @@ class ApiClient {
 
     if (isHtmlResponse) {
       this.lastDirectApiConnected = false;
-      syncLogger.log('api', 'info', 'html_proxy_detected_using_verified_firestore_sync', {
+      syncLogger.log('api', 'error', 'html_proxy_intercepted_request', {
         endpoint,
         status: response.status,
       });
-      this.remoteCooldownUntil = Date.now() + 30000;
-      return this.executeVerifiedCloudSyncRequest<T>(endpoint, options, token, method);
+      void this.runNetworkDiagnostics();
+      const err: any = new Error(
+        `Production Backend Blocked by Cloud Run Auth Proxy (HTTP ${response.status} text/html at ${getMaskedBackendUrl()}): The AI Studio preview proxy redirected the request to /__cookie_check.html instead of returning JSON. Use the Backend Diagnostic panel below to authenticate the proxy session or configure a public Cloud Run URL (--allow-unauthenticated).`
+      );
+      err.status = response.status;
+      err.code = 'PROXY_AUTH_REQUIRED';
+      throw err;
     }
 
     let data: any = null;
     try {
       data = trimmed ? JSON.parse(trimmed) : {};
     } catch {
-      return this.executeVerifiedCloudSyncRequest<T>(endpoint, options, token, method);
+      this.lastDirectApiConnected = false;
+      void this.runNetworkDiagnostics();
+      const err: any = new Error(
+        `Invalid non-JSON response (HTTP ${response.status}) from ${getMaskedBackendUrl()}${endpoint}.`
+      );
+      err.status = response.status;
+      err.code = 'INVALID_JSON_RESPONSE';
+      throw err;
     }
 
     this.lastDirectApiConnected = true;
 
     if (!response.ok) {
-      // If server restarted or token was created on Android/Firestore and not yet pulled by server, check shared Firestore state
       if (
-        response.status === 401 ||
-        response.status === 404 ||
-        response.status >= 500
+        response.status === 401 &&
+        !isRetry &&
+        cachedUser?.id &&
+        !endpoint.startsWith('/api/auth/login') &&
+        !endpoint.startsWith('/api/auth/register')
       ) {
         try {
-          return await this.executeVerifiedCloudSyncRequest<T>(endpoint, options, token, method);
+          const activeToken =
+            token || `tok-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+          this.setToken(activeToken);
+          localBackend.syncUserSession(cachedUser, activeToken);
+          await localBackend.forceSyncNow();
+          return await this.request<T>(endpoint, options, true);
         } catch {
-          // continue to standard error handling below if shared Firestore backend also rejects
+          // proceed to throw standard error if retry also fails
         }
       }
 

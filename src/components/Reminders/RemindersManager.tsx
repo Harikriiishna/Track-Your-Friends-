@@ -43,7 +43,7 @@ export const RemindersManager: React.FC<RemindersManagerProps> = ({
       const res = await api.get<{ reminders: ReminderItem[] }>('/api/reminders');
       setReminders(res.reminders);
     } catch (err) {
-      console.error('Failed to load reminders:', err);
+      console.warn('Could not load reminders:', err);
     }
   };
 

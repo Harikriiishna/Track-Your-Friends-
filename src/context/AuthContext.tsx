@@ -61,12 +61,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     async function checkAuth() {
       const storedToken = api.getToken();
       if (!storedToken) {
+        persistUser(null);
         setIsLoading(false);
         return;
       }
 
+      setToken(storedToken);
+
       try {
         const data = await api.get<{ user: UserProfile }>('/api/auth/me');
+        const latestToken = api.getToken();
+        if (latestToken) {
+          setToken(latestToken);
+        }
         persistUser(data.user);
       } catch (err: any) {
         // Only clear token if the server explicitly rejected the credentials with 401

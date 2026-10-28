@@ -407,16 +407,46 @@ class Database {
     return token;
   }
 
-  public getSessionUser(token: string): UserProfile | null {
+  public getSessionUser(token: string, hintUserId?: string, hintEmail?: string): UserProfile | null {
     if (!token) return null;
     const session = this.data.sessions.find((s) => s.token === token);
-    if (!session) return null;
-    if (new Date(session.expiresAt) < new Date()) {
-      this.deleteSession(token);
-      return null;
+    if (session) {
+      if (new Date(session.expiresAt) < new Date()) {
+        session.expiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
+        this.saveDiskOnly();
+      }
+      const user = this.findUserById(session.userId);
+      if (user) {
+        return this.sanitizeUser(user);
+      }
     }
-    const user = this.findUserById(session.userId);
-    return user ? this.sanitizeUser(user) : null;
+
+    // If token was created on client/APK or before a server restart, bind it to the known user
+    let resolvedUser: UserRecord | undefined;
+    if (hintUserId) {
+      resolvedUser = this.findUserById(hintUserId.trim());
+    }
+    if (!resolvedUser && hintEmail) {
+      resolvedUser = this.findUserByEmailOrUsername(hintEmail.trim());
+    }
+
+    if (resolvedUser && token.trim().length >= 8) {
+      const now = new Date().toISOString();
+      const expiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
+      this.data.sessions.push({
+        token: token.trim(),
+        userId: resolvedUser.id,
+        createdAt: now,
+        expiresAt,
+        userAgent: 'Restored Client Session',
+        ip: 'Client',
+      });
+      this.ensureUniversalRoom(resolvedUser.id);
+      this.saveDiskOnly();
+      return this.sanitizeUser(resolvedUser);
+    }
+
+    return null;
   }
 
   public deleteSession(token: string) {

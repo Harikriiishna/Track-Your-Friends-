@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import { PWAInstallButton } from '../Navigation/PWAInstallButton.tsx';
 import { WebsiteLaunchModal } from '../Navigation/WebsiteLaunchModal.tsx';
+import { BackendDiagnosticPanel } from '../Navigation/BackendDiagnosticPanel.tsx';
 
 interface ErrorInfo {
   message: string;
@@ -632,6 +633,10 @@ export const AuthScreen: React.FC = () => {
             </button>
             <PWAInstallButton compact={false} />
           </div>
+        </div>
+
+        <div className="mt-4 pt-3 border-t border-slate-800">
+          <BackendDiagnosticPanel compactByDefault={false} />
         </div>
 
         <div className="mt-4 pt-3 border-t border-slate-800 flex items-center justify-center gap-2 text-[11px] text-slate-500">

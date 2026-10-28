@@ -27,7 +27,7 @@ export const MeetingsManager: React.FC<MeetingsManagerProps> = ({ rooms }) => {
       const res = await api.get<{ meetings: MeetingItem[] }>('/api/meetings');
       setMeetings(res.meetings);
     } catch (err) {
-      console.error('Failed to load meetings:', err);
+      console.warn('Could not load meetings:', err);
     }
   };
 

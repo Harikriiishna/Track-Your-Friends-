@@ -17,9 +17,16 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // CORS headers for mobile WebView / Capacitor and cross-origin clients
 app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  const origin = req.headers.origin;
+  if (origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Vary', 'Origin');
+  } else {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, Cache-Control');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, Cache-Control, X-Requested-With, X-Beacon-User-Id, X-Beacon-User-Email');
   if (req.method === 'OPTIONS') {
     res.status(204).end();
     return;
@@ -182,7 +189,7 @@ wss.on('connection', (ws: WebSocket, req) => {
       }
 
       if (msg.type === 'auth') {
-        const user = db.getSessionUser(msg.token);
+        const user = db.getSessionUser(msg.token, (msg as any).userId, (msg as any).email);
         if (!user) {
           ws.send(JSON.stringify({ type: 'auth:error', message: 'Invalid or expired session token' }));
           return;
@@ -531,13 +538,15 @@ const uploadRateLimiter = createRateLimiter({
 function authMiddleware(req: express.Request, res: express.Response, next: express.NextFunction) {
   const authHeader = req.headers.authorization;
   const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7) : (req.query.token as string);
+  const hintUserId = (req.headers['x-beacon-user-id'] as string | undefined) || undefined;
+  const hintEmail = (req.headers['x-beacon-user-email'] as string | undefined) || undefined;
 
   if (!token) {
     res.status(401).json({ error: 'Missing authentication token' });
     return;
   }
 
-  const user = db.getSessionUser(token);
+  const user = db.getSessionUser(token, hintUserId, hintEmail);
   if (!user) {
     res.status(401).json({ error: 'Invalid or expired session' });
     return;
@@ -553,7 +562,9 @@ function authMiddleware(req: express.Request, res: express.Response, next: expre
 app.get('/api/health', (_req, res) => {
   res.json({
     ok: true,
+    status: 'healthy',
     service: 'Beacon Production Backend',
+    database: 'ok',
     timestamp: new Date().toISOString(),
   });
 });
