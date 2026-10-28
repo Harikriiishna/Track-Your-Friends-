@@ -246,32 +246,41 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
     if (api.isUsingLocalBackend()) {
       setIsConnected(true);
-      setOnlineUserIds([user.id]);
-      api
-        .get<{ locations: UserLocation[] }>('/api/locations/live')
-        .then((res) => {
-          if (isMounted && res?.locations) {
-            const ownRow = res.locations.find((l) => l.userId === user.id);
-            if (ownRow) {
-              setDebugTelemetry((prev) => ({
-                ...prev,
-                readFromDb: {
-                  lat: ownRow.lat ?? ownRow.latitude,
-                  lng: ownRow.lng ?? ownRow.longitude,
-                  accuracy_m: ownRow.accuracy_m ?? ownRow.accuracy,
-                  updated_at: ownRow.updated_at ?? ownRow.timestamp,
-                },
-              }));
+      const syncLiveLocations = () => {
+        api
+          .get<{ locations: UserLocation[] }>('/api/locations/live')
+          .then((res) => {
+            if (isMounted && res?.locations) {
+              const ownRow = res.locations.find((l) => l.userId === user.id);
+              if (ownRow) {
+                setDebugTelemetry((prev) => ({
+                  ...prev,
+                  readFromDb: {
+                    lat: ownRow.lat ?? ownRow.latitude,
+                    lng: ownRow.lng ?? ownRow.longitude,
+                    accuracy_m: ownRow.accuracy_m ?? ownRow.accuracy,
+                    updated_at: ownRow.updated_at ?? ownRow.timestamp,
+                  },
+                }));
+              }
+              const peersOnly = res.locations.filter((l) => l.userId !== user.id);
+              const nextList = myLocationRef.current
+                ? [...peersOnly, myLocationRef.current]
+                : res.locations;
+              setUserLocations(nextList);
+              setOnlineUserIds(
+                Array.from(new Set([user.id, ...nextList.map((l) => l.userId)]))
+              );
             }
-            const peersOnly = res.locations.filter((l) => l.userId !== user.id);
-            setUserLocations(
-              myLocationRef.current ? [...peersOnly, myLocationRef.current] : peersOnly
-            );
-          }
-        })
-        .catch(() => {});
+          })
+          .catch(() => {});
+      };
+      syncLiveLocations();
+      const locPollInterval = setInterval(syncLiveLocations, 5000);
       return () => {
         isMounted = false;
+        clearInterval(alertPollInterval);
+        clearInterval(locPollInterval);
       };
     }
 

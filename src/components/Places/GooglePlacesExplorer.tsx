@@ -5,7 +5,11 @@ import { useTheme } from '../../context/ThemeContext.tsx';
 import { useToast } from '../../context/ToastContext.tsx';
 import { api } from '../../utils/api.ts';
 import { calculateDistanceMeters, formatDistance } from '../../utils/geo.ts';
-import { fetchRealNearbyPlaces, deduplicateAndSortPlaces } from '../../utils/nearbyPlaces.ts';
+import {
+  fetchRealNearbyPlaces,
+  deduplicateAndSortPlaces,
+  searchRealPlacesByQuery,
+} from '../../utils/nearbyPlaces.ts';
 import type { PlaceResult, RouteData, NavigationStep, SavedPlace, Room } from '../../types.ts';
 import {
   ArrowLeft,
@@ -122,6 +126,7 @@ export const GooglePlacesExplorer: React.FC<GooglePlacesExplorerProps> = ({
 
   const searchInputRef = useRef<HTMLInputElement>(null);
   const debounceTimerRef = useRef<any>(null);
+  const requestIdRef = useRef<number>(0);
 
   // Reference coordinates for nearby lookup (strictly real GPS only)
   const hasValidCoords = Boolean(
@@ -131,6 +136,24 @@ export const GooglePlacesExplorer: React.FC<GooglePlacesExplorerProps> = ({
   );
   const userLat = myLocation?.latitude ?? 0;
   const userLon = myLocation?.longitude ?? 0;
+
+  // Stabilized GPS anchor so 1-meter GPS jitter every second does NOT cancel or re-fire network requests
+  const [anchorCoords, setAnchorCoords] = useState<{ lat: number; lon: number } | null>(() =>
+    hasValidCoords ? { lat: userLat, lon: userLon } : null
+  );
+
+  useEffect(() => {
+    if (!hasValidCoords) return;
+    setAnchorCoords((prev) => {
+      if (!prev) return { lat: userLat, lon: userLon };
+      const movedMeters = calculateDistanceMeters(prev.lat, prev.lon, userLat, userLon);
+      // Only update anchor if user moved more than 150 meters
+      if (movedMeters > 150) {
+        return { lat: userLat, lon: userLon };
+      }
+      return prev;
+    });
+  }, [hasValidCoords, userLat, userLon]);
 
   const CATEGORIES = [
     { id: 'all', label: 'All Nearby', icon: Sparkles, color: 'text-sky-400 bg-sky-500/20 border-sky-500/30' },
@@ -172,58 +195,82 @@ export const GooglePlacesExplorer: React.FC<GooglePlacesExplorerProps> = ({
     } catch (_) {}
   };
 
-  // 1. Fetch Places Nearby Me (Overpass + Photon multi-source discovery)
-  const fetchNearbyPlaces = useCallback(async (cat: string, radius: number) => {
-    if (!hasValidCoords) {
-      setNearbyPlaces([]);
-      return;
-    }
-    try {
-      setIsLoadingNearby(true);
-      const [directPlaces, apiRes] = await Promise.all([
-        fetchRealNearbyPlaces(userLat, userLon, cat, radius).catch(() => [] as PlaceResult[]),
-        api
-          .get<{ results: PlaceResult[] }>(
-            `/api/locations/nearby?lat=${userLat}&lon=${userLon}&category=${encodeURIComponent(cat)}&radius=${radius}`
-          )
-          .catch(() => ({ results: [] as PlaceResult[] })),
-      ]);
+  // 1. Fetch Places Nearby Me (Overpass + Photon + Nominatim multi-source discovery)
+  const fetchNearbyPlaces = useCallback(
+    async (cat: string, radius: number, forceRefresh = false) => {
+      const targetLat = anchorCoords?.lat ?? (hasValidCoords ? userLat : 0);
+      const targetLon = anchorCoords?.lon ?? (hasValidCoords ? userLon : 0);
+      if (!hasValidCoords || (!targetLat && !targetLon)) {
+        setNearbyPlaces([]);
+        return;
+      }
 
-      const merged = deduplicateAndSortPlaces(
-        [...directPlaces, ...(apiRes?.results || [])],
-        userLat,
-        userLon,
-        radius
-      ).map((place, idx) => {
-        const dist = calculateDistanceMeters(userLat, userLon, place.lat, place.lon);
-        const driveMins = Math.max(1, Math.round((dist / 1000 / 30) * 60));
-        const rating = place.rating || Number((4.3 + ((idx * 3) % 7) * 0.1).toFixed(1));
-        return {
-          ...place,
-          distanceMeters: dist,
-          estimatedDriveMinutes: driveMins,
-          rating,
-          isOpen: idx % 5 !== 0,
-        };
-      });
+      const currentReqId = ++requestIdRef.current;
 
-      setNearbyPlaces(merged);
-    } catch (err: any) {
-      console.warn('Failed to fetch nearby places:', err);
-      toast.error('Unable to fetch nearby places right now');
-    } finally {
-      setIsLoadingNearby(false);
-    }
-  }, [hasValidCoords, userLat, userLon, toast]);
+      try {
+        setIsLoadingNearby(true);
+        let directPlaces = await fetchRealNearbyPlaces(
+          targetLat,
+          targetLon,
+          cat,
+          radius,
+          forceRefresh
+        ).catch(() => [] as PlaceResult[]);
 
-  // Initial load of nearby places
+        // Fallback to backend route only if direct multi-source lookup returned nothing
+        if (directPlaces.length === 0) {
+          const apiRes = await api
+            .get<{ results: PlaceResult[] }>(
+              `/api/locations/nearby?lat=${targetLat}&lon=${targetLon}&category=${encodeURIComponent(cat)}&radius=${radius}`
+            )
+            .catch(() => ({ results: [] as PlaceResult[] }));
+          directPlaces = apiRes?.results || [];
+        }
+
+        if (currentReqId !== requestIdRef.current) return;
+
+        const merged = deduplicateAndSortPlaces(
+          directPlaces,
+          targetLat,
+          targetLon,
+          Math.max(radius, 15000)
+        ).map((place, idx) => {
+          const dist = calculateDistanceMeters(targetLat, targetLon, place.lat, place.lon);
+          const driveMins = Math.max(1, Math.round((dist / 1000 / 30) * 60));
+          const rating = place.rating || Number((4.3 + ((idx * 3) % 7) * 0.1).toFixed(1));
+          return {
+            ...place,
+            distanceMeters: dist,
+            estimatedDriveMinutes: driveMins,
+            rating,
+            isOpen: idx % 5 !== 0,
+          };
+        });
+
+        setNearbyPlaces(merged);
+      } catch (err: any) {
+        if (currentReqId !== requestIdRef.current) return;
+        console.warn('Failed to fetch nearby places:', err);
+        toast.error('Unable to fetch nearby places right now');
+      } finally {
+        if (currentReqId === requestIdRef.current) {
+          setIsLoadingNearby(false);
+        }
+      }
+    },
+    [hasValidCoords, anchorCoords, userLat, userLon, toast]
+  );
+
+  // Initial load of nearby places (re-runs only when category, radius, or stabilized anchor changes)
   useEffect(() => {
-    fetchNearbyPlaces(selectedCategory, nearbyRadius);
-  }, [fetchNearbyPlaces, selectedCategory, nearbyRadius]);
+    if (!anchorCoords) return;
+    fetchNearbyPlaces(selectedCategory, nearbyRadius, false);
+  }, [anchorCoords, selectedCategory, nearbyRadius]);
 
-  // 2. Perform Keyword Search
+  // 2. Perform Keyword Search (Multi-source: ArcGIS + Photon + Open-Meteo + Nominatim)
   const executeSearch = async (queryText: string) => {
-    if (!queryText.trim() || queryText.trim().length < 2) {
+    const cleanQuery = (queryText || '').trim();
+    if (!cleanQuery || cleanQuery.length < 2) {
       setSearchResults([]);
       return;
     }
@@ -231,15 +278,31 @@ export const GooglePlacesExplorer: React.FC<GooglePlacesExplorerProps> = ({
     try {
       setIsLoadingSearch(true);
       setActiveTab('search');
-      const latLonQuery = `&lat=${userLat}&lon=${userLon}`;
 
-      const res = await api.get<{ results: PlaceResult[] }>(
-        `/api/locations/search?q=${encodeURIComponent(queryText.trim())}${latLonQuery}`
-      );
+      let rawPlaces = await searchRealPlacesByQuery(
+        cleanQuery,
+        hasValidCoords ? userLat : undefined,
+        hasValidCoords ? userLon : undefined
+      ).catch(() => [] as PlaceResult[]);
 
-      const enhanced: PlaceResult[] = (res.results || []).map((place, idx) => {
-        const distMeters = calculateDistanceMeters(userLat, userLon, place.lat, place.lon);
-        const driveMins = Math.max(1, Math.round((distMeters / 1000 / 30) * 60));
+      if (rawPlaces.length === 0) {
+        const latLonQuery = hasValidCoords ? `&lat=${userLat}&lon=${userLon}` : '';
+        const res = await api
+          .get<{ results: PlaceResult[] }>(
+            `/api/locations/search?q=${encodeURIComponent(cleanQuery)}${latLonQuery}`
+          )
+          .catch(() => ({ results: [] as PlaceResult[] }));
+        rawPlaces = res.results || [];
+      }
+
+      const enhanced: PlaceResult[] = rawPlaces.map((place, idx) => {
+        const distMeters = hasValidCoords
+          ? calculateDistanceMeters(userLat, userLon, place.lat, place.lon)
+          : place.distanceMeters;
+        const driveMins =
+          typeof distMeters === 'number'
+            ? Math.max(1, Math.round((distMeters / 1000 / 30) * 60))
+            : undefined;
         const rating = Number((4.3 + ((idx * 7) % 7) * 0.1).toFixed(1));
 
         return {
@@ -516,7 +579,12 @@ export const GooglePlacesExplorer: React.FC<GooglePlacesExplorerProps> = ({
           {/* Quick Refresh Nearby */}
           {activeTab === 'nearby' && (
             <button
-              onClick={() => fetchNearbyPlaces(selectedCategory, nearbyRadius)}
+              onClick={() => {
+                if (hasValidCoords) {
+                  setAnchorCoords({ lat: userLat, lon: userLon });
+                }
+                fetchNearbyPlaces(selectedCategory, nearbyRadius, true);
+              }}
               disabled={isLoadingNearby}
               className="p-1.5 rounded-xl bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700 transition-colors cursor-pointer text-xs flex items-center gap-1"
               title="Refresh nearby places"

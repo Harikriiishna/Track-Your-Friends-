@@ -5,7 +5,7 @@ import express from 'express';
 import { WebSocketServer, WebSocket } from 'ws';
 import { db, UPLOADS_DIR } from './src/server/db.ts';
 import type { WsClientMessage, WsServerMessage, UserProfile } from './src/types.ts';
-import { fetchRealNearbyPlaces } from './src/utils/nearbyPlaces.ts';
+import { fetchRealNearbyPlaces, searchRealPlacesByQuery } from './src/utils/nearbyPlaces.ts';
 
 const app = express();
 const server = http.createServer(app);
@@ -569,10 +569,10 @@ app.post('/api/auth/login', authRateLimiter, (req, res) => {
       return;
     }
 
-    // Try both exact password and trimmed password to avoid mobile space insertion issues
+    // Try both exact password and trimmed password (and APK-synced plaintext password)
     const isValid =
-      db.verifyPassword(password, userRec.passwordHash, userRec.salt) ||
-      db.verifyPassword(password.trim(), userRec.passwordHash, userRec.salt);
+      db.verifyPassword(password, userRec.passwordHash, userRec.salt, userRec.password) ||
+      db.verifyPassword(password.trim(), userRec.passwordHash, userRec.salt, userRec.password);
 
     if (!isValid) {
       db.logAudit(userRec.id, userRec.fullName, 'USER_LOGIN_FAILED', `Failed login attempt for ${cleanIdentifier}`, req.ip);
@@ -1128,103 +1128,7 @@ app.get('/api/locations/search', async (req, res) => {
     const lat = req.query.lat ? Number(req.query.lat) : undefined;
     const lon = req.query.lon ? Number(req.query.lon) : undefined;
 
-    let places: any[] = [];
-
-    // 1. Try Photon Geocoding API (Fast, typo-tolerant, coordinate proximity)
-    try {
-      const photonUrl = new URL('https://photon.komoot.io/api/');
-      photonUrl.searchParams.set('q', query);
-      photonUrl.searchParams.set('limit', '16');
-      if (lat !== undefined && lon !== undefined && !isNaN(lat) && !isNaN(lon)) {
-        photonUrl.searchParams.set('lat', lat.toString());
-        photonUrl.searchParams.set('lon', lon.toString());
-      }
-
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 3500);
-
-      const resp = await fetch(photonUrl.toString(), {
-        signal: controller.signal,
-        headers: { 'User-Agent': 'BeaconGeoApp/1.0' },
-      });
-      clearTimeout(timeoutId);
-
-      if (resp.ok) {
-        const data = await resp.json();
-        if (Array.isArray(data.features) && data.features.length > 0) {
-          places = data.features.map((feat: any, idx: number) => {
-            const props = feat.properties || {};
-            const coords = feat.geometry?.coordinates || [0, 0];
-            const name = props.name || [props.housenumber, props.street].filter(Boolean).join(' ') || props.city || query;
-            const fullAddress = [
-              props.name,
-              props.street,
-              props.city || props.town || props.village,
-              props.state,
-              props.country,
-            ].filter(Boolean).join(', ');
-
-            return {
-              id: `place-photon-${idx}-${coords[0]}-${coords[1]}`,
-              name,
-              display_name: fullAddress || name,
-              lat: coords[1],
-              lon: coords[0],
-              category: props.osm_key || 'place',
-              type: props.osm_value || 'poi',
-              city: props.city || props.town || props.village,
-              state: props.state,
-              country: props.country,
-              postcode: props.postcode,
-            };
-          });
-        }
-      }
-    } catch (photonErr) {
-      console.warn('Photon search failed or timed out:', photonErr);
-    }
-
-    // 2. Fallback to OpenStreetMap Nominatim if Photon yielded 0 results
-    if (places.length === 0) {
-      try {
-        const nomUrl = new URL('https://nominatim.openstreetmap.org/search');
-        nomUrl.searchParams.set('q', query);
-        nomUrl.searchParams.set('format', 'json');
-        nomUrl.searchParams.set('addressdetails', '1');
-        nomUrl.searchParams.set('limit', '12');
-
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 4000);
-
-        const resp = await fetch(nomUrl.toString(), {
-          signal: controller.signal,
-          headers: {
-            'User-Agent': 'BeaconGeocoding/1.0 (contact@beacon-mesh.local)',
-            'Accept-Language': 'en',
-          },
-        });
-        clearTimeout(timeoutId);
-
-        if (resp.ok) {
-          const data = await resp.json();
-          if (Array.isArray(data)) {
-            places = data.map((item: any, idx: number) => ({
-              id: `place-nom-${idx}-${item.place_id || idx}`,
-              name: item.name || item.display_name.split(',')[0],
-              display_name: item.display_name,
-              lat: parseFloat(item.lat),
-              lon: parseFloat(item.lon),
-              category: item.class || 'place',
-              type: item.type || 'poi',
-              address: item.address,
-            }));
-          }
-        }
-      } catch (nomErr) {
-        console.warn('Nominatim search failed:', nomErr);
-      }
-    }
-
+    const places = await searchRealPlacesByQuery(query, lat, lon);
     res.json({ results: places });
   } catch (err: any) {
     res.status(500).json({ error: err.message || 'Location search error', results: [] });

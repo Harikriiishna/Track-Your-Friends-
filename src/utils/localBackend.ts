@@ -16,14 +16,27 @@ import type {
   UserPathTrail,
   LocationBreadcrumb,
 } from '../types.ts';
-import { fetchRealNearbyPlaces } from './nearbyPlaces.ts';
+import { fetchRealNearbyPlaces, searchRealPlacesByQuery } from './nearbyPlaces.ts';
+import {
+  INITIAL_SEED_USERS,
+  INITIAL_SEED_ROOMS,
+  INITIAL_SEED_ROOM_MEMBERS,
+  mergeDatabaseStates,
+  pullAndMergeCloudState,
+  schedulePushCloudState,
+  verifyPasswordUniversal,
+} from './cloudSync.ts';
 
 interface LocalUserRecord extends UserProfile {
   password?: string;
+  passwordHash?: string;
+  salt?: string;
 }
 
 interface LocalRoomRecord extends Room {
   password?: string;
+  passwordHash?: string;
+  salt?: string;
 }
 
 interface LocalDatabaseSchema {
@@ -59,6 +72,7 @@ interface LocalDatabaseSchema {
     altitude?: number | null;
     timestamp: string;
   }>;
+  deletedIds?: string[];
 }
 
 const STORAGE_KEY = 'beacon_local_db_v1';
@@ -107,14 +121,31 @@ class LocalBackendEngine {
     this.data = this.load();
     this.ensureUniversalRoom();
     this.syncCachedAuthFromStorage();
+    // Immediately pull latest cloud state and set up background sync every 4 seconds
+    void pullAndMergeCloudState(this.data, true).then((updated) => {
+      if (updated) {
+        this.ensureUniversalRoom();
+        this.saveLocalOnly();
+      }
+    });
+    if (typeof window !== 'undefined') {
+      setInterval(() => {
+        void pullAndMergeCloudState(this.data).then((updated) => {
+          if (updated) {
+            this.ensureUniversalRoom();
+            this.saveLocalOnly();
+          }
+        });
+      }, 4000);
+    }
   }
 
   private getInitialSchema(): LocalDatabaseSchema {
     return {
-      users: [],
+      users: INITIAL_SEED_USERS.map((u) => ({ ...u })) as LocalUserRecord[],
       sessions: [],
-      rooms: [{ ...UNIVERSAL_ROOM }],
-      roomMembers: [],
+      rooms: [{ ...UNIVERSAL_ROOM }, ...(INITIAL_SEED_ROOMS.map((r) => ({ ...r })) as LocalRoomRecord[])],
+      roomMembers: INITIAL_SEED_ROOM_MEMBERS.map((m) => ({ ...m })) as any[],
       locations: {},
       savedPlaces: [],
       messages: [],
@@ -126,41 +157,36 @@ class LocalBackendEngine {
       auditLogs: [],
       passwordResets: [],
       locationHistory: [],
+      deletedIds: [],
     };
   }
 
   private load(): LocalDatabaseSchema {
+    const base = this.getInitialSchema();
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
-        const now = Date.now();
-        const freshLocations: Record<string, UserLocation> = {};
-        if (parsed.locations && typeof parsed.locations === 'object') {
-          for (const [uid, loc] of Object.entries(parsed.locations as Record<string, UserLocation>)) {
-            if (loc && loc.timestamp && now - new Date(loc.timestamp).getTime() <= 60 * 1000) {
-              freshLocations[uid] = loc;
-            }
-          }
-        }
-        return {
-          ...this.getInitialSchema(),
-          ...parsed,
-          locations: freshLocations,
-        };
+        mergeDatabaseStates(base, parsed, true);
+        return base;
       }
     } catch (e) {
       console.warn('Failed to load local DB, initializing clean store:', e);
     }
-    return this.getInitialSchema();
+    return base;
   }
 
-  private save() {
+  private saveLocalOnly() {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(this.data));
     } catch (e) {
       console.warn('Failed to persist local DB:', e);
     }
+  }
+
+  private save(immediateCloudPush = false) {
+    this.saveLocalOnly();
+    schedulePushCloudState(this.data, immediateCloudPush);
   }
 
   public syncCachedAuthFromStorage() {
@@ -218,7 +244,7 @@ class LocalBackendEngine {
   }
 
   private sanitizeUser(u: LocalUserRecord): UserProfile {
-    const { password, ...safe } = u;
+    const { password, passwordHash, salt, ...safe } = u;
     return safe;
   }
 
@@ -374,6 +400,29 @@ class LocalBackendEngine {
       }
     }
 
+    // Pull latest cloud state before auth or data queries so Web <-> Android APK data stays in sync
+    if (
+      pathname.startsWith('/api/auth/') ||
+      pathname.startsWith('/api/rooms') ||
+      pathname.startsWith('/api/locations/live') ||
+      pathname.startsWith('/api/saved-places') ||
+      pathname.startsWith('/api/reminders') ||
+      pathname.startsWith('/api/meetings') ||
+      pathname.startsWith('/api/alerts') ||
+      pathname.startsWith('/api/messages') ||
+      pathname.startsWith('/api/users')
+    ) {
+      const forceSync =
+        pathname === '/api/auth/login' ||
+        pathname === '/api/auth/register' ||
+        pathname === '/api/auth/quick-reset';
+      const updated = await pullAndMergeCloudState(this.data, forceSync);
+      if (updated) {
+        this.ensureUniversalRoom();
+        this.saveLocalOnly();
+      }
+    }
+
     // 1. AUTHENTICATION ENDPOINTS
     if (method === 'POST' && pathname === '/api/auth/register') {
       const { email, username, fullName, password, phoneNumber, avatarUrl } = body;
@@ -398,7 +447,7 @@ class LocalBackendEngine {
         existingEmail.lastSeen = new Date().toISOString();
         this.ensureUniversalRoom(existingEmail.id);
         const sessionToken = this.createSession(existingEmail.id);
-        this.save();
+        this.save(true);
         return { user: this.sanitizeUser(existingEmail), token: sessionToken } as unknown as T;
       }
 
@@ -444,7 +493,7 @@ class LocalBackendEngine {
       this.data.users.push(newUser);
       this.ensureUniversalRoom(newUser.id);
       const sessionToken = this.createSession(newUser.id);
-      this.save();
+      this.save(true);
 
       return { user: this.sanitizeUser(newUser), token: sessionToken } as unknown as T;
     }
@@ -472,11 +521,8 @@ class LocalBackendEngine {
         );
       }
 
-      if (
-        userRec.password &&
-        userRec.password !== String(password) &&
-        userRec.password !== String(password).trim()
-      ) {
+      const isValidPass = await verifyPasswordUniversal(String(password), userRec);
+      if (!isValidPass) {
         throw this.createError(
           `Incorrect password for ${userRec.email}. Tap "Reset Password" to set a new password.`,
           401,
@@ -489,11 +535,12 @@ class LocalBackendEngine {
         );
       }
 
+      userRec.password = String(password);
       userRec.isOnline = true;
       userRec.lastSeen = new Date().toISOString();
       this.ensureUniversalRoom(userRec.id);
       const sessionToken = this.createSession(userRec.id);
-      this.save();
+      this.save(true);
 
       return { user: this.sanitizeUser(userRec), token: sessionToken } as unknown as T;
     }
@@ -1220,57 +1267,12 @@ class LocalBackendEngine {
     if (method === 'GET' && pathname === '/api/locations/search') {
       const q = (query.get('q') || '').trim();
       if (!q || q.length < 2) return { results: [] } as unknown as T;
-      const lat = query.get('lat');
-      const lon = query.get('lon');
-      try {
-        const photonUrl = new URL('https://photon.komoot.io/api/');
-        photonUrl.searchParams.set('q', q);
-        photonUrl.searchParams.set('limit', '15');
-        if (lat && lon) {
-          photonUrl.searchParams.set('lat', lat);
-          photonUrl.searchParams.set('lon', lon);
-        }
-        const resp = await fetch(photonUrl.toString());
-        if (resp.ok) {
-          const data = await resp.json();
-          if (Array.isArray(data.features)) {
-            const results = data.features.map((feat: any, idx: number) => {
-              const props = feat.properties || {};
-              const coords = feat.geometry?.coordinates || [0, 0];
-              const name =
-                props.name ||
-                [props.housenumber, props.street].filter(Boolean).join(' ') ||
-                props.city ||
-                q;
-              const fullAddress = [
-                props.name,
-                props.street,
-                props.city || props.town || props.village,
-                props.state,
-                props.country,
-              ]
-                .filter(Boolean)
-                .join(', ');
-              return {
-                id: `place-photon-${idx}-${coords[0]}-${coords[1]}`,
-                name,
-                display_name: fullAddress || name,
-                lat: coords[1],
-                lon: coords[0],
-                category: props.osm_key || 'place',
-                type: props.osm_value || 'poi',
-                city: props.city || props.town || props.village,
-                state: props.state,
-                country: props.country,
-              };
-            });
-            return { results } as unknown as T;
-          }
-        }
-      } catch {
-        // fallback below
-      }
-      return { results: [] } as unknown as T;
+      const latRaw = query.get('lat');
+      const lonRaw = query.get('lon');
+      const lat = latRaw !== null ? Number(latRaw) : undefined;
+      const lon = lonRaw !== null ? Number(lonRaw) : undefined;
+      const results = await searchRealPlacesByQuery(q, lat, lon);
+      return { results } as unknown as T;
     }
 
     if (method === 'GET' && pathname === '/api/locations/nearby') {
@@ -1376,7 +1378,9 @@ class LocalBackendEngine {
     if (method === 'DELETE' && deletePlaceMatch) {
       const placeId = decodeURIComponent(deletePlaceMatch[1]);
       this.data.savedPlaces = this.data.savedPlaces.filter((p) => p.id !== placeId);
-      this.save();
+      if (!this.data.deletedIds) this.data.deletedIds = [];
+      this.data.deletedIds.push(placeId);
+      this.save(true);
       return { success: true } as unknown as T;
     }
 
@@ -1416,7 +1420,9 @@ class LocalBackendEngine {
     if (method === 'DELETE' && deleteReminderMatch) {
       const remId = decodeURIComponent(deleteReminderMatch[1]);
       this.data.reminders = this.data.reminders.filter((r) => r.id !== remId);
-      this.save();
+      if (!this.data.deletedIds) this.data.deletedIds = [];
+      this.data.deletedIds.push(remId);
+      this.save(true);
       return { success: true } as unknown as T;
     }
 
@@ -1458,13 +1464,18 @@ class LocalBackendEngine {
     // 11. EMERGENCY ALERTS
     if (
       method === 'GET' &&
-      (pathname === '/api/alerts/emergency/active' || pathname === '/api/alerts/emergency')
+      (pathname === '/api/alerts/active' ||
+        pathname === '/api/alerts/emergency/active' ||
+        pathname === '/api/alerts/emergency')
     ) {
       const alerts = this.data.emergencyAlerts.filter((a) => a.status === 'active');
       return { alerts } as unknown as T;
     }
 
-    if (method === 'POST' && pathname === '/api/alerts/emergency') {
+    if (
+      method === 'POST' &&
+      (pathname === '/api/alerts/emergency' || pathname === '/api/alerts/create')
+    ) {
       if (!currentUser) throw this.createError('Unauthorized', 401);
       const alert: EmergencyAlert = {
         id: generateId('sos'),
@@ -1482,11 +1493,11 @@ class LocalBackendEngine {
         acknowledgedBy: [],
       };
       this.data.emergencyAlerts.unshift(alert);
-      this.save();
+      this.save(true);
       return { alert } as unknown as T;
     }
 
-    const ackAlertMatch = pathname.match(/^\/api\/alerts\/emergency\/([^/]+)\/ack$/);
+    const ackAlertMatch = pathname.match(/^\/api\/alerts\/(?:emergency\/)?([^/]+)\/ack$/);
     if (method === 'POST' && ackAlertMatch) {
       if (!currentUser) throw this.createError('Unauthorized', 401);
       const alertId = decodeURIComponent(ackAlertMatch[1]);
@@ -1498,26 +1509,28 @@ class LocalBackendEngine {
           name: currentUser.fullName,
           timestamp: new Date().toISOString(),
         });
-        this.save();
+        this.save(true);
       }
       return { alert } as unknown as T;
     }
 
-    const resolveAlertMatch = pathname.match(/^\/api\/alerts\/emergency\/([^/]+)\/resolve$/);
+    const resolveAlertMatch = pathname.match(/^\/api\/alerts\/(?:emergency\/)?([^/]+)\/resolve$/);
     if (method === 'POST' && resolveAlertMatch) {
       const alertId = decodeURIComponent(resolveAlertMatch[1]);
       const alert = this.data.emergencyAlerts.find((a) => a.id === alertId);
       if (!alert) throw this.createError('Alert not found', 404);
       alert.status = 'resolved';
-      this.save();
+      this.save(true);
       return { alert } as unknown as T;
     }
 
-    const deleteAlertMatch = pathname.match(/^\/api\/alerts\/emergency\/([^/]+)$/);
+    const deleteAlertMatch = pathname.match(/^\/api\/alerts\/(?:emergency\/)?([^/]+)$/);
     if (method === 'DELETE' && deleteAlertMatch) {
       const alertId = decodeURIComponent(deleteAlertMatch[1]);
       this.data.emergencyAlerts = this.data.emergencyAlerts.filter((a) => a.id !== alertId);
-      this.save();
+      if (!this.data.deletedIds) this.data.deletedIds = [];
+      this.data.deletedIds.push(alertId);
+      this.save(true);
       return { success: true } as unknown as T;
     }
 

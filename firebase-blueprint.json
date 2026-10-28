@@ -1,0 +1,27 @@
+{
+  "entities": {
+    "BeaconSyncState": {
+      "title": "BeaconSyncState",
+      "description": "Synchronized cross-device application state for users, rooms, locations, messages, saved places, reminders, and emergency alerts.",
+      "type": "object",
+      "properties": {
+        "payload": {
+          "type": "string",
+          "description": "Serialized JSON state payload for cross-device synchronization."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO timestamp of last state sync."
+        }
+      },
+      "required": ["payload", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/beacon_sync/{docId}": {
+      "schema": "BeaconSyncState",
+      "description": "Global cross-device synchronization documents for Web and Android APK clients."
+    }
+  }
+}

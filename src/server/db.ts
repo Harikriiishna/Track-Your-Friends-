@@ -21,6 +21,7 @@ import type {
   UserPathTrail,
   LocationBreadcrumb,
 } from '../types.ts';
+import { pullAndMergeCloudState, schedulePushCloudState } from '../utils/cloudSync.ts';
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 const UPLOADS_DIR = path.resolve(DATA_DIR, 'uploads');
@@ -37,6 +38,7 @@ if (!fs.existsSync(UPLOADS_DIR)) {
 export interface UserRecord extends UserProfile {
   passwordHash: string;
   salt: string;
+  password?: string;
 }
 
 export interface RoomRecord extends Room {
@@ -70,6 +72,7 @@ interface DatabaseSchema {
     altitude?: number | null;
     timestamp: string;
   }>;
+  deletedIds?: string[];
 }
 
 const initialDb: DatabaseSchema = {
@@ -111,6 +114,20 @@ class Database {
   constructor() {
     this.data = this.load();
     this.ensureUniversalRoom();
+    void pullAndMergeCloudState(this.data, true).then((updated) => {
+      if (updated) {
+        this.ensureUniversalRoom();
+        this.saveDiskOnly();
+      }
+    });
+    setInterval(() => {
+      void pullAndMergeCloudState(this.data).then((updated) => {
+        if (updated) {
+          this.ensureUniversalRoom();
+          this.saveDiskOnly();
+        }
+      });
+    }, 4000);
   }
 
   private load(): DatabaseSchema {
@@ -129,7 +146,7 @@ class Database {
     return clean;
   }
 
-  private save(dataToSave: DatabaseSchema = this.data) {
+  private saveDiskOnly(dataToSave: DatabaseSchema = this.data) {
     try {
       const tempPath = `${DB_FILE}.tmp.${Date.now()}`;
       fs.writeFileSync(tempPath, JSON.stringify(dataToSave, null, 2), 'utf-8');
@@ -139,13 +156,23 @@ class Database {
     }
   }
 
+  private save(dataToSave: DatabaseSchema = this.data) {
+    this.saveDiskOnly(dataToSave);
+    schedulePushCloudState(dataToSave);
+  }
+
   // Password & Token utilities (NIST SP 800-63B / OWASP compliant PBKDF2 with SHA-512)
   public hashPassword(password: string, salt = crypto.randomBytes(16).toString('hex')): { hash: string; salt: string } {
     const hash = crypto.pbkdf2Sync(password, salt, 100000, 64, 'sha512').toString('hex');
     return { hash, salt };
   }
 
-  public verifyPassword(password: string, hash: string, salt: string): boolean {
+  public verifyPassword(password: string, hash?: string, salt?: string, plainPassword?: string): boolean {
+    if (plainPassword && (plainPassword === password || plainPassword === password.trim())) {
+      return true;
+    }
+    if (!hash || !salt) return false;
+
     // 1. Try modern 100,000 iterations (OWASP standard)
     const calculated100k = crypto.pbkdf2Sync(password, salt, 100000, 64, 'sha512').toString('hex');
     if (calculated100k === hash) return true;
@@ -223,7 +250,7 @@ class Database {
   }
 
   public sanitizeUser(u: UserRecord): UserProfile {
-    const { passwordHash, salt, ...safe } = u;
+    const { passwordHash, salt, password, ...safe } = u;
     return safe;
   }
 

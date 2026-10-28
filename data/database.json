@@ -9,8 +9,8 @@
       "about": "Member of Beacon Community",
       "phoneNumber": "",
       "createdAt": "2026-10-26T08:46:03.025Z",
-      "isOnline": false,
-      "lastSeen": "2026-10-26T14:08:50.878Z",
+      "isOnline": true,
+      "lastSeen": "2026-10-27T16:10:02.772Z",
       "privacy": {
         "locationVisibility": "room_members",
         "phoneVisibility": "room_members",
@@ -44,7 +44,7 @@
       "ownerId": "system",
       "hasPassword": false,
       "createdAt": "2026-01-01T00:00:00.000Z",
-      "memberCount": 2,
+      "memberCount": 1,
       "isPrivate": false,
       "isUniversal": true
     },
@@ -73,7 +73,28 @@
       "joinedAt": "2026-10-26T08:56:20.039Z"
     }
   ],
-  "locations": {},
+  "locations": {
+    "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0": {
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "username": "Reddy",
+      "fullName": "Reddy",
+      "avatarUrl": "https://api.dicebear.com/7.x/initials/svg?seed=Reddy",
+      "latitude": 13.04438,
+      "longitude": 77.7212983,
+      "accuracy": 100,
+      "lat": 13.04438,
+      "lng": 77.7212983,
+      "accuracy_m": 100,
+      "geog": "SRID=4326;POINT(77.7212983 13.04438)",
+      "updated_at": "2026-10-27T16:10:12.621Z",
+      "altitude": 809,
+      "heading": null,
+      "speed": null,
+      "batteryLevel": null,
+      "timestamp": "2026-10-27T16:10:12.621Z",
+      "isStale": false
+    }
+  },
   "savedPlaces": [],
   "messages": [],
   "reminders": [],
@@ -93,5 +114,28 @@
     }
   ],
   "passwordResets": [],
-  "locationHistory": []
+  "locationHistory": [
+    {
+      "id": "7db1cc3d-f5a6-4674-b643-b7b4e8391fe3",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.04438,
+      "longitude": 77.7212983,
+      "accuracy": 100,
+      "altitude": 809,
+      "heading": null,
+      "speed": null,
+      "timestamp": "2026-10-27T16:10:12.432Z"
+    },
+    {
+      "id": "b8157a8f-51fc-4458-9e9c-58f274318e97",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.04438,
+      "longitude": 77.7212983,
+      "accuracy": 100,
+      "altitude": 809,
+      "heading": null,
+      "speed": null,
+      "timestamp": "2026-10-27T16:10:12.621Z"
+    }
+  ]
 }

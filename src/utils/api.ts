@@ -9,16 +9,34 @@ class ApiClient {
   private token: string | null = null;
   private isNativeOrOfflineMode = false;
 
-  constructor() {
-    this.token = localStorage.getItem('beacon_token');
+  private isNativeRuntime(): boolean {
+    if (this.isNativeOrOfflineMode) return true;
     if (typeof window !== 'undefined') {
-      const cap = (window as any).Capacitor;
-      if (cap && typeof cap.isNativePlatform === 'function' && cap.isNativePlatform()) {
+      const w = window as any;
+      if (w.AndroidLocationBridge) {
         this.isNativeOrOfflineMode = true;
-      } else if (window.location.protocol === 'capacitor:' || window.location.protocol === 'file:') {
+        return true;
+      }
+      const cap = w.Capacitor;
+      if (cap && ((typeof cap.isNativePlatform === 'function' && cap.isNativePlatform()) || cap.isNative)) {
         this.isNativeOrOfflineMode = true;
+        return true;
+      }
+      if (
+        window.location.protocol === 'capacitor:' ||
+        window.location.protocol === 'file:' ||
+        (window.location.hostname === 'localhost' && !window.location.port)
+      ) {
+        this.isNativeOrOfflineMode = true;
+        return true;
       }
     }
+    return false;
+  }
+
+  constructor() {
+    this.token = localStorage.getItem('beacon_token');
+    this.isNativeRuntime();
   }
 
   public setToken(token: string | null) {
@@ -35,7 +53,7 @@ class ApiClient {
   }
 
   public isUsingLocalBackend(): boolean {
-    return this.isNativeOrOfflineMode;
+    return this.isNativeRuntime();
   }
 
   private syncResponseToLocal(data: any, token: string | null) {
@@ -49,7 +67,7 @@ class ApiClient {
     const token = this.getToken();
 
     // If running inside standalone native APK where local server is not present, route directly to localBackend
-    if (this.isNativeOrOfflineMode) {
+    if (this.isNativeRuntime()) {
       const result = await localBackend.handleRequest<T>(endpoint, options, token);
       this.syncResponseToLocal(result, token);
       return result;
@@ -118,9 +136,9 @@ class ApiClient {
     }
 
     if (!response.ok) {
-      // If server restarted and lost session token while client has cached user profile, fallback cleanly for data queries
+      // If server restarted, returned 404 in static/APK mode, or lost session token, fallback cleanly for data queries
       if (
-        (response.status === 401 || response.status >= 500) &&
+        (response.status === 401 || response.status === 404 || response.status >= 500) &&
         !endpoint.startsWith('/api/auth/login') &&
         !endpoint.startsWith('/api/auth/register')
       ) {
