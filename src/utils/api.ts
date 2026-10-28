@@ -1,15 +1,23 @@
 import type { UserProfile, UserSession } from '../types.ts';
 import { localBackend } from './localBackend.ts';
-import { isAndroidNativeApp, resolveApiUrl, syncLogger } from '../config/env.ts';
+import { getCloudDatabaseHealth, verifyCloudFirestoreConnection } from './cloudSync.ts';
+import { isAndroidNativeApp, resolveApiUrl, syncLogger, PRODUCTION_API_URL } from '../config/env.ts';
 
 /**
  * Beacon Centralized Production API Client
- * Connects both Web and Android APK to the same production backend and shared Cloud Firestore database.
+ * Connects both Web and Android APK to the same production backend (`PRODUCTION_API_URL`)
+ * and shared production Cloud Firestore database (`ai-studio-nexuspoint-bb482c10-9426-424c-8259-807bce4cb7da`).
+ *
+ * CRITICAL GUARANTEE (Section 14):
+ * Never silently converts production API failures into isolated local-only `localStorage` operation.
+ * Mutations require either the direct Production Backend API OR verified Production Cloud Firestore synchronization.
+ * If offline or unreachable, throws an explicit connection error so the client retries/reconnects properly.
  */
 
 class ApiClient {
   private token: string | null = null;
   private remoteCooldownUntil = 0;
+  private lastDirectApiConnected = false;
 
   constructor() {
     this.token = localStorage.getItem('beacon_token');
@@ -30,6 +38,21 @@ class ApiClient {
 
   public isUsingLocalBackend(): boolean {
     return Date.now() < this.remoteCooldownUntil;
+  }
+
+  public getConnectionStatus(): {
+    productionApiUrl: string;
+    directHttpConnected: boolean;
+    cloudFirestoreConnected: boolean;
+    overallBackendConnected: boolean;
+  } {
+    const dbHealth = getCloudDatabaseHealth();
+    return {
+      productionApiUrl: PRODUCTION_API_URL,
+      directHttpConnected: this.lastDirectApiConnected,
+      cloudFirestoreConnected: dbHealth.connected,
+      overallBackendConnected: this.lastDirectApiConnected || dbHealth.connected,
+    };
   }
 
   private syncResponseToLocal(
@@ -70,16 +93,51 @@ class ApiClient {
     }
   }
 
+  private async executeVerifiedCloudSyncRequest<T>(
+    endpoint: string,
+    options: RequestInit,
+    token: string | null,
+    method: string
+  ): Promise<T> {
+    const isMutation = method !== 'GET';
+
+    // Never pretend a write succeeded if the device is offline or cannot reach the production cloud database
+    if (typeof navigator !== 'undefined' && navigator.onLine === false && isMutation) {
+      syncLogger.log('api', 'error', 'offline_mutation_rejected', { endpoint, method });
+      throw new Error(
+        'Network offline: Cannot synchronize changes with the production server. Please check your internet connection.'
+      );
+    }
+
+    if (isMutation) {
+      const dbHealth = getCloudDatabaseHealth();
+      if (!dbHealth.connected) {
+        const verified = await verifyCloudFirestoreConnection();
+        if (!verified) {
+          syncLogger.log('api', 'error', 'cloud_db_unreachable_mutation_rejected', {
+            endpoint,
+            method,
+          });
+          throw new Error(
+            'Unable to reach the production backend or database. Please verify your internet connection and retry.'
+          );
+        }
+      }
+    }
+
+    const result = await localBackend.handleRequest<T>(endpoint, options, token);
+    this.syncResponseToLocal(result, token, endpoint, method);
+    return result;
+  }
+
   private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
     const token = this.getToken();
     const targetUrl = resolveApiUrl(endpoint);
     const method = (options.method || 'GET').toUpperCase();
 
-    // If direct Cloud Run HTTP recently returned an HTML proxy page on Android, route directly via Cloud Firestore sync engine during cooldown
+    // If direct Cloud Run HTTP recently returned an HTML proxy page on Android WebView, route via verified Cloud Firestore bridge
     if (Date.now() < this.remoteCooldownUntil) {
-      const result = await localBackend.handleRequest<T>(endpoint, options, token);
-      this.syncResponseToLocal(result, token, endpoint, method);
-      return result;
+      return this.executeVerifiedCloudSyncRequest<T>(endpoint, options, token, method);
     }
 
     const headers: Record<string, string> = {
@@ -106,7 +164,8 @@ class ApiClient {
       });
       clearTimeout(timer);
     } catch (netErr: any) {
-      syncLogger.log('api', 'warn', 'fetch_fallback_to_firestore_sync', {
+      this.lastDirectApiConnected = false;
+      syncLogger.log('api', 'warn', 'fetch_fallback_to_verified_firestore_sync', {
         endpoint,
         isAndroid: isAndroidNativeApp(),
         error: netErr?.message || 'Network unreachable',
@@ -114,16 +173,14 @@ class ApiClient {
       if (isAndroidNativeApp()) {
         this.remoteCooldownUntil = Date.now() + 20000;
       }
-      const fallbackRes = await localBackend.handleRequest<T>(endpoint, options, token);
-      this.syncResponseToLocal(fallbackRes, token, endpoint, method);
-      return fallbackRes;
+      return this.executeVerifiedCloudSyncRequest<T>(endpoint, options, token, method);
     }
 
     const contentType = (response.headers.get('content-type') || '').toLowerCase();
     const text = await response.text();
     const trimmed = text.trim();
 
-    // Detect if a proxy, static host, or auth wall returned HTML instead of JSON API response
+    // Detect if AI Studio Cloud Run reverse proxy returned an HTML cookie wall to Android WebView
     const isHtmlResponse =
       contentType.includes('text/html') ||
       trimmed.startsWith('<!doctype') ||
@@ -131,24 +188,23 @@ class ApiClient {
       trimmed.startsWith('<html');
 
     if (isHtmlResponse) {
-      syncLogger.log('api', 'info', 'html_proxy_detected_using_firestore_sync', {
+      this.lastDirectApiConnected = false;
+      syncLogger.log('api', 'info', 'html_proxy_detected_using_verified_firestore_sync', {
         endpoint,
         status: response.status,
       });
       this.remoteCooldownUntil = Date.now() + 30000;
-      const fallbackRes = await localBackend.handleRequest<T>(endpoint, options, token);
-      this.syncResponseToLocal(fallbackRes, token, endpoint, method);
-      return fallbackRes;
+      return this.executeVerifiedCloudSyncRequest<T>(endpoint, options, token, method);
     }
 
     let data: any = null;
     try {
       data = trimmed ? JSON.parse(trimmed) : {};
     } catch {
-      const fallbackRes = await localBackend.handleRequest<T>(endpoint, options, token);
-      this.syncResponseToLocal(fallbackRes, token, endpoint, method);
-      return fallbackRes;
+      return this.executeVerifiedCloudSyncRequest<T>(endpoint, options, token, method);
     }
+
+    this.lastDirectApiConnected = true;
 
     if (!response.ok) {
       // If server restarted or token was created on Android/Firestore and not yet pulled by server, check shared Firestore state
@@ -158,9 +214,7 @@ class ApiClient {
         response.status >= 500
       ) {
         try {
-          const fallbackRes = await localBackend.handleRequest<T>(endpoint, options, token);
-          this.syncResponseToLocal(fallbackRes, token, endpoint, method);
-          return fallbackRes;
+          return await this.executeVerifiedCloudSyncRequest<T>(endpoint, options, token, method);
         } catch {
           // continue to standard error handling below if shared Firestore backend also rejects
         }

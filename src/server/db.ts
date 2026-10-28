@@ -21,7 +21,12 @@ import type {
   UserPathTrail,
   LocationBreadcrumb,
 } from '../types.ts';
-import { pullAndMergeCloudState, schedulePushCloudState } from '../utils/cloudSync.ts';
+import {
+  mergeDatabaseStates,
+  pullAndMergeCloudState,
+  schedulePushCloudState,
+  setRunningOnAuthoritativeBackend,
+} from '../utils/cloudSync.ts';
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 const UPLOADS_DIR = path.resolve(DATA_DIR, 'uploads');
@@ -122,6 +127,7 @@ class Database {
   private knownAlertIds = new Set<string>();
 
   constructor() {
+    setRunningOnAuthoritativeBackend(true);
     this.data = this.load();
     this.ensureUniversalRoom();
     this.snapshotKnownEntities();
@@ -141,7 +147,26 @@ class Database {
           this.detectAndEmitExternalDiff();
         }
       });
-    }, 2000);
+    }, 30000);
+  }
+
+  public getSyncSnapshot(): DatabaseSchema {
+    return {
+      ...this.data,
+      messages: (this.data.messages || []).slice(-250),
+      locationHistory: (this.data.locationHistory || []).slice(-180),
+      auditLogs: (this.data.auditLogs || []).slice(-80),
+      sessions: (this.data.sessions || []).slice(-120),
+      deletedIds: (this.data.deletedIds || []).slice(-400),
+    };
+  }
+
+  public applyIncomingSyncSnapshot(incoming: Partial<DatabaseSchema>): DatabaseSchema {
+    mergeDatabaseStates(this.data, incoming, false);
+    this.ensureUniversalRoom();
+    this.saveDiskOnly(this.data);
+    this.detectAndEmitExternalDiff();
+    return this.getSyncSnapshot();
   }
 
   private snapshotKnownEntities() {

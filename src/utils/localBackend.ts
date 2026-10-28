@@ -202,6 +202,17 @@ class LocalBackendEngine {
     return (this.data.emergencyAlerts || []).filter((a) => a && a.status === 'active');
   }
 
+  public getUserRooms(userId: string): Room[] {
+    const universal = this.ensureUniversalRoom(userId);
+    const memberRoomIds = new Set(
+      this.data.roomMembers.filter((m) => m.userId === userId).map((m) => m.roomId)
+    );
+    const joined = this.data.rooms
+      .filter((r) => r.id !== UNIVERSAL_ROOM_ID && (memberRoomIds.has(r.id) || r.ownerId === userId))
+      .map((r) => this.sanitizeRoom(r));
+    return [this.sanitizeRoom(universal), ...joined];
+  }
+
   public recordJoinedRoom(userId: string, roomId: string, role: UserRole = 'MEMBER') {
     if (!userId || !roomId) return;
     if (Array.isArray(this.data.deletedIds)) {
@@ -673,6 +684,19 @@ class LocalBackendEngine {
         this.ensureUniversalRoom();
         this.saveLocalOnly();
       }
+    }
+
+    if (method === 'GET' && pathname === '/api/health') {
+      const updated = await pullAndMergeCloudState(this.data, true);
+      if (updated) {
+        this.ensureUniversalRoom();
+        this.saveLocalOnly();
+      }
+      return {
+        ok: true,
+        service: 'Beacon Cloud Firestore Production Bridge',
+        timestamp: new Date().toISOString(),
+      } as unknown as T;
     }
 
     // 1. AUTHENTICATION ENDPOINTS

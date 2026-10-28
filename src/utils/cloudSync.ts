@@ -1,11 +1,27 @@
 import {
   FIREBASE_PRODUCTION_CONFIG,
   FIRESTORE_SYNC_DOC_URL,
+  PRODUCTION_API_URL,
+  getFirestoreEntityDocUrl,
+  resolveApiUrl,
   syncLogger,
 } from '../config/env.ts';
 
 export const firebaseConfig = FIREBASE_PRODUCTION_CONFIG;
 const FIRESTORE_SYNC_URL = FIRESTORE_SYNC_DOC_URL;
+
+let runningOnAuthoritativeBackend = false;
+export function setRunningOnAuthoritativeBackend(value: boolean): void {
+  runningOnAuthoritativeBackend = value;
+}
+
+function getBackendSyncEndpoints(): string[] {
+  if (runningOnAuthoritativeBackend) return [];
+  if (typeof window === 'undefined') {
+    return ['http://127.0.0.1:3000/api/sync/state', `${PRODUCTION_API_URL}/api/sync/state`];
+  }
+  return [resolveApiUrl('/api/sync/state')];
+}
 
 export interface SyncableDatabaseState {
   users: any[];
@@ -53,7 +69,7 @@ function notifySyncListeners(state: SyncableDatabaseState): void {
   }
 }
 
-// Pre-seeded initial user & rooms from the server database so even before the first network packet completes on a fresh APK install, the user's account and rooms exist.
+// Pre-seeded public profile & room metadata (no passwords, salts, or hashes in client source)
 export const INITIAL_SEED_USERS = [
   {
     id: '1acba9f0-df49-4e70-9f0d-b51fd2f61ea0',
@@ -76,9 +92,6 @@ export const INITIAL_SEED_USERS = [
       blockedUserIds: [],
     },
     isAdmin: true,
-    passwordHash:
-      '83a49e4c0efe805cc488e1ae5235f9d3f1df27b555e676d2fdc9af69bd38f33639135cc6f0c61244d78469d85cb33e3aed0ec8279dfb9dd76ccf015cd53367de',
-    salt: '43a57f595d789793b7e5c0e22b17a618',
   },
 ];
 
@@ -581,9 +594,82 @@ let lastPullTime = 0;
 let lastRemoteUpdatedAt = '';
 let inFlightPull: Promise<boolean> | null = null;
 let pushTimeoutId: any = null;
+let cloudConnected = false;
+let lastSuccessfulSyncMs = 0;
+let firestoreQuotaCooldownUntil = 0;
+
+export function getCloudDatabaseHealth(): {
+  connected: boolean;
+  lastSyncMs: number;
+  projectId: string;
+  databaseId: string;
+} {
+  return {
+    connected: cloudConnected || Date.now() - lastSuccessfulSyncMs < 30000,
+    lastSyncMs: lastSuccessfulSyncMs,
+    projectId: firebaseConfig.projectId,
+    databaseId: firebaseConfig.firestoreDatabaseId,
+  };
+}
+
+export async function verifyCloudFirestoreConnection(): Promise<boolean> {
+  // 1. Check authoritative backend sync endpoint first when running on client/APK/test
+  for (const endpoint of getBackendSyncEndpoints()) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 4500);
+      const res = await fetch(endpoint, {
+        method: 'GET',
+        headers: { Accept: 'application/json', 'Cache-Control': 'no-cache' },
+        cache: 'no-store',
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      if (res.ok) {
+        cloudConnected = true;
+        lastSuccessfulSyncMs = Date.now();
+        return true;
+      }
+    } catch {
+      // try next endpoint
+    }
+  }
+
+  // 2. Check Cloud Firestore directly if not in daily quota cooldown
+  if (Date.now() < firestoreQuotaCooldownUntil) {
+    return cloudConnected;
+  }
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    const res = await fetch(FIRESTORE_SYNC_URL, {
+      method: 'GET',
+      headers: { Accept: 'application/json', 'Cache-Control': 'no-cache' },
+      cache: 'no-store',
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (res.status === 429) {
+      firestoreQuotaCooldownUntil = Date.now() + 15 * 60 * 1000;
+      syncLogger.log('firestore', 'warn', 'quota_cooldown_active', { status: 429 });
+      return cloudConnected;
+    }
+    if (res.ok) {
+      cloudConnected = true;
+      lastSuccessfulSyncMs = Date.now();
+      return true;
+    }
+    cloudConnected = false;
+    return false;
+  } catch {
+    cloudConnected = false;
+    return false;
+  }
+}
 
 /**
- * Pulls the latest synchronized state from Cloud Firestore and merges it into `targetState`
+ * Pulls the latest synchronized state from the Production Backend and Cloud Firestore and merges it into `targetState`
  */
 export async function pullAndMergeCloudState(
   targetState: SyncableDatabaseState,
@@ -599,48 +685,87 @@ export async function pullAndMergeCloudState(
   }
 
   inFlightPull = (async () => {
+    let anyUpdated = false;
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 6000);
-      const res = await fetch(FIRESTORE_SYNC_URL, {
-        method: 'GET',
-        headers: { Accept: 'application/json', 'Cache-Control': 'no-cache' },
-        cache: 'no-store',
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
-
-      if (!res.ok) {
-        syncLogger.log('firestore', 'warn', 'pull_non_200', { status: res.status });
-        return false;
-      }
-      const doc = await res.json();
-      const remoteUpdatedAt = doc?.fields?.updatedAt?.stringValue || doc?.updateTime || '';
-      const rawPayload = doc?.fields?.payload?.stringValue;
-      if (!rawPayload || typeof rawPayload !== 'string') return false;
-
-      lastPullTime = Date.now();
-
-      // Fast path: if remote document timestamp has not changed since last pull/push and this is a background poll, skip JSON.parse & re-renders
-      if (!force && remoteUpdatedAt && remoteUpdatedAt === lastRemoteUpdatedAt) {
-        return false;
-      }
-
-      const remoteState = JSON.parse(rawPayload) as Partial<SyncableDatabaseState>;
-      mergeDatabaseStates(targetState, remoteState, false);
-      if (remoteUpdatedAt) {
-        lastRemoteUpdatedAt = remoteUpdatedAt;
+      // 1. Pull from authoritative production backend (/api/sync/state)
+      for (const endpoint of getBackendSyncEndpoints()) {
+        try {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 5000);
+          const res = await fetch(endpoint, {
+            method: 'GET',
+            headers: { Accept: 'application/json', 'Cache-Control': 'no-cache' },
+            cache: 'no-store',
+            signal: controller.signal,
+          });
+          clearTimeout(timer);
+          if (res.ok) {
+            const payload = await res.json();
+            if (payload?.state && typeof payload.state === 'object') {
+              mergeDatabaseStates(targetState, payload.state, false);
+              cloudConnected = true;
+              lastSuccessfulSyncMs = Date.now();
+              lastPullTime = Date.now();
+              anyUpdated = true;
+              break;
+            }
+          }
+        } catch {
+          // continue to next endpoint or Firestore
+        }
       }
 
-      if (!silentNotify) {
+      // 2. Pull from Cloud Firestore if not in HTTP 429 quota cooldown
+      if (Date.now() >= firestoreQuotaCooldownUntil) {
+        try {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 6000);
+          const res = await fetch(FIRESTORE_SYNC_URL, {
+            method: 'GET',
+            headers: { Accept: 'application/json', 'Cache-Control': 'no-cache' },
+            cache: 'no-store',
+            signal: controller.signal,
+          });
+          clearTimeout(timer);
+
+          if (res.status === 429) {
+            firestoreQuotaCooldownUntil = Date.now() + 15 * 60 * 1000;
+            syncLogger.log('firestore', 'warn', 'pull_quota_429_cooldown', { status: 429 });
+          } else if (res.ok) {
+            cloudConnected = true;
+            lastSuccessfulSyncMs = Date.now();
+            const doc = await res.json();
+            const remoteUpdatedAt = doc?.fields?.updatedAt?.stringValue || doc?.updateTime || '';
+            const rawPayload = doc?.fields?.payload?.stringValue;
+            if (rawPayload && typeof rawPayload === 'string') {
+              lastPullTime = Date.now();
+              if (force || !remoteUpdatedAt || remoteUpdatedAt !== lastRemoteUpdatedAt) {
+                const remoteState = JSON.parse(rawPayload) as Partial<SyncableDatabaseState>;
+                mergeDatabaseStates(targetState, remoteState, false);
+                if (remoteUpdatedAt) {
+                  lastRemoteUpdatedAt = remoteUpdatedAt;
+                }
+                anyUpdated = true;
+              }
+            }
+          } else if (!anyUpdated) {
+            cloudConnected = false;
+            syncLogger.log('firestore', 'warn', 'pull_non_200', { status: res.status });
+          }
+        } catch (err: any) {
+          if (!anyUpdated) {
+            cloudConnected = false;
+            syncLogger.log('firestore', 'warn', 'pull_failed', {
+              message: err?.message || 'Network error',
+            });
+          }
+        }
+      }
+
+      if (anyUpdated && !silentNotify) {
         notifySyncListeners(targetState);
       }
-      return true;
-    } catch (err: any) {
-      syncLogger.log('firestore', 'warn', 'pull_failed', {
-        message: err?.message || 'Network error',
-      });
-      return false;
+      return anyUpdated;
     } finally {
       inFlightPull = null;
     }
@@ -650,7 +775,45 @@ export async function pullAndMergeCloudState(
 }
 
 /**
- * Pushes the merged state to Cloud Firestore (debounced or immediate)
+ * Writes structured domain partitions (users, rooms, locations, messages, alerts) to dedicated Firestore documents
+ * in addition to the atomic synchronization snapshot.
+ */
+async function syncStructuredEntityPartitions(
+  state: SyncableDatabaseState,
+  timestamp: string
+): Promise<void> {
+  if (Date.now() < firestoreQuotaCooldownUntil) return;
+  const partitions: Record<string, any> = {
+    entity_users: (state.users || []).map(({ password, passwordHash, salt, ...safe }) => safe),
+    entity_rooms: { rooms: state.rooms || [], roomMembers: state.roomMembers || [] },
+    entity_locations: state.locations || {},
+    entity_messages: (state.messages || []).slice(-100),
+    entity_alerts: (state.emergencyAlerts || []).slice(0, 30),
+  };
+
+  await Promise.allSettled(
+    Object.entries(partitions).map(async ([docKey, data]) => {
+      const payload = JSON.stringify(data);
+      if (payload.length >= 900000) return;
+      const res = await fetch(getFirestoreEntityDocUrl(docKey), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fields: {
+            payload: { stringValue: payload },
+            updatedAt: { stringValue: timestamp },
+          },
+        }),
+      });
+      if (res.status === 429) {
+        firestoreQuotaCooldownUntil = Date.now() + 15 * 60 * 1000;
+      }
+    })
+  );
+}
+
+/**
+ * Pushes the merged state to the Production Backend and Cloud Firestore (debounced or immediate)
  */
 export function schedulePushCloudState(
   localState: SyncableDatabaseState,
@@ -662,11 +825,12 @@ export function schedulePushCloudState(
   }
 
   const executePush = async () => {
+    let pushedSuccessfully = false;
     try {
       // Pull and merge without letting older remote fields overwrite newer local fields
       await pullAndMergeCloudState(localState, true, true);
 
-      // Trim history arrays so Firestore document stays well under 900KB
+      // Trim history arrays so payload stays well under 900KB
       const compactState: SyncableDatabaseState = {
         ...localState,
         messages: (localState.messages || []).slice(-250),
@@ -679,32 +843,76 @@ export function schedulePushCloudState(
       const serialized = JSON.stringify(compactState);
       if (serialized.length >= 940000) return;
 
-      const pushTimestamp = new Date().toISOString();
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 7000);
-      const res = await fetch(FIRESTORE_SYNC_URL, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          fields: {
-            payload: { stringValue: serialized },
-            updatedAt: { stringValue: pushTimestamp },
-          },
-        }),
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
+      // 1. Push to authoritative production backend (/api/sync/state)
+      for (const endpoint of getBackendSyncEndpoints()) {
+        try {
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), 6000);
+          const res = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ state: compactState }),
+            signal: controller.signal,
+          });
+          clearTimeout(timer);
+          if (res.ok) {
+            const payload = await res.json();
+            if (payload?.state && typeof payload.state === 'object') {
+              mergeDatabaseStates(localState, payload.state, false);
+            }
+            cloudConnected = true;
+            lastSuccessfulSyncMs = Date.now();
+            pushedSuccessfully = true;
+            break;
+          }
+        } catch {
+          // continue to next endpoint or Firestore
+        }
+      }
 
-      if (res.ok) {
-        lastRemoteUpdatedAt = pushTimestamp;
+      // 2. Push to Cloud Firestore if not in HTTP 429 quota cooldown
+      if (Date.now() >= firestoreQuotaCooldownUntil) {
+        const pushTimestamp = new Date().toISOString();
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 7000);
+        const res = await fetch(FIRESTORE_SYNC_URL, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            fields: {
+              payload: { stringValue: serialized },
+              updatedAt: { stringValue: pushTimestamp },
+            },
+          }),
+          signal: controller.signal,
+        });
+        clearTimeout(timer);
+
+        if (res.status === 429) {
+          firestoreQuotaCooldownUntil = Date.now() + 15 * 60 * 1000;
+          syncLogger.log('firestore', 'warn', 'push_quota_429_cooldown', { status: 429 });
+        } else if (res.ok) {
+          cloudConnected = true;
+          lastSuccessfulSyncMs = Date.now();
+          lastRemoteUpdatedAt = pushTimestamp;
+          pushedSuccessfully = true;
+          void syncStructuredEntityPartitions(compactState, pushTimestamp);
+        } else if (!pushedSuccessfully) {
+          cloudConnected = false;
+          syncLogger.log('firestore', 'warn', 'push_non_200', { status: res.status });
+        }
+      }
+
+      if (pushedSuccessfully) {
         notifySyncListeners(localState);
-      } else {
-        syncLogger.log('firestore', 'warn', 'push_non_200', { status: res.status });
       }
     } catch (err: any) {
-      syncLogger.log('firestore', 'warn', 'push_failed', {
-        message: err?.message || 'Network error',
-      });
+      if (!pushedSuccessfully) {
+        cloudConnected = false;
+        syncLogger.log('firestore', 'warn', 'push_failed', {
+          message: err?.message || 'Network error',
+        });
+      }
     }
   };
 

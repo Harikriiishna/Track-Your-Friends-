@@ -3,12 +3,28 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>Beacon - Real-Time Location & Community Mesh</title>
-    <meta name="description" content="Production real-time location sharing, private rooms, live voice channels, voice notes, community emergency alerts, and interactive mapping." />
-    <meta property="og:title" content="Beacon - Real-Time Location & Community Mesh" />
-    <meta property="og:description" content="Production real-time location sharing, private rooms, live voice channels, voice notes, community emergency alerts, and interactive mapping." />
+    <title>Beacon – Real-Time Location Sharing & Community Safety Mesh</title>
+    <meta name="description" content="Share live GPS locations with friends, join persistent private rooms, communicate on live voice channels, and broadcast instant emergency SOS alerts with Beacon." />
+    <meta name="keywords" content="Beacon, real-time location sharing, track friends, live GPS map, private rooms, emergency SOS alert, voice mesh, family locator" />
+    <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1" />
+    <meta name="author" content="Beacon Network" />
+    <link rel="canonical" id="canonical-link" href="https://ais-pre-dkfhfrzboel3a3xnlpek5a-752786783113.asia-northeast1.run.app/" />
+
+    <!-- OpenGraph Social Cards -->
     <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Beacon" />
+    <meta property="og:title" content="Beacon – Real-Time Location Sharing & Community Safety Mesh" />
+    <meta property="og:description" content="Share live GPS locations with friends, join persistent private rooms, communicate on live voice channels, and broadcast instant emergency SOS alerts with Beacon." />
+    <meta property="og:url" id="og-url-meta" content="https://ais-pre-dkfhfrzboel3a3xnlpek5a-752786783113.asia-northeast1.run.app/" />
+    <meta property="og:image" content="/pwa-512x512.png" />
+
+    <!-- Twitter / X Social Cards -->
     <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Beacon – Real-Time Location Sharing & Community Safety Mesh" />
+    <meta name="twitter:description" content="Share live GPS locations with friends, join persistent private rooms, communicate on live voice channels, and broadcast instant emergency SOS alerts with Beacon." />
+    <meta name="twitter:image" content="/pwa-512x512.png" />
+
+    <!-- PWA & Mobile Viewport -->
     <meta name="theme-color" content="#0f172a" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -17,6 +33,45 @@
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+
+    <!-- Schema.org Structured Data (JSON-LD) for Google Search Rich Snippets -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebApplication",
+      "name": "Beacon – Real-Time Location & Community Mesh",
+      "alternateName": "Beacon Network",
+      "url": "https://ais-pre-dkfhfrzboel3a3xnlpek5a-752786783113.asia-northeast1.run.app/",
+      "applicationCategory": "SocialNetworkingApplication",
+      "operatingSystem": "Web, Android, iOS",
+      "browserRequirements": "Requires JavaScript and HTML5 Geolocation",
+      "description": "Share live GPS locations with friends, join persistent private rooms, communicate on live voice channels, and broadcast instant emergency SOS alerts.",
+      "featureList": [
+        "Real-time GPS friend & family location tracking",
+        "Persistent private & public mesh rooms",
+        "Live WebRTC voice channels & voice notes",
+        "Emergency SOS alerts with 5km proximity radar",
+        "Interactive turn-by-turn navigation & nearby places"
+      ],
+      "offers": {
+        "@type": "Offer",
+        "price": "0",
+        "priceCurrency": "USD"
+      }
+    }
+    </script>
+    <script>
+      // Dynamically update canonical and og:url to match current origin
+      (function() {
+        try {
+          var currentUrl = window.location.origin + window.location.pathname;
+          var canonicalEl = document.getElementById('canonical-link');
+          if (canonicalEl) canonicalEl.setAttribute('href', currentUrl);
+          var ogUrlEl = document.getElementById('og-url-meta');
+          if (ogUrlEl) ogUrlEl.setAttribute('content', currentUrl);
+        } catch (e) {}
+      })();
+    </script>
     <script>
       // Gracefully handle Vite dev runner WebSocket in preview environments
       (function() {

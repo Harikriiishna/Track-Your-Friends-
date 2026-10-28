@@ -4,19 +4,57 @@
  * production WebSocket endpoint, and production Cloud Firestore database.
  */
 
-export const PRODUCTION_BACKEND_ORIGIN =
+export const DEFAULT_PRODUCTION_BACKEND_ORIGIN =
   'https://ais-pre-dkfhfrzboel3a3xnlpek5a-752786783113.asia-northeast1.run.app';
 
 export const DEV_PREVIEW_BACKEND_ORIGIN =
   'https://ais-dev-dkfhfrzboel3a3xnlpek5a-752786783113.asia-northeast1.run.app';
 
+function getEnvVar(name: string): string {
+  try {
+    const metaEnv = typeof import.meta !== 'undefined' ? (import.meta as any).env : undefined;
+    if (metaEnv && typeof metaEnv[name] === 'string' && metaEnv[name].trim().length > 0) {
+      return metaEnv[name].trim();
+    }
+  } catch {
+    // ignore in Node / non-Vite context
+  }
+  try {
+    if (typeof process !== 'undefined' && process.env && typeof process.env[name] === 'string') {
+      const val = process.env[name]!.trim();
+      if (val.length > 0) return val;
+    }
+  } catch {
+    // ignore in browser context
+  }
+  return '';
+}
+
 export const FIREBASE_PRODUCTION_CONFIG = {
-  projectId: 'gen-lang-client-0914373991',
-  firestoreDatabaseId: 'ai-studio-nexuspoint-bb482c10-9426-424c-8259-807bce4cb7da',
-  apiKey: 'AIzaSyDytVqEQzabXfZPoBRd35E9VNdXOq3KZLo',
+  projectId: getEnvVar('VITE_FIREBASE_PROJECT_ID') || 'gen-lang-client-0914373991',
+  appId: getEnvVar('VITE_FIREBASE_APP_ID') || '1:352216424599:web:d41a23195b40cdc78149d2',
+  apiKey: getEnvVar('VITE_FIREBASE_API_KEY') || 'AIzaSyDytVqEQzabXfZPoBRd35E9VNdXOq3KZLo',
+  authDomain: getEnvVar('VITE_FIREBASE_AUTH_DOMAIN') || 'gen-lang-client-0914373991.firebaseapp.com',
+  firestoreDatabaseId:
+    getEnvVar('VITE_FIREBASE_DATABASE_ID') ||
+    'ai-studio-nexuspoint-bb482c10-9426-424c-8259-807bce4cb7da',
+  storageBucket:
+    getEnvVar('VITE_FIREBASE_STORAGE_BUCKET') || 'gen-lang-client-0914373991.firebasestorage.app',
+  messagingSenderId: getEnvVar('VITE_FIREBASE_MESSAGING_SENDER_ID') || '352216424599',
+  vapidKey: getEnvVar('VITE_FIREBASE_VAPID_KEY') || '',
 };
 
-export const FIRESTORE_SYNC_DOC_URL = `https://firestore.googleapis.com/v1/projects/${FIREBASE_PRODUCTION_CONFIG.projectId}/databases/${FIREBASE_PRODUCTION_CONFIG.firestoreDatabaseId}/documents/beacon_sync/global_state?key=${FIREBASE_PRODUCTION_CONFIG.apiKey}`;
+export const GOOGLE_MAPS_CONFIG = {
+  apiKey: getEnvVar('VITE_GOOGLE_MAPS_API_KEY') || '',
+};
+
+export const FIRESTORE_BASE_DOCS_URL = `https://firestore.googleapis.com/v1/projects/${FIREBASE_PRODUCTION_CONFIG.projectId}/databases/${FIREBASE_PRODUCTION_CONFIG.firestoreDatabaseId}/documents`;
+
+export const FIRESTORE_SYNC_DOC_URL = `${FIRESTORE_BASE_DOCS_URL}/beacon_sync/global_state?key=${FIREBASE_PRODUCTION_CONFIG.apiKey}`;
+
+export function getFirestoreEntityDocUrl(collectionKey: string): string {
+  return `${FIRESTORE_BASE_DOCS_URL}/beacon_sync/${encodeURIComponent(collectionKey)}?key=${FIREBASE_PRODUCTION_CONFIG.apiKey}`;
+}
 
 /**
  * Detects whether the app is currently running inside the packaged Android APK / Capacitor WebView.
@@ -37,24 +75,31 @@ export function isAndroidNativeApp(): boolean {
   return false;
 }
 
+function isPlaceholderEndpoint(url: string): boolean {
+  const lower = url.toLowerCase();
+  return (
+    lower.includes('your_production') ||
+    lower.includes('myapp-backend.onrender.com') ||
+    lower.includes('example.com') ||
+    lower.includes('localhost') ||
+    lower.includes('127.0.0.1') ||
+    lower.includes('0.0.0.0')
+  );
+}
+
 /**
- * Resolves the centralized production API base URL so Android never calls localhost.
- * - On Web (`*.run.app` or local dev with port 3000): uses current window.location.origin
- * - On Android APK (`https://localhost`): uses PRODUCTION_BACKEND_ORIGIN
+ * Resolves the centralized production API base URL (`PRODUCTION_API_URL`).
+ * Guarantees Android APK never calls localhost, 127.0.0.1, 0.0.0.0, or placeholder URLs.
  */
 export function getProductionApiBaseUrl(): string {
-  try {
-    const metaEnv = typeof import.meta !== 'undefined' ? (import.meta as any).env : undefined;
-    if (metaEnv?.VITE_API_URL && typeof metaEnv.VITE_API_URL === 'string') {
-      return metaEnv.VITE_API_URL.replace(/\/+$/, '');
-    }
-  } catch {
-    // ignore in non-Vite context
+  const configuredUrl = getEnvVar('VITE_API_BASE_URL') || getEnvVar('VITE_API_URL');
+  if (configuredUrl && !isPlaceholderEndpoint(configuredUrl)) {
+    return configuredUrl.replace(/\/+$/, '');
   }
 
   if (typeof window !== 'undefined') {
     if (isAndroidNativeApp()) {
-      return PRODUCTION_BACKEND_ORIGIN;
+      return DEFAULT_PRODUCTION_BACKEND_ORIGIN;
     }
     const { protocol, hostname, port, origin } = window.location;
     if (
@@ -65,44 +110,52 @@ export function getProductionApiBaseUrl(): string {
     ) {
       return origin.replace(/\/+$/, '');
     }
+    // Local dev server on port 3000 in desktop browser only
     if ((hostname === 'localhost' || hostname === '127.0.0.1') && port === '3000') {
       return origin.replace(/\/+$/, '');
     }
   }
 
-  return PRODUCTION_BACKEND_ORIGIN;
+  return DEFAULT_PRODUCTION_BACKEND_ORIGIN;
 }
 
+export const PRODUCTION_API_URL = getProductionApiBaseUrl();
+export const PRODUCTION_BACKEND_ORIGIN = DEFAULT_PRODUCTION_BACKEND_ORIGIN;
+
 /**
- * Resolves a relative API endpoint (e.g. `/api/rooms`) to a full production URL when on Android.
+ * Resolves a relative API endpoint (e.g. `/api/rooms`) to a full production URL.
  */
 export function resolveApiUrl(endpoint: string): string {
   if (/^https?:\/\//i.test(endpoint)) return endpoint;
   const path = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
   if (typeof window !== 'undefined' && !isAndroidNativeApp()) {
-    // Same-origin relative path in web browser
     return path;
   }
   return `${getProductionApiBaseUrl()}${path}`;
 }
 
 /**
- * Resolves the production WebSocket (`wss://`) URL for both Web and Android APK.
+ * Resolves the centralized production WebSocket (`wss://`) URL (`PRODUCTION_WSS_URL`).
  */
 export function getProductionWsUrl(): string {
-  try {
-    const metaEnv = typeof import.meta !== 'undefined' ? (import.meta as any).env : undefined;
-    if (metaEnv?.VITE_WS_URL && typeof metaEnv.VITE_WS_URL === 'string') {
-      return metaEnv.VITE_WS_URL;
-    }
-  } catch {
-    // ignore
+  const configuredWs = getEnvVar('VITE_WS_URL');
+  if (configuredWs && !isPlaceholderEndpoint(configuredWs)) {
+    return configuredWs.endsWith('/ws') ? configuredWs : `${configuredWs.replace(/\/+$/, '')}/ws`;
   }
 
   const baseHttp = getProductionApiBaseUrl();
   const wsBase = baseHttp.replace(/^http:/i, 'ws:').replace(/^https:/i, 'wss:');
   return `${wsBase}/ws`;
 }
+
+export const PRODUCTION_WSS_URL = getProductionWsUrl();
+
+export type RealtimeDiagnosticState =
+  | 'REALTIME_CONNECTING'
+  | 'REALTIME_CONNECTED'
+  | 'REALTIME_DISCONNECTED'
+  | 'REALTIME_ERROR'
+  | 'REALTIME_RECONNECTING';
 
 export interface SyncDiagnosticEntry {
   timestamp: string;
@@ -112,7 +165,7 @@ export interface SyncDiagnosticEntry {
   details?: Record<string, any>;
 }
 
-const MAX_DIAGNOSTIC_LOGS = 80;
+const MAX_DIAGNOSTIC_LOGS = 100;
 const diagnosticLogs: SyncDiagnosticEntry[] = [];
 
 function sanitizeDetails(details?: Record<string, any>): Record<string, any> | undefined {
@@ -126,7 +179,9 @@ function sanitizeDetails(details?: Record<string, any>): Record<string, any> | u
       lower.includes('secret') ||
       lower.includes('authorization') ||
       lower.includes('salt') ||
-      lower.includes('hash')
+      lower.includes('hash') ||
+      lower.includes('apikey') ||
+      lower.includes('key')
     ) {
       clean[k] = '[REDACTED]';
     } else {
@@ -137,7 +192,7 @@ function sanitizeDetails(details?: Record<string, any>): Record<string, any> | u
 }
 
 /**
- * Production-safe diagnostic logger (never logs passwords, tokens, or secrets).
+ * Production-safe diagnostic logger (never logs passwords, tokens, API keys, or secrets).
  */
 export const syncLogger = {
   log(

@@ -1,15 +1,44 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /beacon_sync/{docId} {
-      allow read: if true;
-      allow create, update: if request.resource.data.keys().hasAll(['payload', 'updatedAt']) &&
-        request.resource.data.payload is string &&
-        request.resource.data.payload.size() < 950000 &&
-        request.resource.data.updatedAt is string;
+    match /{document=**} {
+      allow read, write: if false;
     }
+
+    function isValidSyncDocId(docId) {
+      return docId is string &&
+        docId.size() <= 64 &&
+        docId in [
+          'global_state',
+          'entity_users',
+          'entity_rooms',
+          'entity_locations',
+          'entity_messages',
+          'entity_alerts'
+        ];
+    }
+
+    function isValidBeaconSyncDoc(data) {
+      return data.keys().hasAll(['payload', 'updatedAt']) &&
+        data.keys().hasOnly(['payload', 'updatedAt']) &&
+        data.payload is string &&
+        data.payload.size() >= 2 &&
+        data.payload.size() < 950000 &&
+        data.updatedAt is string &&
+        data.updatedAt.size() >= 10 &&
+        data.updatedAt.size() <= 64;
+    }
+
+    match /beacon_sync/{docId} {
+      allow get: if isValidSyncDocId(docId);
+      allow list: if false;
+      allow create, update: if isValidSyncDocId(docId) && isValidBeaconSyncDoc(request.resource.data);
+      allow delete: if false;
+    }
+
     match /test/{docId} {
-      allow read: if true;
+      allow get: if docId == 'connection';
+      allow list, write: if false;
     }
   }
 }

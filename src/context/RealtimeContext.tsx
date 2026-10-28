@@ -13,7 +13,8 @@ import { sound } from '../utils/audio.ts';
 import { api } from '../utils/api.ts';
 import { localBackend } from '../utils/localBackend.ts';
 import { notifications } from '../utils/notifications.ts';
-import { getProductionWsUrl, syncLogger } from '../config/env.ts';
+import { getProductionWsUrl, syncLogger, type RealtimeDiagnosticState } from '../config/env.ts';
+import { getCloudDatabaseHealth } from '../utils/cloudSync.ts';
 
 interface VoiceParticipant {
   peerId: string;
@@ -49,6 +50,8 @@ export interface LocationDebugTelemetry {
 
 interface RealtimeContextType {
   isConnected: boolean;
+  wsConnected: boolean;
+  realtimeState: RealtimeDiagnosticState;
   myLocation: UserLocation | null;
   gpsAccuracy: number | null;
   isGpsActive: boolean;
@@ -104,6 +107,8 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const { user, token } = useAuth();
 
   const [isConnected, setIsConnected] = useState(false);
+  const [wsConnected, setWsConnected] = useState(false);
+  const [realtimeState, setRealtimeState] = useState<RealtimeDiagnosticState>('REALTIME_DISCONNECTED');
   const [myLocation, setMyLocation] = useState<UserLocation | null>(null);
   const [gpsAccuracy, setGpsAccuracy] = useState<number | null>(null);
   const [isGpsActive, setIsGpsActive] = useState(false);
@@ -406,24 +411,44 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     };
 
     // Initial sync on mount
+    setRealtimeState('REALTIME_CONNECTING');
+    syncLogger.log('ws', 'info', 'REALTIME_CONNECTING');
     setIsConnected(true);
     syncFromLocalSnapshot();
-    void localBackend.forceSyncNow().then(() => {
+    void localBackend.forceSyncNow().then((synced) => {
+      if (synced && isMounted) {
+        setRealtimeState('REALTIME_CONNECTED');
+        syncLogger.log('firestore', 'info', 'REALTIME_CONNECTED', { transport: 'firestore_sync' });
+      }
       syncFromRemoteApi();
     });
 
     // Listen to immediate Cloud Firestore sync updates (only fires when remote state actually changed)
     const onCloudSyncUpdated = () => {
       if (!isMounted) return;
+      setRealtimeState('REALTIME_CONNECTED');
       syncFromLocalSnapshot();
     };
     window.addEventListener('beacon:cloud-sync-updated', onCloudSyncUpdated);
 
-    function connect() {
+    let heartbeatTimer: any = null;
+
+    function connect(isReconnect = false) {
       if (!isMounted) return;
+      const nextState: RealtimeDiagnosticState = isReconnect
+        ? 'REALTIME_RECONNECTING'
+        : 'REALTIME_CONNECTING';
+      syncLogger.log('ws', 'info', nextState);
+      if (!getCloudDatabaseHealth().connected) {
+        setRealtimeState(nextState);
+      }
+
       if (api.isUsingLocalBackend()) {
         setIsConnected(true);
-        reconnectTimeoutRef.current = setTimeout(connect, 10000);
+        if (getCloudDatabaseHealth().connected) {
+          setRealtimeState('REALTIME_CONNECTED');
+        }
+        reconnectTimeoutRef.current = setTimeout(() => connect(true), 10000);
         return;
       }
 
@@ -432,7 +457,9 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       try {
         ws = new WebSocket(wsUrl);
       } catch (err: any) {
-        syncLogger.log('ws', 'warn', 'ws_init_error', { error: err?.message });
+        syncLogger.log('ws', 'warn', 'REALTIME_ERROR', { error: err?.message });
+        setWsConnected(false);
+        setRealtimeState(getCloudDatabaseHealth().connected ? 'REALTIME_CONNECTED' : 'REALTIME_ERROR');
         setIsConnected(true);
         return;
       }
@@ -440,14 +467,37 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       ws.onopen = () => {
         if (!isMounted) return;
         setIsConnected(true);
-        syncLogger.log('ws', 'info', 'ws_connected', { url: wsUrl });
+        setWsConnected(true);
+        setRealtimeState('REALTIME_CONNECTED');
+        syncLogger.log('ws', 'info', 'REALTIME_CONNECTED', { url: wsUrl });
         ws.send(JSON.stringify({ type: 'auth', token }));
+
+        if (heartbeatTimer) clearInterval(heartbeatTimer);
+        heartbeatTimer = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            try {
+              ws.send(JSON.stringify({ type: 'ping' }));
+            } catch {}
+          }
+        }, 25000);
       };
 
       ws.onmessage = (event) => {
         if (!isMounted) return;
         try {
           const data: WsServerMessage = JSON.parse(event.data);
+          if ((data as any).type === 'pong') return;
+          if ((data as any).type === 'auth:success') {
+            // Restore room subscriptions automatically after connect/reconnect
+            try {
+              const joinedRooms = localBackend.getUserRooms(currentUserId);
+              for (const r of joinedRooms) {
+                if (r?.id && ws.readyState === WebSocket.OPEN) {
+                  ws.send(JSON.stringify({ type: 'room:join', roomId: r.id }));
+                }
+              }
+            } catch {}
+          }
           handleServerMessage(data);
         } catch (e) {
           console.error('Error handling WS message:', e);
@@ -456,12 +506,21 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
       ws.onclose = () => {
         if (!isMounted) return;
+        if (heartbeatTimer) {
+          clearInterval(heartbeatTimer);
+          heartbeatTimer = null;
+        }
+        setWsConnected(false);
+        syncLogger.log('ws', 'info', 'REALTIME_DISCONNECTED');
+        const dbConnected = getCloudDatabaseHealth().connected;
+        setRealtimeState(dbConnected ? 'REALTIME_CONNECTED' : 'REALTIME_RECONNECTING');
         setIsConnected(true);
         if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
-        reconnectTimeoutRef.current = setTimeout(connect, 5000);
+        reconnectTimeoutRef.current = setTimeout(() => connect(true), 5000);
       };
 
       ws.onerror = () => {
+        syncLogger.log('ws', 'warn', 'REALTIME_ERROR');
         try {
           ws.close();
         } catch {}
@@ -470,31 +529,42 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       socketRef.current = ws;
     }
 
-    connect();
+    connect(false);
 
     // App Lifecycle & Network Reconnection Handlers (Foreground resume, unlock screen, Wi-Fi <-> Cellular switch)
     const handleLifecycleResume = () => {
       if (!isMounted) return;
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
-      syncLogger.log('lifecycle', 'info', 'app_resumed_or_network_online');
+      syncLogger.log('lifecycle', 'info', 'REALTIME_RECONNECTING');
       setIsConnected(true);
       void localBackend.forceSyncNow().then(() => {
         syncFromRemoteApi();
       });
       if (!socketRef.current || socketRef.current.readyState === WebSocket.CLOSED) {
         if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
-        connect();
+        connect(true);
       }
     };
 
+    const handleNetworkOffline = () => {
+      if (!isMounted) return;
+      setWsConnected(false);
+      setIsConnected(false);
+      setRealtimeState('REALTIME_DISCONNECTED');
+      syncLogger.log('lifecycle', 'warn', 'REALTIME_DISCONNECTED', { reason: 'network_offline' });
+    };
+
     window.addEventListener('online', handleLifecycleResume);
+    window.addEventListener('offline', handleNetworkOffline);
     window.addEventListener('focus', handleLifecycleResume);
     document.addEventListener('visibilitychange', handleLifecycleResume);
 
     return () => {
       isMounted = false;
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
       window.removeEventListener('beacon:cloud-sync-updated', onCloudSyncUpdated);
       window.removeEventListener('online', handleLifecycleResume);
+      window.removeEventListener('offline', handleNetworkOffline);
       window.removeEventListener('focus', handleLifecycleResume);
       document.removeEventListener('visibilitychange', handleLifecycleResume);
       if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
@@ -1494,6 +1564,8 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const contextValue = React.useMemo<RealtimeContextType>(
     () => ({
       isConnected,
+      wsConnected,
+      realtimeState,
       myLocation,
       gpsAccuracy,
       isGpsActive,
@@ -1533,6 +1605,8 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }),
     [
       isConnected,
+      wsConnected,
+      realtimeState,
       myLocation,
       gpsAccuracy,
       isGpsActive,

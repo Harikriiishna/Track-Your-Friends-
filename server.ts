@@ -176,6 +176,11 @@ wss.on('connection', (ws: WebSocket, req) => {
     try {
       const msg: WsClientMessage = JSON.parse(rawData.toString());
 
+      if ((msg as any).type === 'ping') {
+        ws.send(JSON.stringify({ type: 'pong', ts: Date.now() }));
+        return;
+      }
+
       if (msg.type === 'auth') {
         const user = db.getSessionUser(msg.token);
         if (!user) {
@@ -544,6 +549,37 @@ function authMiddleware(req: express.Request, res: express.Response, next: expre
 }
 
 // REST API Endpoints
+
+app.get('/api/health', (_req, res) => {
+  res.json({
+    ok: true,
+    service: 'Beacon Production Backend',
+    timestamp: new Date().toISOString(),
+  });
+});
+
+// Authoritative Cross-Platform State Synchronization Endpoint (Web <-> Production Server <-> Android APK)
+app.get('/api/sync/state', (_req, res) => {
+  res.json({
+    ok: true,
+    updatedAt: new Date().toISOString(),
+    state: db.getSyncSnapshot(),
+  });
+});
+
+app.post('/api/sync/state', (req, res) => {
+  try {
+    const incoming = req.body?.state || req.body;
+    const merged = db.applyIncomingSyncSnapshot(incoming || {});
+    res.json({
+      ok: true,
+      updatedAt: new Date().toISOString(),
+      state: merged,
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || 'Sync merge failed' });
+  }
+});
 
 // Authentication
 app.post('/api/auth/register', authRateLimiter, (req, res) => {
@@ -1589,6 +1625,52 @@ app.post('/api/admin/reports/:id/resolve', authMiddleware, (req, res) => {
   }
   db.resolveReport(req.params.id, req.body.status);
   res.json({ success: true });
+});
+
+// Google Search Engine Optimization (SEO): Dynamic robots.txt and XML Sitemap
+const DEFAULT_PUBLIC_ORIGIN = 'https://ais-pre-dkfhfrzboel3a3xnlpek5a-752786783113.asia-northeast1.run.app';
+
+function resolvePublicOrigin(req: express.Request): string {
+  const proto = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'https';
+  const host = (req.headers['x-forwarded-host'] as string) || req.headers.host;
+  if (host && !host.includes('localhost') && !host.includes('127.0.0.1')) {
+    return `${proto.split(',')[0].trim()}://${host.split(',')[0].trim()}`;
+  }
+  return process.env.APP_URL || DEFAULT_PUBLIC_ORIGIN;
+}
+
+app.get('/robots.txt', (req, res) => {
+  const origin = resolvePublicOrigin(req);
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.send(`User-agent: *\nAllow: /\nDisallow: /api/\n\nSitemap: ${origin}/sitemap.xml\n`);
+});
+
+app.get('/sitemap.xml', (req, res) => {
+  const origin = resolvePublicOrigin(req);
+  const nowIso = new Date().toISOString();
+  const urls = [
+    { loc: `${origin}/`, priority: '1.0', changefreq: 'daily' },
+    { loc: `${origin}/?tab=map`, priority: '0.9', changefreq: 'hourly' },
+    { loc: `${origin}/?tab=rooms`, priority: '0.9', changefreq: 'hourly' },
+    { loc: `${origin}/?tab=chat`, priority: '0.8', changefreq: 'daily' },
+    { loc: `${origin}/?tab=alerts`, priority: '0.8', changefreq: 'hourly' },
+    { loc: `${origin}/?tab=saved`, priority: '0.7', changefreq: 'weekly' },
+  ];
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${urls
+  .map(
+    (u) => `  <url>
+    <loc>${u.loc}</loc>
+    <lastmod>${nowIso}</lastmod>
+    <changefreq>${u.changefreq}</changefreq>
+    <priority>${u.priority}</priority>
+  </url>`
+  )
+  .join('\n')}
+</urlset>`;
+  res.setHeader('Content-Type', 'application/xml; charset=utf-8');
+  res.send(xml);
 });
 
 // Explicit API 404 fallback to ensure API routes never return index.html

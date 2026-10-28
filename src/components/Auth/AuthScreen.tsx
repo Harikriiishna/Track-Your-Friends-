@@ -16,7 +16,10 @@ import {
   Zap,
   Eye,
   EyeOff,
+  Globe,
 } from 'lucide-react';
+import { PWAInstallButton } from '../Navigation/PWAInstallButton.tsx';
+import { WebsiteLaunchModal } from '../Navigation/WebsiteLaunchModal.tsx';
 
 interface ErrorInfo {
   message: string;
@@ -51,6 +54,7 @@ export const AuthScreen: React.FC = () => {
   const [errorDetails, setErrorDetails] = useState<ErrorInfo | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [quickActionLoading, setQuickActionLoading] = useState(false);
+  const [showWebsiteModal, setShowWebsiteModal] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -605,8 +609,8 @@ export const AuthScreen: React.FC = () => {
           </button>
         </form>
 
-        {/* Quick Demo Access Option */}
-        <div className="mt-5 pt-4 border-t border-slate-800/80">
+        {/* Quick Demo Access & Website / App Install Options */}
+        <div className="mt-5 pt-4 border-t border-slate-800/80 space-y-2.5">
           <button
             type="button"
             disabled={quickActionLoading}
@@ -616,6 +620,18 @@ export const AuthScreen: React.FC = () => {
             <Zap className="w-3.5 h-3.5 text-cyan-400" />
             <span>⚡ Quick Demo Access</span>
           </button>
+
+          <div className="flex items-center justify-between gap-2 pt-1">
+            <button
+              type="button"
+              onClick={() => setShowWebsiteModal(true)}
+              className="flex-1 py-2 px-3 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-sky-400 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+            >
+              <Globe className="w-3.5 h-3.5" />
+              <span>Share Website & APK</span>
+            </button>
+            <PWAInstallButton compact={false} />
+          </div>
         </div>
 
         <div className="mt-4 pt-3 border-t border-slate-800 flex items-center justify-center gap-2 text-[11px] text-slate-500">
@@ -623,6 +639,8 @@ export const AuthScreen: React.FC = () => {
           <span>Real-time location privacy enforced by backend</span>
         </div>
       </div>
+
+      <WebsiteLaunchModal isOpen={showWebsiteModal} onClose={() => setShowWebsiteModal(false)} />
     </div>
   );
 };

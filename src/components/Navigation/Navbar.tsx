@@ -2,9 +2,11 @@ import React, { useState } from 'react';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { useRealtime } from '../../context/RealtimeContext.tsx';
 import { useTheme } from '../../context/ThemeContext.tsx';
-import { Compass, Siren, Palette } from 'lucide-react';
+import { Compass, Siren, Palette, Globe, Activity } from 'lucide-react';
 import { PWAInstallButton } from './PWAInstallButton.tsx';
 import { ThemeSelectorModal } from './ThemeSelectorModal.tsx';
+import { WebsiteLaunchModal } from './WebsiteLaunchModal.tsx';
+import { SystemValidationModal } from '../Diagnostics/SystemValidationModal.tsx';
 import { sound, triggerHaptic } from '../../utils/audio.ts';
 
 interface NavbarProps {
@@ -12,13 +14,22 @@ interface NavbarProps {
   onSelectTab: (tab: string) => void;
   onOpenSos: () => void;
   onPrefetchTab?: (tab: string) => void;
+  activeRoomId?: string | null;
 }
 
-export const Navbar: React.FC<NavbarProps> = ({ currentTab, onSelectTab, onOpenSos, onPrefetchTab }) => {
+export const Navbar: React.FC<NavbarProps> = ({
+  currentTab,
+  onSelectTab,
+  onOpenSos,
+  onPrefetchTab,
+  activeRoomId,
+}) => {
   const { user } = useAuth();
   const { activeAlerts, isConnected } = useRealtime();
   const { themeConfig } = useTheme();
   const [showThemeModal, setShowThemeModal] = useState(false);
+  const [showWebsiteModal, setShowWebsiteModal] = useState(false);
+  const [showValidationModal, setShowValidationModal] = useState(false);
 
   const handleTabSelect = (tabId: string) => {
     if (tabId !== currentTab) {
@@ -46,8 +57,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, onSelectTab, onOpenS
           </span>
         </div>
 
-        {/* Zone 2: 4–5 clean single-line text navigation links */}
-        {/* Zone 2: 4–5 clean single-line text navigation links with smooth active indicator */}
+        {/* Zone 2: Clean single-line text navigation links with smooth active indicator */}
         <nav className={`hidden md:flex items-center gap-6 text-xs font-semibold ${themeConfig.textSecondary}`}>
           {[
             { id: 'map', label: 'Live Map' },
@@ -87,17 +97,33 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, onSelectTab, onOpenS
           })}
         </nav>
 
-        {/* Zone 3: 1 primary action / User profile trigger / Theme switcher */}
-        <div className="flex items-center gap-2.5 shrink-0">
-          {/* Realtime Network status indicator */}
-          <div className={`hidden lg:flex items-center gap-1.5 text-[11px] font-medium ${themeConfig.textSecondary}`}>
+        {/* Zone 3: Primary actions / Diagnostics / Website Launch / Theme switcher / Profile */}
+        <div className="flex items-center gap-2 shrink-0">
+          {/* Realtime Network status indicator (clickable to open Diagnostics Validation Screen) */}
+          <button
+            type="button"
+            onClick={() => setShowValidationModal(true)}
+            title="Open API & Synchronization Diagnostic Screen"
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border ${themeConfig.glassBorder} hover:bg-white/10 transition-all text-[11px] font-semibold cursor-pointer ${themeConfig.textSecondary}`}
+          >
             <div
               className={`w-2 h-2 rounded-full ${
                 isConnected ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse'
               }`}
             />
-            <span>{isConnected ? 'Mesh Online' : 'Connecting'}</span>
-          </div>
+            <Activity className="w-3.5 h-3.5 text-emerald-400 sm:hidden" />
+            <span className="hidden sm:inline">{isConnected ? 'Sync OK' : 'Reconnecting'}</span>
+          </button>
+
+          {/* Website & Google Launch Hub Button */}
+          <button
+            onClick={() => setShowWebsiteModal(true)}
+            className={`px-2.5 py-1.5 rounded-xl border ${themeConfig.glassBorder} hover:bg-white/10 transition-all flex items-center gap-1.5 text-xs font-semibold cursor-pointer shadow-sm`}
+            title="Share Website URL, Install Web App, or Download APK"
+          >
+            <Globe className="w-3.5 h-3.5 text-sky-400" />
+            <span className="hidden sm:inline text-xs">Website</span>
+          </button>
 
           {/* Theme Selector Button */}
           <button
@@ -106,7 +132,7 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, onSelectTab, onOpenS
             title="Switch Glass Theme"
           >
             <Palette className="w-3.5 h-3.5" style={{ color: themeConfig.accentHex }} />
-            <span className="hidden sm:inline text-xs">{themeConfig.name.split(' ')[0]}</span>
+            <span className="hidden xl:inline text-xs">{themeConfig.name.split(' ')[0]}</span>
             <div
               className="w-2.5 h-2.5 rounded-full border border-white/50"
               style={{ backgroundColor: themeConfig.accentHex }}
@@ -141,6 +167,19 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, onSelectTab, onOpenS
 
       {/* Floating Theme Selector Modal */}
       <ThemeSelectorModal isOpen={showThemeModal} onClose={() => setShowThemeModal(false)} />
+
+      {/* Live Website & Google Launch Hub Modal */}
+      <WebsiteLaunchModal
+        isOpen={showWebsiteModal}
+        onClose={() => setShowWebsiteModal(false)}
+        activeRoomId={activeRoomId}
+      />
+
+      {/* API & Synchronization Diagnostic Validation Modal */}
+      <SystemValidationModal
+        isOpen={showValidationModal}
+        onClose={() => setShowValidationModal(false)}
+      />
     </>
   );
 };

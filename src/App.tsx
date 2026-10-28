@@ -60,12 +60,31 @@ function MainApp() {
     userLocations,
   } = useRealtime();
   const { themeConfig, isLiteMode } = useTheme();
-  const [currentTab, setCurrentTab] = useState<string>('map');
+  const [currentTab, setCurrentTab] = useState<string>(() => {
+    try {
+      const sp = new URLSearchParams(window.location.search);
+      const tabParam = sp.get('tab');
+      if (tabParam && ['map', 'saved', 'rooms', 'chat', 'alerts', 'reminders', 'meetings', 'profile'].includes(tabParam)) {
+        return tabParam;
+      }
+    } catch {}
+    return 'map';
+  });
   const [, startTransition] = React.useTransition();
-  const [visitedTabs, setVisitedTabs] = useState<Set<string>>(() => new Set(['map']));
+  const [visitedTabs, setVisitedTabs] = useState<Set<string>>(() => {
+    try {
+      const sp = new URLSearchParams(window.location.search);
+      const tabParam = sp.get('tab');
+      if (tabParam) return new Set(['map', tabParam]);
+    } catch {}
+    return new Set(['map']);
+  });
 
   const [selectedRoomId, setSelectedRoomId] = useState<string | null>(() => {
     try {
+      const sp = new URLSearchParams(window.location.search);
+      const roomParam = sp.get('room');
+      if (roomParam) return roomParam;
       const savedUserRaw = localStorage.getItem('beacon_user_profile');
       const uid = savedUserRaw ? JSON.parse(savedUserRaw)?.id : null;
       if (uid) {
@@ -421,6 +440,7 @@ function MainApp() {
           setTimeout(() => window.dispatchEvent(new CustomEvent('beacon:open-sos-modal')), 60);
         }}
         onPrefetchTab={prefetchTab}
+        activeRoomId={selectedRoomId}
       />
 
       {/* Floating Network Resilience / Offline Status Banner */}

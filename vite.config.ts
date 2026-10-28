@@ -5,13 +5,21 @@ import path from 'path';
 import { defineConfig } from 'vite';
 
 export default defineConfig(() => {
+  const cleanEnvUrl = (val?: string) =>
+    val && !val.includes('myapp-backend.onrender.com') && !val.includes('YOUR_') ? val : '';
+
   return {
+    define: {
+      'import.meta.env.VITE_API_URL': JSON.stringify(cleanEnvUrl(process.env.VITE_API_URL)),
+      'import.meta.env.VITE_API_BASE_URL': JSON.stringify(cleanEnvUrl(process.env.VITE_API_BASE_URL)),
+      'import.meta.env.VITE_WS_URL': JSON.stringify(cleanEnvUrl(process.env.VITE_WS_URL)),
+    },
     plugins: [
       react(),
       tailwindcss(),
       VitePWA({
         registerType: 'autoUpdate',
-        includeAssets: ['apple-touch-icon.png', 'icon.svg'],
+        includeAssets: ['apple-touch-icon.png', 'icon.svg', 'robots.txt'],
         manifest: {
           id: '/',
           name: 'Beacon - Real-Time Location & Community Mesh',
@@ -48,11 +56,11 @@ export default defineConfig(() => {
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
           globIgnores: ['**/assets/aistudio/**'],
           maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
-          navigateFallbackDenylist: [/^\/api\//, /^\/uploads\//, /^\/ws/],
+          navigateFallbackDenylist: [/^\/api\//, /^\/uploads\//, /^\/ws/, /^\/sitemap\.xml$/, /^\/robots\.txt$/],
           cleanupOutdatedCaches: true,
         },
         devOptions: {
-          enabled: false,
+          enabled: true,
           type: 'module',
         },
       }),
