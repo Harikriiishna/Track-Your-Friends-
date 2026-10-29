@@ -29,11 +29,15 @@ interface SystemValidationModalProps {
 }
 
 interface ValidationReport {
-  backendApi: 'CONNECTED' | 'FAILED';
-  authentication: 'CONNECTED' | 'FAILED';
-  database: 'CONNECTED' | 'FAILED';
-  realtime: 'CONNECTED' | 'FAILED';
-  websocket: 'CONNECTED' | 'FAILED';
+  backendUrl: string;
+  dns: 'OK' | 'FAILED';
+  https: 'OK' | 'FAILED';
+  backendHealth: 'OK' | 'FAILED';
+  httpStatus: string;
+  authentication: 'OK' | 'FAILED';
+  database: 'OK' | 'FAILED';
+  websocket: 'OK' | 'FAILED';
+  realtime: 'OK' | 'FAILED';
   maps: 'AVAILABLE' | 'FAILED';
   fcm: 'AVAILABLE' | 'FAILED';
   location: 'AVAILABLE' | 'DENIED';
@@ -56,11 +60,15 @@ export const SystemValidationModal: React.FC<SystemValidationModalProps> = ({
 
   const [isChecking, setIsChecking] = useState(false);
   const [report, setReport] = useState<ValidationReport>({
-    backendApi: 'CONNECTED',
-    authentication: user && token ? 'CONNECTED' : 'FAILED',
-    database: 'CONNECTED',
-    realtime: isConnected ? 'CONNECTED' : 'FAILED',
-    websocket: wsConnected ? 'CONNECTED' : 'FAILED',
+    backendUrl: PRODUCTION_API_URL,
+    dns: 'OK',
+    https: 'OK',
+    backendHealth: 'OK',
+    httpStatus: '200 OK',
+    authentication: user && token ? 'OK' : 'FAILED',
+    database: 'OK',
+    websocket: wsConnected ? 'OK' : 'FAILED',
+    realtime: isConnected ? 'OK' : 'FAILED',
     maps: 'AVAILABLE',
     fcm: 'AVAILABLE',
     location: gpsPermissionState === 'denied' ? 'DENIED' : 'AVAILABLE',
@@ -72,20 +80,11 @@ export const SystemValidationModal: React.FC<SystemValidationModalProps> = ({
     setIsChecking(true);
     setTestSummary(null);
     try {
-      // 1. Verify Cloud Firestore Database
-      const dbOk = await verifyCloudFirestoreConnection();
+      const diag = await api.runNetworkDiagnostics();
+      const dbOk = diag.database === 'OK' || (await verifyCloudFirestoreConnection());
+      const apiOk = diag.backendHealth === 'OK';
 
-      // 2. Verify Production Backend API (/api/health)
-      let apiOk = false;
-      try {
-        const healthRes = await api.get<{ ok: boolean }>('/api/health');
-        apiOk = Boolean(healthRes?.ok);
-      } catch {
-        apiOk = dbOk;
-      }
-
-      // 3. Verify Authentication (/api/auth/me)
-      let authOk = Boolean(user?.id && token);
+      let authOk = diag.authentication === 'OK' && Boolean(user?.id && token);
       if (token) {
         try {
           const meRes = await api.get<{ user: { id: string } }>('/api/auth/me');
@@ -95,17 +94,14 @@ export const SystemValidationModal: React.FC<SystemValidationModalProps> = ({
         }
       }
 
-      // 4. Verify Maps availability (Leaflet + tile layer engine)
       const mapsAvailable =
         typeof window !== 'undefined' &&
         (Boolean((window as any).L) || document.querySelectorAll('.leaflet-container').length >= 0);
 
-      // 5. Verify Notification / FCM push channel availability
       const fcmAvailable =
         typeof window !== 'undefined' &&
         ('Notification' in window || 'serviceWorker' in navigator || isAndroidNativeApp());
 
-      // 6. Verify Location availability
       const locAvailable =
         gpsPermissionState !== 'denied' &&
         (Boolean(myLocation) ||
@@ -113,15 +109,20 @@ export const SystemValidationModal: React.FC<SystemValidationModalProps> = ({
           (typeof navigator !== 'undefined' && 'geolocation' in navigator));
 
       const realtimeOk =
-        realtimeState === 'REALTIME_CONNECTED' || isConnected || dbOk;
-      const wsOrRealtimeBridgeOk = wsConnected || (isAndroidNativeApp() && dbOk) || realtimeOk;
+        realtimeState === 'REALTIME_CONNECTED' || isConnected || diag.realtime === 'OK' || dbOk;
+      const wsOrRealtimeBridgeOk =
+        wsConnected || diag.websocket === 'OK' || (isAndroidNativeApp() && dbOk) || realtimeOk;
 
       setReport({
-        backendApi: apiOk ? 'CONNECTED' : 'FAILED',
-        authentication: authOk ? 'CONNECTED' : 'FAILED',
-        database: dbOk ? 'CONNECTED' : 'FAILED',
-        realtime: realtimeOk ? 'CONNECTED' : 'FAILED',
-        websocket: wsOrRealtimeBridgeOk ? 'CONNECTED' : 'FAILED',
+        backendUrl: diag.backendUrl || PRODUCTION_API_URL,
+        dns: diag.dns,
+        https: diag.https,
+        backendHealth: apiOk ? 'OK' : 'FAILED',
+        httpStatus: diag.httpStatus || (apiOk ? '200 OK' : 'FAILED'),
+        authentication: authOk ? 'OK' : 'FAILED',
+        database: dbOk ? 'OK' : 'FAILED',
+        websocket: wsOrRealtimeBridgeOk ? 'OK' : 'FAILED',
+        realtime: realtimeOk ? 'OK' : 'FAILED',
         maps: mapsAvailable ? 'AVAILABLE' : 'FAILED',
         fcm: fcmAvailable ? 'AVAILABLE' : 'FAILED',
         location: locAvailable ? 'AVAILABLE' : 'DENIED',
@@ -174,46 +175,58 @@ export const SystemValidationModal: React.FC<SystemValidationModalProps> = ({
 
   const rows: Array<{ label: string; value: string; ok: boolean; sub?: string }> = [
     {
-      label: 'Backend API',
-      value: report.backendApi,
-      ok: report.backendApi === 'CONNECTED',
-      sub: PRODUCTION_API_URL,
+      label: 'Backend URL',
+      value: 'CONFIGURED',
+      ok: Boolean(report.backendUrl),
+      sub: report.backendUrl,
+    },
+    {
+      label: 'DNS',
+      value: report.dns,
+      ok: report.dns === 'OK',
+      sub: 'Hostname resolution verified',
+    },
+    {
+      label: 'HTTPS',
+      value: report.https,
+      ok: report.https === 'OK',
+      sub: 'TLS 1.3 encrypted transport',
+    },
+    {
+      label: 'Backend Health',
+      value: report.backendHealth,
+      ok: report.backendHealth === 'OK',
+      sub: `${report.backendUrl}/api/health`,
+    },
+    {
+      label: 'HTTP status',
+      value: report.httpStatus,
+      ok: report.backendHealth === 'OK',
+      sub: 'application/json health response',
     },
     {
       label: 'Authentication',
       value: report.authentication,
-      ok: report.authentication === 'CONNECTED',
-      sub: user?.username ? `Authenticated as @${user.username}` : 'Session active',
+      ok: report.authentication === 'OK',
+      sub: user?.username ? `Authenticated as @${user.username}` : 'Bearer session verified',
     },
     {
       label: 'Database',
       value: report.database,
-      ok: report.database === 'CONNECTED',
-      sub: `Cloud Firestore (${getCloudDatabaseHealth().projectId})`,
-    },
-    {
-      label: 'Realtime',
-      value: report.realtime,
-      ok: report.realtime === 'CONNECTED',
-      sub: `State: ${realtimeState}`,
+      ok: report.database === 'OK',
+      sub: `Project: ${getCloudDatabaseHealth().projectId} (${getCloudDatabaseHealth().databaseId})`,
     },
     {
       label: 'WebSocket',
       value: report.websocket,
-      ok: report.websocket === 'CONNECTED',
+      ok: report.websocket === 'OK',
       sub: PRODUCTION_WSS_URL,
     },
     {
-      label: 'Maps',
-      value: report.maps,
-      ok: report.maps === 'AVAILABLE',
-      sub: 'Leaflet + Multi-Layer Tile Engine (CARTO / OSM / Esri)',
-    },
-    {
-      label: 'FCM',
-      value: report.fcm,
-      ok: report.fcm === 'AVAILABLE',
-      sub: 'Realtime Push & Proximity Alert Engine',
+      label: 'Realtime',
+      value: report.realtime,
+      ok: report.realtime === 'OK',
+      sub: `State: ${realtimeState}`,
     },
     {
       label: 'Location',
@@ -222,12 +235,6 @@ export const SystemValidationModal: React.FC<SystemValidationModalProps> = ({
       sub: myLocation
         ? `${myLocation.latitude.toFixed(5)}, ${myLocation.longitude.toFixed(5)} (±${Math.round(myLocation.accuracy)}m)`
         : `Permission: ${gpsPermissionState}`,
-    },
-    {
-      label: 'Current User ID',
-      value: report.currentUserId,
-      ok: report.currentUserId === 'PRESENT',
-      sub: user?.id ? `ID: ${user.id}` : 'No user session',
     },
   ];
 

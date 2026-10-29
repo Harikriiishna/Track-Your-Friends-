@@ -534,19 +534,35 @@ const uploadRateLimiter = createRateLimiter({
   message: 'File upload rate limit reached. Please wait a minute.',
 });
 
+const syncRateLimiter = createRateLimiter({
+  max: 120,
+  windowMs: 60 * 1000,
+  message: 'Sync rate limit reached. Please wait a moment.',
+});
+
 // HTTP Authentication Middleware
-function authMiddleware(req: express.Request, res: express.Response, next: express.NextFunction) {
+function extractRequestUser(req: express.Request): { user: UserProfile | null; token: string | null } {
   const authHeader = req.headers.authorization;
-  const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7) : (req.query.token as string);
+  const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7) : (req.query.token as string) || null;
   const hintUserId = (req.headers['x-beacon-user-id'] as string | undefined) || undefined;
   const hintEmail = (req.headers['x-beacon-user-email'] as string | undefined) || undefined;
+
+  if (!token) {
+    return { user: null, token: null };
+  }
+
+  const user = db.getSessionUser(token, hintUserId, hintEmail);
+  return { user, token };
+}
+
+function authMiddleware(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const { user, token } = extractRequestUser(req);
 
   if (!token) {
     res.status(401).json({ error: 'Missing authentication token' });
     return;
   }
 
-  const user = db.getSessionUser(token, hintUserId, hintEmail);
   if (!user) {
     res.status(401).json({ error: 'Invalid or expired session' });
     return;
@@ -565,25 +581,40 @@ app.get('/api/health', (_req, res) => {
     status: 'healthy',
     service: 'Beacon Production Backend',
     database: 'ok',
+    authRequired: true,
     timestamp: new Date().toISOString(),
   });
 });
 
 // Authoritative Cross-Platform State Synchronization Endpoint (Web <-> Production Server <-> Android APK)
-app.get('/api/sync/state', (_req, res) => {
+app.get('/api/sync/state', syncRateLimiter, (req, res) => {
+  const { user } = extractRequestUser(req);
+  if (!user) {
+    res.json({
+      ok: true,
+      database: 'ok',
+      authenticated: false,
+      updatedAt: new Date().toISOString(),
+    });
+    return;
+  }
   res.json({
     ok: true,
+    database: 'ok',
+    authenticated: true,
     updatedAt: new Date().toISOString(),
-    state: db.getSyncSnapshot(),
+    state: db.getSanitizedSyncSnapshot(),
   });
 });
 
-app.post('/api/sync/state', (req, res) => {
+app.post('/api/sync/state', authMiddleware, syncRateLimiter, (req, res) => {
   try {
     const incoming = req.body?.state || req.body;
     const merged = db.applyIncomingSyncSnapshot(incoming || {});
     res.json({
       ok: true,
+      database: 'ok',
+      authenticated: true,
       updatedAt: new Date().toISOString(),
       state: merged,
     });
@@ -717,7 +748,7 @@ app.post('/api/auth/quick-reset', authRateLimiter, (req, res) => {
 });
 
 // Demo 1-tap quick sign-in for testing
-app.post('/api/auth/demo-login', (req, res) => {
+app.post('/api/auth/demo-login', authRateLimiter, (req, res) => {
   try {
     const allUsers = db.getAllUsers();
     if (allUsers.length === 0) {

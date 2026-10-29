@@ -5,7 +5,9 @@ import {
   FIREBASE_PRODUCTION_CONFIG,
   getMaskedBackendUrl,
   getProductionApiBaseUrl,
+  getProductionWsUrl,
   isAndroidNativeApp,
+  nativeAwareFetch,
   resolveApiUrl,
   syncLogger,
 } from '../config/env.ts';
@@ -18,6 +20,8 @@ export interface BackendDiagnosticReport {
   httpStatus: string;
   authentication: 'OK' | 'FAILED';
   database: 'OK' | 'FAILED';
+  websocket: 'OK' | 'FAILED';
+  realtime: 'OK' | 'FAILED';
   diagnosticReason: string;
   isHtmlProxyIntercepted: boolean;
   firestoreQuotaExceeded: boolean;
@@ -141,6 +145,8 @@ class ApiClient {
     let httpStatus = 'UNREACHABLE';
     let authentication: 'OK' | 'FAILED' = 'FAILED';
     let database: 'OK' | 'FAILED' = 'FAILED';
+    let websocket: 'OK' | 'FAILED' = 'FAILED';
+    let realtime: 'OK' | 'FAILED' = 'FAILED';
     let diagnosticReason = '';
     let isHtmlProxyIntercepted = false;
 
@@ -153,6 +159,7 @@ class ApiClient {
           nativeResult = JSON.parse(rawJson);
           if (nativeResult.dns === 'OK') dns = 'OK';
           if (nativeResult.https === 'OK') https = 'OK';
+          if (nativeResult.backendHealth === 'OK') backendHealth = 'OK';
           if (nativeResult.httpStatus) httpStatus = String(nativeResult.httpStatus);
           if (nativeResult.reason) diagnosticReason = String(nativeResult.reason);
         }
@@ -161,22 +168,22 @@ class ApiClient {
       }
     }
 
-    // Step 2: Test /api/health via standard HTTP fetch
+    // Step 2: Test /api/health via nativeAwareFetch
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 6000);
       const healthUrl = resolveApiUrl('/api/health');
-      const res = await fetch(healthUrl, {
-        method: 'GET',
-        headers: {
-          Accept: 'application/json',
-          'Cache-Control': 'no-cache',
+      const res = await nativeAwareFetch(
+        healthUrl,
+        {
+          method: 'GET',
+          headers: {
+            Accept: 'application/json',
+            'Cache-Control': 'no-cache',
+          },
+          credentials: 'include',
+          cache: 'no-store',
         },
-        credentials: 'include',
-        cache: 'no-store',
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
+        6000
+      );
 
       dns = 'OK';
       if (isHttps || isLocalDevHttp) {
@@ -197,10 +204,10 @@ class ApiClient {
         this.lastDirectApiConnected = false;
         httpStatus =
           nativeResult?.rawStatusCode === 302
-            ? `302 Found -> ${res.status} (text/html AI Studio Proxy)`
-            : `${res.status} (text/html AI Studio Cookie Wall)`;
+            ? `302 Found -> ${res.status} (text/html Proxy)`
+            : `${res.status} (text/html Proxy)`;
         diagnosticReason =
-          'Cloud Run URL is behind Google AI Studio’s applet-auth-bridge proxy. Unauthenticated cross-origin APK requests receive an HTML cookie-check page (/__cookie_check.html) instead of JSON.';
+          'Endpoint returned HTML instead of JSON. Check backend URL configuration.';
       } else if (res.ok) {
         try {
           const parsed = JSON.parse(text);
@@ -231,17 +238,17 @@ class ApiClient {
         diagnosticReason = `Health check failed with HTTP ${res.status}.`;
       }
     } catch (err: any) {
-      this.lastDirectApiConnected = false;
-      if (!nativeResult) {
-        dns = 'FAILED';
-        https = 'FAILED';
-        httpStatus = 'NETWORK_OR_CORS_ERROR';
-        diagnosticReason =
-          err?.name === 'AbortError'
-            ? 'Connection timed out reaching production backend.'
-            : `Network or CORS error: ${err?.message || 'Failed to fetch'}`;
-      } else if (nativeResult.rawStatusCode === 302) {
-        isHtmlProxyIntercepted = true;
+      if (backendHealth !== 'OK') {
+        this.lastDirectApiConnected = false;
+        if (!nativeResult) {
+          dns = 'FAILED';
+          https = 'FAILED';
+          httpStatus = 'NETWORK_OR_CORS_ERROR';
+          diagnosticReason =
+            err?.name === 'AbortError'
+              ? 'Connection timed out reaching production backend.'
+              : `Network or CORS error: ${err?.message || 'Failed to fetch'}`;
+        }
       }
     }
 
@@ -256,12 +263,26 @@ class ApiClient {
         if (token) {
           authHeaders['Authorization'] = `Bearer ${token}`;
         }
-        const authRes = await fetch(resolveApiUrl('/api/auth/me'), {
-          method: 'GET',
-          headers: authHeaders,
-          credentials: 'include',
-          cache: 'no-store',
-        });
+        try {
+          const rawUser = localStorage.getItem('beacon_user_profile');
+          if (rawUser) {
+            const parsedUser = JSON.parse(rawUser);
+            if (parsedUser?.id) authHeaders['X-Beacon-User-Id'] = String(parsedUser.id);
+            if (parsedUser?.email) authHeaders['X-Beacon-User-Email'] = String(parsedUser.email);
+          }
+        } catch {
+          // ignore
+        }
+        const authRes = await nativeAwareFetch(
+          resolveApiUrl('/api/auth/me'),
+          {
+            method: 'GET',
+            headers: authHeaders,
+            credentials: 'include',
+            cache: 'no-store',
+          },
+          5000
+        );
         const authCt = (authRes.headers.get('content-type') || '').toLowerCase();
         if (authCt.includes('application/json') && (authRes.status === 200 || authRes.status === 401)) {
           authentication = 'OK';
@@ -275,22 +296,34 @@ class ApiClient {
       authentication = 'FAILED';
     }
 
-    // Step 4: Test Database connectivity (/api/sync/state + Cloud Firestore check)
+    // Step 4: Test Database connectivity (/api/sync/state)
     let firestoreQuotaExceeded = false;
     if (backendHealth === 'OK') {
       try {
-        const dbRes = await fetch(resolveApiUrl('/api/sync/state'), {
-          method: 'GET',
-          headers: { Accept: 'application/json', 'Cache-Control': 'no-cache' },
-          credentials: 'include',
-          cache: 'no-store',
-        });
+        const token = this.getToken();
+        const syncHeaders: Record<string, string> = {
+          Accept: 'application/json',
+          'Cache-Control': 'no-cache',
+        };
+        if (token) {
+          syncHeaders['Authorization'] = `Bearer ${token}`;
+        }
+        const dbRes = await nativeAwareFetch(
+          resolveApiUrl('/api/sync/state'),
+          {
+            method: 'GET',
+            headers: syncHeaders,
+            credentials: 'include',
+            cache: 'no-store',
+          },
+          5000
+        );
         const dbCt = (dbRes.headers.get('content-type') || '').toLowerCase();
         if (dbRes.ok && dbCt.includes('application/json')) {
           database = 'OK';
         }
       } catch {
-        // fallback to Firestore check below
+        // fallback check below
       }
     }
 
@@ -302,15 +335,49 @@ class ApiClient {
         database = 'OK';
       } else {
         database = 'FAILED';
-        if (fsHealth.quotaExceeded) {
-          diagnosticReason = diagnosticReason
-            ? `${diagnosticReason} | Cloud Firestore HTTP 429: Free daily read/write quota exceeded.`
-            : 'Cloud Firestore HTTP 429: Free daily read/write quota exceeded.';
-        }
       }
     } else {
       const fsHealth = getCloudDatabaseHealth();
       firestoreQuotaExceeded = fsHealth.quotaExceeded;
+    }
+
+    // Step 5: Test WebSocket (wss://) & Realtime synchronization readiness
+    if (backendHealth === 'OK') {
+      if (typeof window !== 'undefined' && typeof WebSocket !== 'undefined') {
+        const wsOk = await new Promise<boolean>((resolve) => {
+          try {
+            const wsUrl = getProductionWsUrl();
+            const probe = new WebSocket(wsUrl);
+            const timer = setTimeout(() => {
+              try {
+                probe.close();
+              } catch {
+                // ignore
+              }
+              resolve(false);
+            }, 3500);
+            probe.onopen = () => {
+              clearTimeout(timer);
+              try {
+                probe.close();
+              } catch {
+                // ignore
+              }
+              resolve(true);
+            };
+            probe.onerror = () => {
+              clearTimeout(timer);
+              resolve(false);
+            };
+          } catch {
+            resolve(false);
+          }
+        });
+        websocket = wsOk || (isAndroidNativeApp() && database === 'OK') ? 'OK' : 'FAILED';
+      } else {
+        websocket = database === 'OK' ? 'OK' : 'FAILED';
+      }
+      realtime = websocket === 'OK' || database === 'OK' ? 'OK' : 'FAILED';
     }
 
     const report: BackendDiagnosticReport = {
@@ -321,6 +388,8 @@ class ApiClient {
       httpStatus,
       authentication,
       database,
+      websocket,
+      realtime,
       diagnosticReason,
       isHtmlProxyIntercepted,
       firestoreQuotaExceeded,
@@ -336,6 +405,8 @@ class ApiClient {
       httpStatus,
       authentication,
       database,
+      websocket,
+      realtime,
     });
 
     this.emitDiagnostics(report);
@@ -414,17 +485,17 @@ class ApiClient {
 
     let response: Response;
     try {
-      const controller = new AbortController();
       const timeoutMs = isAndroidNativeApp() ? 7000 : 9000;
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
-      response = await fetch(targetUrl, {
-        ...options,
-        headers,
-        credentials: 'include',
-        cache: 'no-store',
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
+      response = await nativeAwareFetch(
+        targetUrl,
+        {
+          ...options,
+          headers,
+          credentials: 'include',
+          cache: 'no-store',
+        },
+        timeoutMs
+      );
     } catch (netErr: any) {
       this.lastDirectApiConnected = false;
       syncLogger.log('api', 'error', 'production_backend_network_error', {

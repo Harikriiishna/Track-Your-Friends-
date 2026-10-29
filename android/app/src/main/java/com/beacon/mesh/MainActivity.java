@@ -34,12 +34,32 @@ import org.json.JSONObject;
 import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.InetAddress;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 public class MainActivity extends BridgeActivity {
     private static final int LOCATION_PERMISSION_REQUEST_CODE = 1001;
+    private static final String DEFAULT_BACKEND_ORIGIN =
+            "https://ais-pre-dkfhfrzboel3a3xnlpek5a-752786783113.asia-northeast1.run.app";
+    private static final String PUBLIC_CONTAINER_GATE_COOKIE_NAME = "__SECURE-aistudio_auth_token";
+    private static final String PUBLIC_CONTAINER_GATE_COOKIE_VAL = "one_token_to_rule_them_all";
+    private static final String PUBLIC_FLOW_COOKIE_NAME = "__SECURE-aistudio_auth_flow_may_set_cookies";
+    private static final String PUBLIC_FLOW_COOKIE_VAL = "true";
+
+    private final ConcurrentHashMap<String, String> backendCookies = new ConcurrentHashMap<>();
+    private final ScheduledExecutorService backendKeepAliveExecutor = Executors.newSingleThreadScheduledExecutor();
+    private volatile String activeBackendOrigin = DEFAULT_BACKEND_ORIGIN;
+
     private LocationManager locationManager;
     private volatile Location latestNativeLocation;
     private boolean isListeningNativeLocation = false;
@@ -92,6 +112,8 @@ public class MainActivity extends BridgeActivity {
                 cookieManager.setAcceptThirdPartyCookies(webView, true);
             } catch (Exception ignored) {}
 
+            seedAndSyncBackendCookies(activeBackendOrigin);
+
             try {
                 webView.addJavascriptInterface(new AndroidLocationBridge(), "AndroidLocationBridge");
             } catch (Exception ignored) {}
@@ -133,6 +155,16 @@ public class MainActivity extends BridgeActivity {
             });
         }
 
+        // Warm production Cloud Run endpoint and keep sticky instance session alive every 25s
+        try {
+            backendKeepAliveExecutor.scheduleWithFixedDelay(
+                    () -> warmBackendConnection(activeBackendOrigin),
+                    0,
+                    25,
+                    TimeUnit.SECONDS
+            );
+        } catch (Exception ignored) {}
+
         if (hasLocationPermission()) {
             startNativeLocationUpdates();
         }
@@ -141,6 +173,10 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onResume() {
         super.onResume();
+        seedAndSyncBackendCookies(activeBackendOrigin);
+        try {
+            backendKeepAliveExecutor.execute(() -> warmBackendConnection(activeBackendOrigin));
+        } catch (Exception ignored) {}
         if (hasLocationPermission()) {
             isRequestingLocationPermission = false;
             startNativeLocationUpdates();
@@ -159,7 +195,124 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onDestroy() {
         stopNativeLocationUpdates();
+        try {
+            backendKeepAliveExecutor.shutdownNow();
+        } catch (Exception ignored) {}
         super.onDestroy();
+    }
+
+    private void seedAndSyncBackendCookies(String baseUrl) {
+        try {
+            backendCookies.putIfAbsent(PUBLIC_CONTAINER_GATE_COOKIE_NAME, PUBLIC_CONTAINER_GATE_COOKIE_VAL);
+            backendCookies.putIfAbsent(PUBLIC_FLOW_COOKIE_NAME, PUBLIC_FLOW_COOKIE_VAL);
+            String cleanOrigin = (baseUrl != null && !baseUrl.trim().isEmpty())
+                    ? baseUrl.trim().replaceAll("/+$", "")
+                    : DEFAULT_BACKEND_ORIGIN;
+            CookieManager cm = CookieManager.getInstance();
+            cm.setAcceptCookie(true);
+            for (Map.Entry<String, String> entry : backendCookies.entrySet()) {
+                String cookieLine = entry.getKey() + "=" + entry.getValue()
+                        + "; Path=/; Secure; SameSite=None; Partitioned";
+                cm.setCookie(cleanOrigin, cookieLine);
+            }
+            cm.flush();
+        } catch (Exception ignored) {}
+    }
+
+    private String buildCookieHeader(String targetUrl) {
+        backendCookies.putIfAbsent(PUBLIC_CONTAINER_GATE_COOKIE_NAME, PUBLIC_CONTAINER_GATE_COOKIE_VAL);
+        backendCookies.putIfAbsent(PUBLIC_FLOW_COOKIE_NAME, PUBLIC_FLOW_COOKIE_VAL);
+        StringBuilder sb = new StringBuilder();
+        for (Map.Entry<String, String> entry : backendCookies.entrySet()) {
+            if (sb.length() > 0) sb.append("; ");
+            sb.append(entry.getKey()).append("=").append(entry.getValue());
+        }
+        try {
+            String webViewCookies = CookieManager.getInstance().getCookie(targetUrl);
+            if (webViewCookies != null && !webViewCookies.isEmpty()) {
+                String[] parts = webViewCookies.split(";");
+                for (String part : parts) {
+                    String trimmed = part.trim();
+                    int eq = trimmed.indexOf('=');
+                    if (eq > 0) {
+                        String k = trimmed.substring(0, eq).trim();
+                        String v = trimmed.substring(eq + 1).trim();
+                        if (!backendCookies.containsKey(k) && !v.isEmpty()) {
+                            backendCookies.put(k, v);
+                            if (sb.length() > 0) sb.append("; ");
+                            sb.append(k).append("=").append(v);
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+        return sb.toString();
+    }
+
+    private void captureResponseCookies(HttpURLConnection conn, String baseUrl) {
+        if (conn == null) return;
+        try {
+            Map<String, List<String>> headerFields = conn.getHeaderFields();
+            if (headerFields == null) return;
+            boolean updated = false;
+            for (Map.Entry<String, List<String>> entry : headerFields.entrySet()) {
+                if (entry.getKey() != null && "set-cookie".equalsIgnoreCase(entry.getKey()) && entry.getValue() != null) {
+                    for (String rawCookie : entry.getValue()) {
+                        if (rawCookie == null) continue;
+                        String firstPair = rawCookie.split(";")[0].trim();
+                        int eq = firstPair.indexOf('=');
+                        if (eq > 0) {
+                            String name = firstPair.substring(0, eq).trim();
+                            String val = firstPair.substring(eq + 1).trim();
+                            if (!name.isEmpty() && !val.isEmpty()) {
+                                backendCookies.put(name, val);
+                                updated = true;
+                            }
+                        }
+                    }
+                }
+            }
+            if (updated) {
+                seedAndSyncBackendCookies(baseUrl);
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private boolean warmBackendConnection(String originUrl) {
+        String cleanOrigin = (originUrl != null && !originUrl.trim().isEmpty())
+                ? originUrl.trim().replaceAll("/+$", "")
+                : DEFAULT_BACKEND_ORIGIN;
+        activeBackendOrigin = cleanOrigin;
+        seedAndSyncBackendCookies(cleanOrigin);
+        for (int attempt = 0; attempt < 2; attempt++) {
+            HttpURLConnection conn = null;
+            try {
+                URL healthUrl = new URL(cleanOrigin + "/api/health");
+                conn = (HttpURLConnection) healthUrl.openConnection();
+                conn.setInstanceFollowRedirects(false);
+                conn.setConnectTimeout(5000);
+                conn.setReadTimeout(5000);
+                conn.setRequestMethod("GET");
+                conn.setRequestProperty("Accept", "application/json");
+                conn.setRequestProperty("Cache-Control", "no-cache");
+                conn.setRequestProperty("Cookie", buildCookieHeader(cleanOrigin));
+
+                int code = conn.getResponseCode();
+                captureResponseCookies(conn, cleanOrigin);
+                if (code == 200) {
+                    return true;
+                }
+            } catch (Exception ignored) {
+                return false;
+            } finally {
+                if (conn != null) {
+                    try {
+                        conn.disconnect();
+                    } catch (Exception ignored) {}
+                }
+            }
+        }
+        return false;
     }
 
     private boolean hasLocationPermission() {
@@ -541,10 +694,110 @@ public class MainActivity extends BridgeActivity {
         }
 
         @JavascriptInterface
+        public String nativeHttpRequest(String urlStr, String method, String headersJson, String bodyStr) {
+            JSONObject responseObj = new JSONObject();
+            try {
+                URL parsedUrl = new URL(urlStr);
+                String origin = parsedUrl.getProtocol() + "://" + parsedUrl.getAuthority();
+                activeBackendOrigin = origin;
+                seedAndSyncBackendCookies(origin);
+
+                String reqMethod = (method != null && !method.trim().isEmpty())
+                        ? method.trim().toUpperCase()
+                        : "GET";
+
+                for (int attempt = 0; attempt < 2; attempt++) {
+                    HttpURLConnection conn = null;
+                    try {
+                        conn = (HttpURLConnection) parsedUrl.openConnection();
+                        conn.setInstanceFollowRedirects(false);
+                        conn.setConnectTimeout(6500);
+                        conn.setReadTimeout(7500);
+                        conn.setRequestMethod(reqMethod);
+                        conn.setRequestProperty("Accept", "application/json");
+                        conn.setRequestProperty("Cache-Control", "no-cache");
+                        conn.setRequestProperty("Cookie", buildCookieHeader(origin));
+
+                        if (headersJson != null && !headersJson.trim().isEmpty()) {
+                            try {
+                                JSONObject headersObj = new JSONObject(headersJson);
+                                Iterator<String> keys = headersObj.keys();
+                                while (keys.hasNext()) {
+                                    String k = keys.next();
+                                    String v = headersObj.optString(k, "");
+                                    if (k != null && !k.isEmpty() && !v.isEmpty() && !"cookie".equalsIgnoreCase(k)) {
+                                        conn.setRequestProperty(k, v);
+                                    }
+                                }
+                            } catch (Exception ignored) {}
+                        }
+
+                        if (bodyStr != null && !bodyStr.isEmpty()
+                                && ("POST".equals(reqMethod) || "PUT".equals(reqMethod) || "PATCH".equals(reqMethod))) {
+                            conn.setDoOutput(true);
+                            if (conn.getRequestProperty("Content-Type") == null) {
+                                conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+                            }
+                            byte[] outBytes = bodyStr.getBytes(StandardCharsets.UTF_8);
+                            conn.setFixedLengthStreamingMode(outBytes.length);
+                            try (OutputStream os = conn.getOutputStream()) {
+                                os.write(outBytes);
+                                os.flush();
+                            }
+                        }
+
+                        int code = conn.getResponseCode();
+                        captureResponseCookies(conn, origin);
+
+                        // If Cloud Run Nginx 60s public gate cache was cold, warm it and replay the exact request once
+                        if ((code == 301 || code == 302 || code == 303 || code == 307 || code == 308) && attempt == 0) {
+                            warmBackendConnection(origin);
+                            continue;
+                        }
+
+                        String contentType = conn.getContentType() != null ? conn.getContentType() : "application/json";
+                        InputStream is = (code >= 200 && code < 400) ? conn.getInputStream() : conn.getErrorStream();
+                        StringBuilder sb = new StringBuilder();
+                        if (is != null) {
+                            try (BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8))) {
+                                char[] buf = new char[4096];
+                                int read;
+                                while ((read = reader.read(buf)) != -1) {
+                                    sb.append(buf, 0, read);
+                                }
+                            }
+                        }
+
+                        responseObj.put("ok", code >= 200 && code < 300);
+                        responseObj.put("status", code);
+                        responseObj.put("contentType", contentType);
+                        responseObj.put("body", sb.toString());
+                        return responseObj.toString();
+                    } finally {
+                        if (conn != null) {
+                            try {
+                                conn.disconnect();
+                            } catch (Exception ignored) {}
+                        }
+                    }
+                }
+            } catch (Exception ex) {
+                try {
+                    responseObj.put("ok", false);
+                    responseObj.put("status", 0);
+                    responseObj.put("contentType", "");
+                    responseObj.put("error", ex.getMessage() != null ? ex.getMessage() : "Native HTTP error");
+                } catch (Exception ignored) {}
+            }
+            return responseObj.toString();
+        }
+
+        @JavascriptInterface
         public String diagnoseBackend(String baseUrl) {
             JSONObject result = new JSONObject();
             try {
-                String cleanBase = baseUrl != null ? baseUrl.trim().replaceAll("/+$", "") : "";
+                String cleanBase = baseUrl != null ? baseUrl.trim().replaceAll("/+$", "") : DEFAULT_BACKEND_ORIGIN;
+                activeBackendOrigin = cleanBase;
                 result.put("backendUrl", cleanBase);
 
                 URL parsed = new URL(cleanBase + "/api/health");
@@ -573,78 +826,77 @@ public class MainActivity extends BridgeActivity {
                     return result.toString();
                 }
 
-                // 2. Test HTTPS handshake & raw HTTP response status on /api/health without following proxy redirects
-                HttpURLConnection conn = null;
-                try {
-                    conn = (HttpURLConnection) parsed.openConnection();
-                    conn.setInstanceFollowRedirects(false);
-                    conn.setConnectTimeout(6000);
-                    conn.setReadTimeout(6000);
-                    conn.setRequestMethod("GET");
-                    conn.setRequestProperty("Accept", "application/json");
-                    conn.setRequestProperty("Cache-Control", "no-cache");
+                seedAndSyncBackendCookies(cleanBase);
 
+                // 2. Test HTTPS handshake & health response (warming 60s public gate cache if cold)
+                for (int attempt = 0; attempt < 2; attempt++) {
+                    HttpURLConnection conn = null;
                     try {
-                        String cookies = CookieManager.getInstance().getCookie(cleanBase);
-                        if (cookies != null && !cookies.isEmpty()) {
-                            conn.setRequestProperty("Cookie", cookies);
+                        conn = (HttpURLConnection) parsed.openConnection();
+                        conn.setInstanceFollowRedirects(false);
+                        conn.setConnectTimeout(6000);
+                        conn.setReadTimeout(6000);
+                        conn.setRequestMethod("GET");
+                        conn.setRequestProperty("Accept", "application/json");
+                        conn.setRequestProperty("Cache-Control", "no-cache");
+                        conn.setRequestProperty("Cookie", buildCookieHeader(cleanBase));
+
+                        int code = conn.getResponseCode();
+                        captureResponseCookies(conn, cleanBase);
+                        String contentType = conn.getContentType() != null ? conn.getContentType() : "";
+                        String locationHeader = conn.getHeaderField("Location");
+
+                        if ((code == 301 || code == 302 || code == 303 || code == 307 || code == 308) && attempt == 0) {
+                            continue;
                         }
-                    } catch (Exception ignored) {}
 
-                    int code = conn.getResponseCode();
-                    String contentType = conn.getContentType() != null ? conn.getContentType() : "";
-                    String locationHeader = conn.getHeaderField("Location");
-
-                    result.put("https", "OK");
-                    result.put("rawStatusCode", code);
-                    result.put("contentType", contentType);
-                    if (locationHeader != null) {
-                        result.put("redirectLocation", locationHeader);
-                    }
-
-                    InputStream is = (code >= 200 && code < 400) ? conn.getInputStream() : conn.getErrorStream();
-                    StringBuilder sb = new StringBuilder();
-                    if (is != null) {
-                        BufferedReader reader = new BufferedReader(new InputStreamReader(is));
-                        String line;
-                        while ((line = reader.readLine()) != null && sb.length() < 2048) {
-                            sb.append(line);
+                        result.put("https", "OK");
+                        result.put("rawStatusCode", code);
+                        result.put("contentType", contentType);
+                        if (locationHeader != null) {
+                            result.put("redirectLocation", locationHeader);
                         }
-                        reader.close();
-                    }
-                    String body = sb.toString().trim();
 
-                    if (code == 200 && contentType.toLowerCase().contains("application/json") && body.contains("\"ok\":true")) {
-                        result.put("backendHealth", "OK");
-                        result.put("httpStatus", "200 OK (application/json)");
-                        result.put("reason", "Production backend health check passed");
-                    } else if (code == 301 || code == 302 || code == 303 || code == 307 || code == 308) {
-                        result.put("backendHealth", "FAILED");
-                        String locShort = locationHeader != null ? locationHeader : "redirect";
-                        if (locShort.contains("__cookie_check.html") || locShort.contains("applet-auth-bridge")) {
-                            result.put("httpStatus", code + " Found (Redirect to AI Studio Cookie Check / Auth Bridge)");
-                            result.put("reason", "Cloud Run URL is behind Google AI Studio's applet-auth-bridge proxy. Unauthenticated APK requests are redirected (HTTP 302) to /__cookie_check.html instead of reaching server.ts.");
-                        } else {
+                        InputStream is = (code >= 200 && code < 400) ? conn.getInputStream() : conn.getErrorStream();
+                        StringBuilder sb = new StringBuilder();
+                        if (is != null) {
+                            BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
+                            String line;
+                            while ((line = reader.readLine()) != null && sb.length() < 2048) {
+                                sb.append(line);
+                            }
+                            reader.close();
+                        }
+                        String body = sb.toString().trim();
+
+                        if (code == 200 && contentType.toLowerCase().contains("application/json") && body.contains("\"ok\":true")) {
+                            result.put("backendHealth", "OK");
+                            result.put("httpStatus", "200 OK (application/json)");
+                            result.put("reason", "Production backend health check passed");
+                        } else if (code == 301 || code == 302 || code == 303 || code == 307 || code == 308) {
+                            result.put("backendHealth", "FAILED");
                             result.put("httpStatus", code + " Redirect");
-                            result.put("reason", "Redirected to " + locShort);
+                            result.put("reason", "Redirected to " + (locationHeader != null ? locationHeader : "redirect"));
+                        } else if (contentType.toLowerCase().contains("text/html") || body.toLowerCase().startsWith("<!doctype") || body.toLowerCase().startsWith("<html")) {
+                            result.put("backendHealth", "FAILED");
+                            result.put("httpStatus", code + " (text/html proxy page instead of JSON)");
+                            result.put("reason", "Endpoint returned an HTML page instead of JSON health response.");
+                        } else {
+                            result.put("backendHealth", "FAILED");
+                            result.put("httpStatus", String.valueOf(code));
+                            result.put("reason", "Unexpected response from /api/health");
                         }
-                    } else if (contentType.toLowerCase().contains("text/html") || body.toLowerCase().startsWith("<!doctype") || body.toLowerCase().startsWith("<html")) {
+                        break;
+                    } catch (Exception tlsEx) {
+                        result.put("https", "FAILED");
                         result.put("backendHealth", "FAILED");
-                        result.put("httpStatus", code + " (text/html proxy page instead of JSON)");
-                        result.put("reason", "Endpoint returned an HTML page instead of JSON health response.");
-                    } else {
-                        result.put("backendHealth", "FAILED");
-                        result.put("httpStatus", String.valueOf(code));
-                        result.put("reason", "Unexpected response from /api/health");
-                    }
-                } catch (Exception tlsEx) {
-                    result.put("https", "FAILED");
-                    result.put("backendHealth", "FAILED");
-                    result.put("httpStatus", "TLS_OR_SOCKET_ERROR");
-                    result.put("reason", tlsEx.getMessage() != null ? tlsEx.getMessage() : "HTTPS connection failed");
-                } finally {
-                    if (conn != null) {
-                        conn.disconnect();
+                        result.put("httpStatus", "TLS_OR_SOCKET_ERROR");
+                        result.put("reason", tlsEx.getMessage() != null ? tlsEx.getMessage() : "HTTPS connection failed");
+                        break;
+                    } finally {
+                        if (conn != null) {
+                            conn.disconnect();
+                        }
                     }
                 }
             } catch (Exception e) {

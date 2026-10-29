@@ -173,7 +173,7 @@ export const BackendDiagnosticPanel: React.FC<BackendDiagnosticPanelProps> = ({
               </span>
             </div>
             <div className="flex items-center justify-between gap-2">
-              <span className="text-slate-400">HTTP Status:</span>
+              <span className="text-slate-400">HTTP status:</span>
               <span className="text-amber-300 font-bold text-right">
                 {report ? report.httpStatus : 'TESTING...'}
               </span>
@@ -196,6 +196,26 @@ export const BackendDiagnosticPanel: React.FC<BackendDiagnosticPanelProps> = ({
                 }`}
               >
                 {report ? report.database : 'TESTING...'}
+              </span>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-slate-400">WebSocket:</span>
+              <span
+                className={`font-bold ${
+                  report?.websocket === 'OK' ? 'text-emerald-400' : 'text-rose-400'
+                }`}
+              >
+                {report ? report.websocket : 'TESTING...'}
+              </span>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-slate-400">Realtime:</span>
+              <span
+                className={`font-bold ${
+                  report?.realtime === 'OK' ? 'text-emerald-400' : 'text-rose-400'
+                }`}
+              >
+                {report ? report.realtime : 'TESTING...'}
               </span>
             </div>
           </div>

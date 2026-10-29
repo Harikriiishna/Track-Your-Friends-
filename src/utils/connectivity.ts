@@ -2,6 +2,7 @@ import {
   getMaskedBackendUrl,
   getProductionApiBaseUrl,
   isInvalidOrLocalEndpoint,
+  nativeAwareFetch,
   syncLogger,
 } from '../config/env.ts';
 
@@ -74,14 +75,18 @@ export async function checkBackendConnectivity(
   }, effectiveTimeoutMs);
 
   try {
-    const response = await fetch(requestUrl, {
-      method: 'GET',
-      headers: {
-        Accept: 'application/json',
+    const response = await nativeAwareFetch(
+      requestUrl,
+      {
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+        },
+        cache: 'no-store',
+        signal: controller.signal,
       },
-      cache: 'no-store',
-      signal: controller.signal,
-    });
+      effectiveTimeoutMs
+    );
 
     const latencyMs = Date.now() - startTime;
     const timestamp = new Date().toISOString();

@@ -2,6 +2,7 @@ import {
   FIREBASE_PRODUCTION_CONFIG,
   FIRESTORE_SYNC_DOC_URL,
   PRODUCTION_API_URL,
+  nativeAwareFetch,
   resolveApiUrl,
   syncLogger,
 } from '../config/env.ts';
@@ -20,6 +21,33 @@ function getBackendSyncEndpoints(): string[] {
     return ['http://127.0.0.1:3000/api/sync/state', `${PRODUCTION_API_URL}/api/sync/state`];
   }
   return [resolveApiUrl('/api/sync/state')];
+}
+
+function getClientAuthHeaders(includeJsonContentType = false): Record<string, string> {
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+    'Cache-Control': 'no-cache',
+  };
+  if (includeJsonContentType) {
+    headers['Content-Type'] = 'application/json';
+  }
+  if (typeof window !== 'undefined' && typeof localStorage !== 'undefined') {
+    try {
+      const token = localStorage.getItem('beacon_token');
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+      const rawUser = localStorage.getItem('beacon_user_profile');
+      if (rawUser) {
+        const parsed = JSON.parse(rawUser);
+        if (parsed?.id) headers['X-Beacon-User-Id'] = String(parsed.id);
+        if (parsed?.email) headers['X-Beacon-User-Email'] = String(parsed.email);
+      }
+    } catch {
+      // ignore storage read error
+    }
+  }
+  return headers;
 }
 
 export interface SyncableDatabaseState {
@@ -623,16 +651,16 @@ export async function verifyCloudFirestoreConnection(): Promise<boolean> {
   // 1. Check authoritative backend sync endpoint first when running on client/APK/test
   for (const endpoint of getBackendSyncEndpoints()) {
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 4500);
-      const res = await fetch(endpoint, {
-        method: 'GET',
-        headers: { Accept: 'application/json', 'Cache-Control': 'no-cache' },
-        cache: 'no-store',
-        credentials: 'include',
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
+      const res = await nativeAwareFetch(
+        endpoint,
+        {
+          method: 'GET',
+          headers: getClientAuthHeaders(false),
+          cache: 'no-store',
+          credentials: 'include',
+        },
+        4500
+      );
       const ct = (res.headers.get('content-type') || '').toLowerCase();
       if (res.ok && ct.includes('application/json')) {
         cloudConnected = true;
@@ -646,7 +674,12 @@ export async function verifyCloudFirestoreConnection(): Promise<boolean> {
     }
   }
 
-  // 2. Check Cloud Firestore directly if not in daily quota cooldown
+  // Clients do not access Firestore directly with a bare API key; all persistence goes through the authenticated production backend
+  if (!runningOnAuthoritativeBackend) {
+    return cloudConnected;
+  }
+
+  // 2. Server-side check if not in daily quota cooldown
   if (Date.now() < firestoreQuotaCooldownUntil) {
     return false;
   }
@@ -687,7 +720,7 @@ export async function verifyCloudFirestoreConnection(): Promise<boolean> {
 }
 
 /**
- * Pulls the latest synchronized state from the Production Backend and Cloud Firestore and merges it into `targetState`
+ * Pulls the latest synchronized state from the Production Backend and merges it into `targetState`
  */
 export async function pullAndMergeCloudState(
   targetState: SyncableDatabaseState,
@@ -708,82 +741,29 @@ export async function pullAndMergeCloudState(
       // 1. Pull from authoritative production backend (/api/sync/state)
       for (const endpoint of getBackendSyncEndpoints()) {
         try {
-          const controller = new AbortController();
-          const timer = setTimeout(() => controller.abort(), 5000);
-          const res = await fetch(endpoint, {
-            method: 'GET',
-            headers: { Accept: 'application/json', 'Cache-Control': 'no-cache' },
-            cache: 'no-store',
-            signal: controller.signal,
-          });
-          clearTimeout(timer);
+          const res = await nativeAwareFetch(
+            endpoint,
+            {
+              method: 'GET',
+              headers: getClientAuthHeaders(false),
+              cache: 'no-store',
+              credentials: 'include',
+            },
+            5000
+          );
           if (res.ok) {
             const payload = await res.json();
+            cloudConnected = true;
+            lastSuccessfulSyncMs = Date.now();
+            lastPullTime = Date.now();
             if (payload?.state && typeof payload.state === 'object') {
               mergeDatabaseStates(targetState, payload.state, false);
-              cloudConnected = true;
-              lastSuccessfulSyncMs = Date.now();
-              lastPullTime = Date.now();
               anyUpdated = true;
               break;
             }
           }
         } catch {
-          // continue to next endpoint or Firestore
-        }
-      }
-
-      // 2. Pull from Cloud Firestore if not in HTTP 429 quota cooldown
-      if (Date.now() >= firestoreQuotaCooldownUntil) {
-        try {
-          const controller = new AbortController();
-          const timer = setTimeout(() => controller.abort(), 6000);
-          const res = await fetch(FIRESTORE_SYNC_URL, {
-            method: 'GET',
-            headers: { Accept: 'application/json', 'Cache-Control': 'no-cache' },
-            cache: 'no-store',
-            signal: controller.signal,
-          });
-          clearTimeout(timer);
-
-          if (res.status === 429) {
-            lastFirestoreHttpStatus = 429;
-            lastFirestoreErrorMsg =
-              "Quota exceeded for quota metric 'Free daily read units per project (free tier database)'";
-            firestoreQuotaCooldownUntil = Date.now() + 15 * 60 * 1000;
-            syncLogger.log('firestore', 'warn', 'pull_quota_429_cooldown', { status: 429 });
-          } else if (res.ok) {
-            lastFirestoreHttpStatus = res.status;
-            lastFirestoreErrorMsg = '';
-            cloudConnected = true;
-            lastSuccessfulSyncMs = Date.now();
-            const doc = await res.json();
-            const remoteUpdatedAt = doc?.fields?.updatedAt?.stringValue || doc?.updateTime || '';
-            const rawPayload = doc?.fields?.payload?.stringValue;
-            if (rawPayload && typeof rawPayload === 'string') {
-              lastPullTime = Date.now();
-              if (force || !remoteUpdatedAt || remoteUpdatedAt !== lastRemoteUpdatedAt) {
-                const remoteState = JSON.parse(rawPayload) as Partial<SyncableDatabaseState>;
-                mergeDatabaseStates(targetState, remoteState, false);
-                if (remoteUpdatedAt) {
-                  lastRemoteUpdatedAt = remoteUpdatedAt;
-                }
-                anyUpdated = true;
-              }
-            }
-          } else if (!anyUpdated) {
-            lastFirestoreHttpStatus = res.status;
-            lastFirestoreErrorMsg = `Firestore HTTP ${res.status}`;
-            cloudConnected = false;
-            syncLogger.log('firestore', 'warn', 'pull_non_200', { status: res.status });
-          }
-        } catch (err: any) {
-          if (!anyUpdated) {
-            cloudConnected = false;
-            syncLogger.log('firestore', 'warn', 'pull_failed', {
-              message: err?.message || 'Network error',
-            });
-          }
+          // continue to next endpoint
         }
       }
 
@@ -800,7 +780,7 @@ export async function pullAndMergeCloudState(
 }
 
 /**
- * Pushes the merged state to the Production Backend and Cloud Firestore (debounced or immediate)
+ * Pushes the merged state to the Production Backend (debounced or immediate)
  */
 export function schedulePushCloudState(
   localState: SyncableDatabaseState,
@@ -812,8 +792,19 @@ export function schedulePushCloudState(
   }
 
   const executePush = async () => {
+    if (runningOnAuthoritativeBackend) {
+      cloudConnected = true;
+      lastSuccessfulSyncMs = Date.now();
+      return;
+    }
     let pushedSuccessfully = false;
     try {
+      const authHeaders = getClientAuthHeaders(true);
+      if (!authHeaders['Authorization']) {
+        // Do not push state if client is not authenticated
+        return;
+      }
+
       // Pull and merge without letting older remote fields overwrite newer local fields
       await pullAndMergeCloudState(localState, true, true);
 
@@ -823,26 +814,27 @@ export function schedulePushCloudState(
         messages: (localState.messages || []).slice(-250),
         locationHistory: (localState.locationHistory || []).slice(-180),
         auditLogs: (localState.auditLogs || []).slice(-80),
-        sessions: (localState.sessions || []).slice(-120),
+        sessions: [],
+        passwordResets: [],
         deletedIds: (localState.deletedIds || []).slice(-400),
       };
 
       const serialized = JSON.stringify(compactState);
       if (serialized.length >= 940000) return;
 
-      // 1. Push to authoritative production backend (/api/sync/state)
+      // Push to authoritative production backend (/api/sync/state) with Bearer token authentication
       for (const endpoint of getBackendSyncEndpoints()) {
         try {
-          const controller = new AbortController();
-          const timer = setTimeout(() => controller.abort(), 6000);
-          const res = await fetch(endpoint, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'include',
-            body: JSON.stringify({ state: compactState }),
-            signal: controller.signal,
-          });
-          clearTimeout(timer);
+          const res = await nativeAwareFetch(
+            endpoint,
+            {
+              method: 'POST',
+              headers: authHeaders,
+              credentials: 'include',
+              body: JSON.stringify({ state: compactState }),
+            },
+            6000
+          );
           const ct = (res.headers.get('content-type') || '').toLowerCase();
           if (res.ok && ct.includes('application/json')) {
             const payload = await res.json();
@@ -855,46 +847,7 @@ export function schedulePushCloudState(
             break;
           }
         } catch {
-          // continue to next endpoint or Firestore
-        }
-      }
-
-      // 2. Push to Cloud Firestore if not in HTTP 429 quota cooldown
-      if (Date.now() >= firestoreQuotaCooldownUntil) {
-        const pushTimestamp = new Date().toISOString();
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 7000);
-        const res = await fetch(FIRESTORE_SYNC_URL, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            fields: {
-              payload: { stringValue: serialized },
-              updatedAt: { stringValue: pushTimestamp },
-            },
-          }),
-          signal: controller.signal,
-        });
-        clearTimeout(timer);
-
-        if (res.status === 429) {
-          lastFirestoreHttpStatus = 429;
-          lastFirestoreErrorMsg =
-            "Quota exceeded for quota metric 'Free daily write units per project (free tier database)'";
-          firestoreQuotaCooldownUntil = Date.now() + 15 * 60 * 1000;
-          syncLogger.log('firestore', 'warn', 'push_quota_429_cooldown', { status: 429 });
-        } else if (res.ok) {
-          lastFirestoreHttpStatus = res.status;
-          lastFirestoreErrorMsg = '';
-          cloudConnected = true;
-          lastSuccessfulSyncMs = Date.now();
-          lastRemoteUpdatedAt = pushTimestamp;
-          pushedSuccessfully = true;
-        } else if (!pushedSuccessfully) {
-          lastFirestoreHttpStatus = res.status;
-          lastFirestoreErrorMsg = `Firestore HTTP ${res.status}`;
-          cloudConnected = false;
-          syncLogger.log('firestore', 'warn', 'push_non_200', { status: res.status });
+          // continue to next endpoint
         }
       }
 

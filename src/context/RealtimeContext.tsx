@@ -502,7 +502,7 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         setWsConnected(true);
         setRealtimeState('REALTIME_CONNECTED');
         syncLogger.log('ws', 'info', 'REALTIME_CONNECTED', { url: wsUrl });
-        ws.send(JSON.stringify({ type: 'auth', token, userId: user.id, email: user.email }));
+        ws.send(JSON.stringify({ type: 'auth', token, userId: currentUserId, email: user?.email }));
 
         if (heartbeatTimer) clearInterval(heartbeatTimer);
         heartbeatTimer = setInterval(() => {

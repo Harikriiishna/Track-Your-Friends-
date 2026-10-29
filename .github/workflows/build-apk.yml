@@ -17,6 +17,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
       - name: Set up Java 17
         uses: actions/setup-java@v4
         with:
@@ -45,10 +51,28 @@ jobs:
             exit 1
           fi
 
-      - name: Set up Gradle 9.3.1
+      - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.3.1'
+
+      - name: Install dependencies and sync Capacitor Android project
+        run: |
+          set -euo pipefail
+          npm install --legacy-peer-deps
+          npm run build
+          npx cap sync android
+          find android node_modules/@capacitor -name "*.gradle" -type f -exec sed -i 's/VERSION_21/VERSION_17/g' {} +
+          find android node_modules/@capacitor -name "*.gradle" -type f -exec sed -i 's/com\.android\.tools\.build:gradle:8\.13\.0/com.android.tools.build:gradle:9.1.1/g' {} +
+          find android node_modules/@capacitor -name "*.gradle" -type f -exec sed -i 's/tasks\.withType(Javadoc)\.all/tasks.withType(Javadoc).configureEach/g' {} +
+
+      - name: Accept Android SDK licenses
+        run: |
+          set -euo pipefail
+          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          if [ -x "${SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" ]; then
+            yes | "${SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+          fi
 
       - name: Create temporary debug keystore
         run: |
@@ -73,13 +97,24 @@ jobs:
             echo "Error: Temporary debug keystore ./debug.keystore is missing or empty." >&2
             exit 1
           fi
+
+          mkdir -p "${HOME}/.android"
+          cp "${KEYSTORE_PATH}" "${HOME}/.android/debug.keystore"
+          cp "${KEYSTORE_PATH}" "./android/debug.keystore"
           echo "Verified temporary debug keystore exists and is non-empty."
 
       - name: Build debug APK
         id: build_apk
         run: |
           set -euo pipefail
-          gradle :app:assembleDebug --stacktrace --no-daemon
+          if [ -f "./android/gradlew" ]; then
+            chmod +x ./android/gradlew
+          fi
+          gradle -p android :app:assembleDebug --stacktrace --no-daemon
+          mkdir -p app/build/outputs/apk/debug
+          if [ -f "android/app/build/outputs/apk/debug/app-debug.apk" ]; then
+            cp "android/app/build/outputs/apk/debug/app-debug.apk" "app/build/outputs/apk/debug/app-debug.apk"
+          fi
 
       - name: Verify built debug APK
         id: verify_apk
@@ -88,7 +123,10 @@ jobs:
           EXPECTED_APK="app/build/outputs/apk/debug/app-debug.apk"
           if [ ! -e "${EXPECTED_APK}" ]; then
             echo "Error: Expected APK not found at ${EXPECTED_APK}." >&2
-            if [ -d "app/build/outputs/apk" ]; then
+            if [ -d "android/app/build/outputs/apk" ]; then
+              echo "Searching inside android/app/build/outputs/apk for discovered APK paths:" >&2
+              find "android/app/build/outputs/apk" -type f -name "*.apk" -print >&2 || true
+            elif [ -d "app/build/outputs/apk" ]; then
               echo "Searching inside app/build/outputs/apk for discovered APK paths:" >&2
               find "app/build/outputs/apk" -type f -name "*.apk" -print >&2 || true
             else

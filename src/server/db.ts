@@ -161,12 +161,37 @@ class Database {
     };
   }
 
-  public applyIncomingSyncSnapshot(incoming: Partial<DatabaseSchema>): DatabaseSchema {
-    mergeDatabaseStates(this.data, incoming, false);
+  public getSanitizedSyncSnapshot(): Partial<DatabaseSchema> {
+    const snap = this.getSyncSnapshot();
+    return {
+      users: (snap.users || []).map((u) => {
+        const { password, passwordHash, salt, ...safeUser } = u;
+        return safeUser as any;
+      }),
+      rooms: (snap.rooms || []).map((r) => this.sanitizeRoom(r, '')),
+      roomMembers: snap.roomMembers || [],
+      locations: snap.locations || {},
+      locationHistory: snap.locationHistory || [],
+      savedPlaces: snap.savedPlaces || [],
+      messages: snap.messages || [],
+      reminders: snap.reminders || [],
+      meetings: snap.meetings || [],
+      emergencyAlerts: snap.emergencyAlerts || [],
+      locationShareRequests: snap.locationShareRequests || [],
+      deletedIds: snap.deletedIds || [],
+    };
+  }
+
+  public applyIncomingSyncSnapshot(incoming: Partial<DatabaseSchema>): Partial<DatabaseSchema> {
+    // Strip any incoming attempt to inject raw password resets or sessions from untrusted sync payloads
+    const safeIncoming: Partial<DatabaseSchema> = { ...incoming };
+    delete safeIncoming.passwordResets;
+    delete safeIncoming.sessions;
+    mergeDatabaseStates(this.data, safeIncoming, false);
     this.ensureUniversalRoom();
     this.saveDiskOnly(this.data);
     this.detectAndEmitExternalDiff();
-    return this.getSyncSnapshot();
+    return this.getSanitizedSyncSnapshot();
   }
 
   private snapshotKnownEntities() {

@@ -1,44 +1,47 @@
 rules_version = '2';
+
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /{document=**} {
-      allow read, write: if false;
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        request.auth.token.email == "reddytest39@gmail.com" &&
+        request.auth.token.email_verified == true;
     }
 
     function isValidSyncDocId(docId) {
-      return docId is string &&
-        docId.size() <= 64 &&
-        docId in [
-          'global_state',
-          'entity_users',
-          'entity_rooms',
-          'entity_locations',
-          'entity_messages',
-          'entity_alerts'
-        ];
+      return docId is string && docId.size() >= 1 && docId.size() <= 64;
     }
 
     function isValidBeaconSyncDoc(data) {
       return data.keys().hasAll(['payload', 'updatedAt']) &&
-        data.keys().hasOnly(['payload', 'updatedAt']) &&
-        data.payload is string &&
-        data.payload.size() >= 2 &&
-        data.payload.size() < 950000 &&
-        data.updatedAt is string &&
-        data.updatedAt.size() >= 10 &&
-        data.updatedAt.size() <= 64;
+             data.keys().hasOnly(['payload', 'updatedAt']) &&
+             data.payload is string &&
+             data.payload.size() >= 2 &&
+             data.payload.size() < 950000 &&
+             data.updatedAt is string &&
+             data.updatedAt.size() >= 10 &&
+             data.updatedAt.size() <= 64;
     }
 
+    // ===============================================================
+    // Beacon Synchronization State Collection (Authenticated Only)
+    // ===============================================================
     match /beacon_sync/{docId} {
-      allow get: if isValidSyncDocId(docId);
-      allow list: if false;
-      allow create, update: if isValidSyncDocId(docId) && isValidBeaconSyncDoc(request.resource.data);
-      allow delete: if false;
+      allow read: if isAuthenticated() && isValidSyncDocId(docId);
+      allow create, update: if isAuthenticated() && isValidSyncDocId(docId) && isValidBeaconSyncDoc(request.resource.data);
+      allow delete: if isAdmin();
     }
 
-    match /test/{docId} {
-      allow get: if docId == 'connection';
-      allow list, write: if false;
+    // Default deny all other collections
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }
