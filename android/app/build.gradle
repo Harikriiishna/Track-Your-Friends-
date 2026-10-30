@@ -35,6 +35,18 @@ android {
                 keyPassword 'android'
             }
         }
+        release {
+            def releaseKeystorePath = System.getenv("ANDROID_KEYSTORE_PATH")
+            def releaseKeystorePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+            def releaseKeyAlias = System.getenv("ANDROID_KEY_ALIAS")
+            def releaseKeyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+            if (releaseKeystorePath && file(releaseKeystorePath).exists() && releaseKeystorePassword && releaseKeyAlias && releaseKeyPassword) {
+                storeFile file(releaseKeystorePath)
+                storePassword releaseKeystorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
     }
     buildTypes {
         debug {
@@ -43,6 +55,11 @@ android {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            if (signingConfigs.release.storeFile != null && signingConfigs.release.storeFile.exists()) {
+                signingConfig signingConfigs.release
+            } else if (signingConfigs.debug.storeFile != null && signingConfigs.debug.storeFile.exists()) {
+                signingConfig signingConfigs.debug
+            }
         }
     }
     compileOptions {
