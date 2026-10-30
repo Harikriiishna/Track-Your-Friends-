@@ -1267,6 +1267,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
     let lastDist = 0;
     let lastAngle = 0;
     let isPinchingOrRotating = false;
+    let gestureRafId: number | null = null;
 
     const getTouchDist = (t1: Touch, t2: Touch) => Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
     const getTouchAngle = (t1: Touch, t2: Touch) => Math.atan2(t2.clientY - t1.clientY, t2.clientX - t1.clientX) * (180 / Math.PI);
@@ -1292,12 +1293,12 @@ export const LiveMap: React.FC<LiveMapProps> = ({
       const angle = getTouchAngle(e.touches[0], e.touches[1]);
 
       // 1. Pinch to Zoom
+      let nextZoomVal: number | null = null;
       if (lastDist > 10 && dist > 10 && mapInstanceRef.current) {
         const scaleStep = dist / lastDist;
         const currentZ = mapInstanceRef.current.getZoom();
-        const newZoom = Math.max(2, Math.min(21, currentZ + Math.log2(scaleStep)));
-        mapInstanceRef.current.setZoom(newZoom, { animate: false });
-        setCurrentZoom(newZoom);
+        nextZoomVal = Math.max(2, Math.min(21, currentZ + Math.log2(scaleStep)));
+        mapInstanceRef.current.setZoom(nextZoomVal, { animate: false });
         lastDist = dist;
       }
 
@@ -1311,12 +1312,30 @@ export const LiveMap: React.FC<LiveMapProps> = ({
       if (newB < 0) newB += 360;
       newB = Math.round(newB);
       bearingRef.current = newB;
-      setBearing(newB);
+
+      // Apply immediate GPU transform on wrapper without waiting for React state commit
+      if (rotatableWrapperRef.current) {
+        rotatableWrapperRef.current.style.transform = `rotate(${newB}deg)`;
+      }
+
+      if (gestureRafId === null) {
+        gestureRafId = requestAnimationFrame(() => {
+          gestureRafId = null;
+          setBearing(bearingRef.current);
+          if (nextZoomVal !== null) {
+            setCurrentZoom(nextZoomVal);
+          }
+        });
+      }
     };
 
     const onTouchEnd = (e: TouchEvent) => {
       if (isPinchingOrRotating && e.touches.length < 2) {
         isPinchingOrRotating = false;
+        if (gestureRafId !== null) {
+          cancelAnimationFrame(gestureRafId);
+          gestureRafId = null;
+        }
         setIsGesturing(false);
 
         if (mapInstanceRef.current) {
@@ -1328,6 +1347,8 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         if (cur <= 7 || cur >= 353) {
           bearingRef.current = 0;
           setBearing(0);
+        } else {
+          setBearing(cur);
         }
       }
     };
@@ -1347,10 +1368,10 @@ export const LiveMap: React.FC<LiveMapProps> = ({
       e.preventDefault();
       if (!isPinchingOrRotating || !mapInstanceRef.current) return;
 
+      let nextZoomVal: number | null = null;
       if (e.scale && e.scale !== 1) {
-        const newZoom = Math.max(2, Math.min(21, trackpadStartZoom + Math.log2(e.scale)));
-        mapInstanceRef.current.setZoom(newZoom, { animate: false });
-        setCurrentZoom(newZoom);
+        nextZoomVal = Math.max(2, Math.min(21, trackpadStartZoom + Math.log2(e.scale)));
+        mapInstanceRef.current.setZoom(nextZoomVal, { animate: false });
       }
 
       if (typeof e.rotation === 'number') {
@@ -1358,18 +1379,36 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         if (newB < 0) newB += 360;
         newB = Math.round(newB);
         bearingRef.current = newB;
-        setBearing(newB);
+        if (rotatableWrapperRef.current) {
+          rotatableWrapperRef.current.style.transform = `rotate(${newB}deg)`;
+        }
+      }
+
+      if (gestureRafId === null) {
+        gestureRafId = requestAnimationFrame(() => {
+          gestureRafId = null;
+          setBearing(bearingRef.current);
+          if (nextZoomVal !== null) {
+            setCurrentZoom(nextZoomVal);
+          }
+        });
       }
     };
 
     const onGestureEnd = (e: any) => {
       e.preventDefault();
       isPinchingOrRotating = false;
+      if (gestureRafId !== null) {
+        cancelAnimationFrame(gestureRafId);
+        gestureRafId = null;
+      }
       setIsGesturing(false);
       const cur = bearingRef.current;
       if (cur <= 7 || cur >= 353) {
         bearingRef.current = 0;
         setBearing(0);
+      } else {
+        setBearing(cur);
       }
     };
 
@@ -1383,6 +1422,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
     area.addEventListener('gestureend', onGestureEnd as any, { passive: false });
 
     return () => {
+      if (gestureRafId !== null) cancelAnimationFrame(gestureRafId);
       area.removeEventListener('touchstart', onTouchStart);
       area.removeEventListener('touchmove', onTouchMove);
       area.removeEventListener('touchend', onTouchEnd);
@@ -1694,28 +1734,25 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         dashArray: selfSignalInfo.isLowSignal ? '6, 6' : undefined,
       };
 
+      const selfTooltipHtml = `<div class="font-sans text-xs">
+          <span class="font-bold text-slate-900">Your Location${isServerLive ? ' · Live' : ''}</span><br/>
+          <span class="text-slate-600">Accuracy ±${Math.round(currentAcc)} m</span>
+        </div>`;
+
       if (!accuracyCircleRef.current) {
         accuracyCircleRef.current = L.circle(markerCoords, {
           radius: accuracyRadius,
           ...circleStyle,
         }).addTo(map);
-
+        accuracyCircleRef.current.bindTooltip(selfTooltipHtml, { direction: 'top', sticky: true });
         accuracyCircleRef.current.on('click', () => {
           setShowBlueDotModal(true);
         });
       } else {
         accuracyCircleRef.current.setStyle(circleStyle);
+        accuracyCircleRef.current.setTooltipContent(selfTooltipHtml);
         animateAccuracyCircle(accuracyCircleRef.current, markerCoords[0], markerCoords[1], accuracyRadius);
       }
-
-      accuracyCircleRef.current.unbindTooltip();
-      accuracyCircleRef.current.bindTooltip(
-        `<div class="font-sans text-xs">
-          <span class="font-bold text-slate-900">Your Location${isServerLive ? ' · Live' : ''}</span><br/>
-          <span class="text-slate-600">Accuracy ±${Math.round(currentAcc)} m</span>
-        </div>`,
-        { direction: 'top', sticky: true }
-      );
     }
 
     const effectiveHeading =
@@ -1912,8 +1949,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
       } else {
         const existingCircle = currentCircles.get(peerLoc.userId)!;
         existingCircle.setStyle(circleStyle);
-        existingCircle.unbindTooltip();
-        existingCircle.bindTooltip(tooltipHtml, { direction: 'top', sticky: true });
+        existingCircle.setTooltipContent(tooltipHtml);
         animatePeerAccuracyCircle(
           existingCircle,
           peerCoords[0],
@@ -1923,18 +1959,20 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         );
       }
 
+      const peerStructuralSignature = `${peerLoc.avatarUrl}|${peerLoc.fullName}|${peerDisplayName}|${peerColor}|${peerIconId}|${peerSignalInfo.isLowSignal}|${isPeerLive}|${Math.round(peerAcc)}|${peerVisualAngle !== null}|${Boolean(distText)}`;
+
       const peerHtml = `
           <div class="group relative flex flex-col items-center cursor-pointer hover:scale-105 transition-transform">
             ${peerSignalInfo.isLowSignal ? `
               <div class="absolute -inset-2 rounded-full border-2 border-dashed animate-pulse pointer-events-none" style="border-color: ${peerSignalInfo.circleColor}; background-color: ${peerSignalInfo.circleColor}22;"></div>
             ` : ''}
             ${peerVisualAngle !== null ? `
-              <div class="absolute inset-0 flex items-center justify-center pointer-events-none transition-transform duration-150" style="transform: rotate(${Math.round(peerVisualAngle)}deg);">
+              <div class="beacon-peer-heading-cone absolute inset-0 flex items-center justify-center pointer-events-none transition-transform duration-150" style="transform: rotate(${Math.round(peerVisualAngle)}deg);">
                 <div class="absolute -top-3 w-0 h-0 border-l-[5px] border-l-transparent border-r-[5px] border-r-transparent border-b-[9px]" style="border-bottom-color: ${peerColor}; filter: drop-shadow(0 0 4px ${peerColor});"></div>
               </div>
             ` : ''}
             <div class="relative w-10 h-10 rounded-full border-2 border-white shadow-md overflow-hidden bg-slate-800 ring-2" style="outline-color: ${peerColor}; box-shadow: 0 0 8px ${peerColor}80;">
-              <img src="${peerLoc.avatarUrl}" class="w-full h-full object-cover" alt="${peerLoc.fullName}" />
+              <img src="${peerLoc.avatarUrl}" class="w-full h-full object-cover" alt="${peerLoc.fullName}" decoding="async" />
             </div>
             ${peerIconId !== 'person' ? `
               <div class="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-slate-900 border border-white text-[10px] flex items-center justify-center shadow">
@@ -1945,9 +1983,9 @@ export const LiveMap: React.FC<LiveMapProps> = ({
               <span class="w-1.5 h-1.5 rounded-full" style="background-color: ${isPeerLive ? '#10b981' : '#94a3b8'};"></span>
               <span>${peerRoleEmoji !== '👤' ? `${peerRoleEmoji} ` : ''}${peerDisplayName}</span>
               ${isPeerLive ? `<span class="text-emerald-300 font-mono text-[9px]">· Live</span>` : ''}
-              ${distText ? `<span class="text-slate-400">·</span><span class="text-blue-400 font-semibold">${distText}</span>` : ''}
+              ${distText ? `<span class="text-slate-400">·</span><span class="beacon-peer-dist-text text-blue-400 font-semibold">${distText}</span>` : ''}
               <span class="text-sky-300 font-mono text-[9px]">· Accuracy ±${Math.round(peerAcc)} m</span>
-              ${peerHeading != null ? `<span class="text-emerald-400 font-mono text-[9px]">· ${Math.round(peerHeading)}°</span>` : ''}
+              ${peerHeading != null ? `<span class="beacon-peer-heading-text text-emerald-400 font-mono text-[9px]">· ${Math.round(peerHeading)}°</span>` : ''}
             </div>
           </div>
         `;
@@ -1975,7 +2013,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
       if (!currentMarkers.has(peerLoc.userId)) {
         // Step 3d: Leaflet L.marker([lat, lng])
         const marker = L.marker(peerCoords, { icon: peerIcon }).addTo(map);
-        peerIconHtmlMapRef.current.set(peerLoc.userId, peerHtml);
+        peerIconHtmlMapRef.current.set(peerLoc.userId, peerStructuralSignature);
         marker.on('click', () => {
           setSelectedUser(peerLoc);
         });
@@ -1984,10 +2022,27 @@ export const LiveMap: React.FC<LiveMapProps> = ({
       } else {
         const existingMarker = currentMarkers.get(peerLoc.userId)!;
         animateMarkerPosition(existingMarker, peerCoords[0], peerCoords[1], peerLoc.userId);
-        if (peerIconHtmlMapRef.current.get(peerLoc.userId) !== peerHtml) {
-          peerIconHtmlMapRef.current.set(peerLoc.userId, peerHtml);
+        if (peerIconHtmlMapRef.current.get(peerLoc.userId) !== peerStructuralSignature) {
+          peerIconHtmlMapRef.current.set(peerLoc.userId, peerStructuralSignature);
           existingMarker.setIcon(peerIcon);
           attachMarkerLongPress(existingMarker, peerTarget);
+        } else {
+          const el = existingMarker.getElement();
+          if (el) {
+            if (peerVisualAngle !== null) {
+              const cone = el.querySelector('.beacon-peer-heading-cone') as HTMLElement | null;
+              if (cone) cone.style.transform = `rotate(${Math.round(peerVisualAngle)}deg)`;
+            }
+            if (distText) {
+              const distEl = el.querySelector('.beacon-peer-dist-text') as HTMLElement | null;
+              if (distEl && distEl.textContent !== distText) distEl.textContent = distText;
+            }
+            if (peerHeading != null) {
+              const headEl = el.querySelector('.beacon-peer-heading-text') as HTMLElement | null;
+              const nextHeadStr = `· ${Math.round(peerHeading)}°`;
+              if (headEl && headEl.textContent !== nextHeadStr) headEl.textContent = nextHeadStr;
+            }
+          }
         }
       }
     }

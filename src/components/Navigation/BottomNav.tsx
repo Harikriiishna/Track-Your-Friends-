@@ -10,7 +10,7 @@ interface BottomNavProps {
   onPrefetchTab?: (tab: string) => void;
 }
 
-export const BottomNav: React.FC<BottomNavProps> = ({ currentTab, onSelectTab, onPrefetchTab }) => {
+export const BottomNav: React.FC<BottomNavProps> = React.memo(({ currentTab, onSelectTab, onPrefetchTab }) => {
   const { activeAlerts } = useRealtime();
   const { themeConfig } = useTheme();
 
@@ -85,4 +85,4 @@ export const BottomNav: React.FC<BottomNavProps> = ({ currentTab, onSelectTab, o
       })}
     </nav>
   );
-};
+});

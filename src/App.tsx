@@ -20,13 +20,21 @@ import type { SavedPlace, Room } from './types.ts';
 import { api } from './utils/api.ts';
 import { ToastProvider } from './context/ToastContext.tsx';
 
-import { RoomsManager } from './components/Rooms/RoomsManager.tsx';
-import { ChatView } from './components/Chat/ChatView.tsx';
-import { SavedPlacesManager } from './components/SavedPlaces/SavedPlacesManager.tsx';
-import { RemindersManager } from './components/Reminders/RemindersManager.tsx';
-import { MeetingsManager } from './components/Meetings/MeetingsManager.tsx';
-import { ProfilePrivacyView } from './components/Profile/ProfilePrivacyView.tsx';
-import { AdminDashboard } from './components/Admin/AdminDashboard.tsx';
+const loadRoomsManager = () => import('./components/Rooms/RoomsManager.tsx');
+const loadChatView = () => import('./components/Chat/ChatView.tsx');
+const loadSavedPlacesManager = () => import('./components/SavedPlaces/SavedPlacesManager.tsx');
+const loadRemindersManager = () => import('./components/Reminders/RemindersManager.tsx');
+const loadMeetingsManager = () => import('./components/Meetings/MeetingsManager.tsx');
+const loadProfilePrivacyView = () => import('./components/Profile/ProfilePrivacyView.tsx');
+const loadAdminDashboard = () => import('./components/Admin/AdminDashboard.tsx');
+
+const RoomsManager = React.lazy(() => loadRoomsManager().then((m) => ({ default: m.RoomsManager })));
+const ChatView = React.lazy(() => loadChatView().then((m) => ({ default: m.ChatView })));
+const SavedPlacesManager = React.lazy(() => loadSavedPlacesManager().then((m) => ({ default: m.SavedPlacesManager })));
+const RemindersManager = React.lazy(() => loadRemindersManager().then((m) => ({ default: m.RemindersManager })));
+const MeetingsManager = React.lazy(() => loadMeetingsManager().then((m) => ({ default: m.MeetingsManager })));
+const ProfilePrivacyView = React.lazy(() => loadProfilePrivacyView().then((m) => ({ default: m.ProfilePrivacyView })));
+const AdminDashboard = React.lazy(() => loadAdminDashboard().then((m) => ({ default: m.AdminDashboard })));
 
 function TabFallback() {
   return (
@@ -186,11 +194,16 @@ function MainApp() {
       prefetchedDataRef.current.add(tabId);
       switch (tabId) {
         case 'rooms':
+          void loadRoomsManager();
           api.get<{ rooms: Room[] }>('/api/rooms').then((res) => {
             setUserRooms(res.rooms);
           }).catch(() => {});
           break;
+        case 'chat':
+          void loadChatView();
+          break;
         case 'saved':
+          void loadSavedPlacesManager();
           api.get<{ places: SavedPlace[] }>('/api/saved-places').then((res) => {
             setSavedPlaces(res.places);
           }).catch(() => {});
@@ -199,10 +212,18 @@ function MainApp() {
           api.get('/api/alerts/emergency').catch(() => {});
           break;
         case 'meetings':
+          void loadMeetingsManager();
           api.get('/api/meetings').catch(() => {});
           break;
         case 'reminders':
+          void loadRemindersManager();
           api.get('/api/reminders').catch(() => {});
+          break;
+        case 'profile':
+          void loadProfilePrivacyView();
+          break;
+        case 'admin':
+          void loadAdminDashboard();
           break;
         default:
           break;

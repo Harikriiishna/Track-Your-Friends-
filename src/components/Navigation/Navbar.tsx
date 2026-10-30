@@ -17,7 +17,7 @@ interface NavbarProps {
   activeRoomId?: string | null;
 }
 
-export const Navbar: React.FC<NavbarProps> = ({
+export const Navbar: React.FC<NavbarProps> = React.memo(({
   currentTab,
   onSelectTab,
   onOpenSos,
@@ -182,4 +182,4 @@ export const Navbar: React.FC<NavbarProps> = ({
       />
     </>
   );
-};
+});

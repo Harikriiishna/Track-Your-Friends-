@@ -826,16 +826,25 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       if (!user) return;
       const { latitude, longitude, accuracy } = pos.coords;
 
-      // Always record raw fix in debug telemetry (Step 1) before filtering
-      setDebugTelemetry((prev) => ({
-        ...prev,
-        rawFix: {
-          latitude,
-          longitude,
-          accuracy: accuracy ?? null,
-          timestamp: pos.timestamp,
-        },
-      }));
+      // Always record raw fix in debug telemetry (Step 1) before filtering, deduplicated by coordinates
+      setDebugTelemetry((prev) => {
+        if (
+          prev.rawFix?.latitude === latitude &&
+          prev.rawFix?.longitude === longitude &&
+          prev.rawFix?.accuracy === (accuracy ?? null)
+        ) {
+          return prev;
+        }
+        return {
+          ...prev,
+          rawFix: {
+            latitude,
+            longitude,
+            accuracy: accuracy ?? null,
+            timestamp: pos.timestamp,
+          },
+        };
+      });
 
       // Step 3b: Reject poor or invalid fixes EVERY time, including the FIRST one
       if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return;
@@ -852,7 +861,7 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       const heading = pos.coords.heading ?? null;
       const speed = pos.coords.speed ?? null;
 
-      setGpsAccuracy(accuracy);
+      setGpsAccuracy((prev) => (prev !== null && Math.abs(prev - accuracy) < 0.2 ? prev : accuracy));
       setIsGpsActive(true);
       setGpsPermissionState('granted');
       setGpsError(null);
@@ -863,26 +872,44 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       const geog = `SRID=4326;POINT(${longitude} ${latitude})`;
       const accuracy_m = accuracy;
 
-      setDebugTelemetry((prev) => ({
-        ...prev,
-        sentToDb: {
-          geog,
-          accuracy_m,
-          latitude,
-          longitude,
-        },
-      }));
+      setDebugTelemetry((prev) => {
+        if (
+          prev.sentToDb?.latitude === latitude &&
+          prev.sentToDb?.longitude === longitude &&
+          prev.sentToDb?.accuracy_m === accuracy_m
+        ) {
+          return prev;
+        }
+        return {
+          ...prev,
+          sentToDb: {
+            geog,
+            accuracy_m,
+            latitude,
+            longitude,
+          },
+        };
+      });
 
       const now = Date.now();
       const last = lastLocationSentRef.current;
+      const movedMeters = last ? calculateDistanceMeters(last.lat, last.lng, latitude, longitude) : Infinity;
       const shouldSend =
         forceBroadcast ||
         !last ||
         now - last.time > 5000 ||
-        calculateDistanceMeters(last.lat, last.lng, latitude, longitude) >= 1;
+        movedMeters >= 1;
+
+      const prevSelf = myLocationRef.current;
+      const isNegligibleUiShift =
+        !forceBroadcast &&
+        prevSelf &&
+        calculateDistanceMeters(prevSelf.latitude, prevSelf.longitude, latitude, longitude) < 0.35 &&
+        Math.abs((prevSelf.accuracy || 0) - accuracy) < 1 &&
+        Math.abs((prevSelf.heading || 0) - (heading || 0)) < 3;
 
       // Optimistically update local state until server responds with server-generated updated_at
-      const existingServerTs = myLocationRef.current?.updated_at || myLocationRef.current?.timestamp || new Date().toISOString();
+      const existingServerTs = prevSelf?.updated_at || prevSelf?.timestamp || new Date().toISOString();
       const localLoc: UserLocation = {
         userId: user.id,
         username: user.username,
@@ -906,16 +933,18 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       };
 
       myLocationRef.current = localLoc;
-      setMyLocation(localLoc);
-      setUserLocations((prev) => {
-        const idx = prev.findIndex((l) => l.userId === user.id);
-        if (idx >= 0) {
-          const next = [...prev];
-          next[idx] = localLoc;
-          return next;
-        }
-        return [...prev, localLoc];
-      });
+      if (!isNegligibleUiShift) {
+        setMyLocation(localLoc);
+        setUserLocations((prev) => {
+          const idx = prev.findIndex((l) => l.userId === user.id);
+          if (idx >= 0) {
+            const next = [...prev];
+            next[idx] = localLoc;
+            return next;
+          }
+          return [...prev, localLoc];
+        });
+      }
 
       try {
         window.dispatchEvent(
@@ -948,26 +977,30 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           .then((res) => {
             if (res?.location) {
               const saved = res.location;
-              setDebugTelemetry((prev) => ({
-                ...prev,
-                readFromDb: {
-                  lat: saved.lat ?? saved.latitude,
-                  lng: saved.lng ?? saved.longitude,
-                  accuracy_m: saved.accuracy_m ?? saved.accuracy,
-                  updated_at: saved.updated_at ?? saved.timestamp,
-                },
-              }));
-              myLocationRef.current = saved;
-              setMyLocation(saved);
-              setUserLocations((prev) => {
-                const idx = prev.findIndex((l) => l.userId === saved.userId);
-                if (idx >= 0) {
-                  const next = [...prev];
-                  next[idx] = saved;
-                  return next;
+              setDebugTelemetry((prev) => {
+                const nextLat = saved.lat ?? saved.latitude;
+                const nextLng = saved.lng ?? saved.longitude;
+                const nextAcc = saved.accuracy_m ?? saved.accuracy;
+                const nextUpd = saved.updated_at ?? saved.timestamp;
+                if (
+                  prev.readFromDb?.lat === nextLat &&
+                  prev.readFromDb?.lng === nextLng &&
+                  prev.readFromDb?.accuracy_m === nextAcc &&
+                  prev.readFromDb?.updated_at === nextUpd
+                ) {
+                  return prev;
                 }
-                return [...prev, saved];
+                return {
+                  ...prev,
+                  readFromDb: {
+                    lat: nextLat,
+                    lng: nextLng,
+                    accuracy_m: nextAcc,
+                    updated_at: nextUpd,
+                  },
+                };
               });
+              myLocationRef.current = saved;
             }
           })
           .catch(() => {});

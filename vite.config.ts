@@ -66,7 +66,21 @@ export default defineConfig(() => {
       }),
     ],
     build: {
+      target: 'es2020',
+      cssMinify: true,
       chunkSizeWarningLimit: 1500,
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (id.includes('node_modules')) {
+              if (id.includes('leaflet')) return 'vendor-leaflet';
+              if (id.includes('lucide-react')) return 'vendor-icons';
+              if (id.includes('motion') || id.includes('framer-motion')) return 'vendor-motion';
+              if (id.includes('react-dom') || id.includes('/react/')) return 'vendor-react';
+            }
+          },
+        },
+      },
     },
     resolve: {
       alias: {
