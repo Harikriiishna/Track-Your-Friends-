@@ -296,75 +296,20 @@ export const syncLogger = {
 };
 
 /**
- * Executes an HTTPS request using the native Android Java bridge (`AndroidLocationBridge.nativeHttpRequest`)
- * when running inside the standalone Android APK, or standard `fetch` on Web/Node.
- * This prevents WebView cross-origin CORS blocks and handles Cloud Run sticky session affinity transparently.
+ * Executes an HTTP/HTTPS request asynchronously without blocking the main UI thread.
+ * Avoids calling synchronous @JavascriptInterface network methods on the UI thread,
+ * which freeze Android WebView rendering and touch input.
  */
 export async function nativeAwareFetch(
   inputUrl: string,
   options: RequestInit = {},
-  timeoutMs = 7500
+  timeoutMs = 3200
 ): Promise<Response> {
   const fullUrl = /^https?:\/\//i.test(inputUrl) ? inputUrl : resolveApiUrl(inputUrl);
-
-  if (
-    typeof window !== 'undefined' &&
-    isAndroidNativeApp() &&
-    typeof (window as any).AndroidLocationBridge?.nativeHttpRequest === 'function' &&
-    /^https?:\/\//i.test(fullUrl)
-  ) {
-    try {
-      const method = (options.method || 'GET').toUpperCase();
-      const headersObj: Record<string, string> = {};
-      if (options.headers) {
-        if (options.headers instanceof Headers) {
-          options.headers.forEach((v, k) => {
-            headersObj[k] = v;
-          });
-        } else if (Array.isArray(options.headers)) {
-          for (const [k, v] of options.headers) {
-            headersObj[k] = v;
-          }
-        } else {
-          Object.assign(headersObj, options.headers);
-        }
-      }
-      const bodyStr = typeof options.body === 'string' ? options.body : '';
-      const rawJson = (window as any).AndroidLocationBridge.nativeHttpRequest(
-        fullUrl,
-        method,
-        JSON.stringify(headersObj),
-        bodyStr
-      );
-      if (rawJson) {
-        const parsed = JSON.parse(rawJson);
-        if (parsed && typeof parsed.status === 'number' && parsed.status > 0) {
-          const responseHeaders = new Headers();
-          responseHeaders.set(
-            'content-type',
-            parsed.contentType || 'application/json; charset=utf-8'
-          );
-          return new Response(typeof parsed.body === 'string' ? parsed.body : '', {
-            status: parsed.status,
-            headers: responseHeaders,
-          });
-        }
-        if (parsed?.error) {
-          throw new Error(parsed.error);
-        }
-      }
-    } catch (nativeErr) {
-      // Fall through to standard fetch if native bridge throws unexpectedly
-      syncLogger.log('api', 'warn', 'native_http_bridge_fallback', {
-        message: (nativeErr as any)?.message || 'Native HTTP error',
-      });
-    }
-  }
-
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(inputUrl, {
+    return await fetch(fullUrl, {
       ...options,
       signal: options.signal || controller.signal,
     });
@@ -372,4 +317,5 @@ export async function nativeAwareFetch(
     clearTimeout(timer);
   }
 }
+
 

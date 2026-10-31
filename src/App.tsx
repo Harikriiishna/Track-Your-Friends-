@@ -179,45 +179,25 @@ function MainApp() {
   // In-memory registry to deduplicate background data pre-fetching
   const prefetchedDataRef = useRef<Set<string>>(new Set(['map']));
 
-  // Pre-fetching mechanism: triggers component DOM pre-warming (on high-end devices) and target data caching
+  // Pre-fetching mechanism: preloads JS chunk bundles without mounting hidden heavy DOM trees
   const prefetchTab = React.useCallback((tabId: string) => {
-    if (!isLiteMode) {
-      setVisitedTabs((prev) => {
-        if (prev.has(tabId)) return prev;
-        const next = new Set(prev);
-        next.add(tabId);
-        return next;
-      });
-    }
-
     if (!prefetchedDataRef.current.has(tabId)) {
       prefetchedDataRef.current.add(tabId);
       switch (tabId) {
         case 'rooms':
           void loadRoomsManager();
-          api.get<{ rooms: Room[] }>('/api/rooms').then((res) => {
-            setUserRooms(res.rooms);
-          }).catch(() => {});
           break;
         case 'chat':
           void loadChatView();
           break;
         case 'saved':
           void loadSavedPlacesManager();
-          api.get<{ places: SavedPlace[] }>('/api/saved-places').then((res) => {
-            setSavedPlaces(res.places);
-          }).catch(() => {});
-          break;
-        case 'alerts':
-          api.get('/api/alerts/emergency').catch(() => {});
           break;
         case 'meetings':
           void loadMeetingsManager();
-          api.get('/api/meetings').catch(() => {});
           break;
         case 'reminders':
           void loadRemindersManager();
-          api.get('/api/reminders').catch(() => {});
           break;
         case 'profile':
           void loadProfilePrivacyView();
@@ -229,23 +209,17 @@ function MainApp() {
           break;
       }
     }
-  }, [isLiteMode]);
+  }, []);
 
   const handleSelectTab = React.useCallback((tab: string) => {
-    if (isLiteMode) {
-      setCurrentTab(tab);
-      return;
-    }
     setVisitedTabs((prev) => {
       if (prev.has(tab)) return prev;
       const next = new Set(prev);
       next.add(tab);
       return next;
     });
-    startTransition(() => {
-      setCurrentTab(tab);
-    });
-  }, [isLiteMode]);
+    setCurrentTab(tab);
+  }, []);
 
   const applyRoomsIfChanged = React.useCallback(
     (rooms: Room[]) => {
@@ -367,7 +341,11 @@ function MainApp() {
   }
 
   const shouldRenderTab = (tabName: string) =>
-    isLiteMode ? currentTab === tabName : visitedTabs.has(tabName);
+    tabName === 'map'
+      ? isLiteMode
+        ? currentTab === 'map'
+        : visitedTabs.has('map')
+      : currentTab === tabName;
 
   // Compute members who are currently within 5 km (5000m) of the active emergency alert
   const nearbyMembersWithin5km =

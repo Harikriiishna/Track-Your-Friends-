@@ -433,16 +433,34 @@ class LocalBackendEngine {
     return base;
   }
 
-  private saveLocalOnly() {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(this.data));
-    } catch (e) {
-      console.warn('Failed to persist local DB:', e);
+  private saveTimer: any = null;
+
+  private saveLocalOnly(immediate = false) {
+    if (immediate) {
+      if (this.saveTimer) {
+        clearTimeout(this.saveTimer);
+        this.saveTimer = null;
+      }
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(this.data));
+      } catch (e) {
+        console.warn('Failed to persist local DB:', e);
+      }
+      return;
     }
+    if (this.saveTimer) return;
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = null;
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(this.data));
+      } catch (e) {
+        console.warn('Failed to persist local DB:', e);
+      }
+    }, 120);
   }
 
   private save(immediateCloudPush = false) {
-    this.saveLocalOnly();
+    this.saveLocalOnly(immediateCloudPush);
     schedulePushCloudState(this.data, immediateCloudPush);
   }
 
@@ -453,7 +471,7 @@ class LocalBackendEngine {
       if (savedUserRaw) {
         const savedUser = JSON.parse(savedUserRaw) as UserProfile;
         if (savedUser && savedUser.id) {
-          this.syncUserSession(savedUser, savedToken || undefined);
+          this.syncUserSession(savedUser, savedToken || undefined, false);
         }
       }
     } catch {
@@ -461,21 +479,32 @@ class LocalBackendEngine {
     }
   }
 
-  public syncUserSession(user: UserProfile, token?: string | null) {
+  public syncUserSession(user: UserProfile, token?: string | null, persistToCloud = true) {
     if (!user || !user.id) return;
+    let mutated = false;
     const existingIdx = this.data.users.findIndex(
       (u) => u.id === user.id || u.email.toLowerCase() === user.email.toLowerCase()
     );
     if (existingIdx >= 0) {
-      this.data.users[existingIdx] = {
-        ...this.data.users[existingIdx],
-        ...user,
-      };
+      const prev = this.data.users[existingIdx];
+      if (
+        prev.fullName !== user.fullName ||
+        prev.avatarUrl !== user.avatarUrl ||
+        prev.about !== user.about ||
+        prev.phoneNumber !== user.phoneNumber
+      ) {
+        this.data.users[existingIdx] = {
+          ...prev,
+          ...user,
+        };
+        mutated = true;
+      }
     } else {
       this.data.users.push({
         ...user,
         password: 'password123',
       });
+      mutated = true;
     }
 
     const effectiveUserId = existingIdx >= 0 ? this.data.users[existingIdx].id : user.id;
@@ -494,10 +523,17 @@ class LocalBackendEngine {
           userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : 'Mobile Client',
           ip: 'Device Local',
         });
+        mutated = true;
       }
     }
 
-    this.save();
+    if (mutated) {
+      if (persistToCloud) {
+        this.save();
+      } else {
+        this.saveLocalOnly();
+      }
+    }
   }
 
   private sanitizeUser(u: LocalUserRecord): UserProfile {
@@ -662,38 +698,15 @@ class LocalBackendEngine {
       }
     }
 
-    // Pull latest cloud state before auth or data queries so Web <-> Android APK data stays in sync
-    if (
-      pathname.startsWith('/api/auth/') ||
-      pathname.startsWith('/api/rooms') ||
-      pathname.startsWith('/api/locations/live') ||
-      pathname.startsWith('/api/saved-places') ||
-      pathname.startsWith('/api/reminders') ||
-      pathname.startsWith('/api/meetings') ||
-      pathname.startsWith('/api/alerts') ||
-      pathname.startsWith('/api/messages') ||
-      pathname.startsWith('/api/direct-messages') ||
-      pathname.startsWith('/api/users') ||
-      pathname.startsWith('/api/admin')
-    ) {
-      const forceSync =
-        method !== 'GET' ||
-        pathname === '/api/auth/login' ||
-        pathname === '/api/auth/register' ||
-        pathname === '/api/auth/quick-reset';
-      const updated = await pullAndMergeCloudState(this.data, forceSync);
+    // Trigger non-blocking background cloud sync so UI actions respond in <5ms
+    void pullAndMergeCloudState(this.data, false).then((updated) => {
       if (updated) {
         this.ensureUniversalRoom();
         this.saveLocalOnly();
       }
-    }
+    });
 
     if (method === 'GET' && pathname === '/api/health') {
-      const updated = await pullAndMergeCloudState(this.data, true);
-      if (updated) {
-        this.ensureUniversalRoom();
-        this.saveLocalOnly();
-      }
       return {
         ok: true,
         service: 'Beacon Cloud Firestore Production Bridge',

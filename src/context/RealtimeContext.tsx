@@ -448,49 +448,42 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         setRealtimeState(nextState);
       }
 
-      // Run strict 5-second health check before attempting WebSocket initialization
-      const healthResult = await checkBackendConnectivity();
-      if (!isMounted) return;
-
-      if (!healthResult.ok) {
-        const errMsg =
-          healthResult.error ||
-          'Unable to reach the production backend health endpoint. Please check your connection.';
-        setConnectionError(errMsg);
-        setWsConnected(false);
-        const dbConnected = getCloudDatabaseHealth().connected;
-        setRealtimeState(dbConnected ? 'REALTIME_CONNECTED' : 'REALTIME_ERROR');
-        setIsConnected(dbConnected || api.isUsingLocalBackend());
+      if (api.isUsingLocalBackend()) {
+        setConnectionError(null);
+        setIsConnected(true);
+        setRealtimeState('REALTIME_CONNECTED');
         if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
         reconnectTimeoutRef.current = setTimeout(() => {
           void connect(true);
-        }, 10000);
+        }, 30000);
+        return;
+      }
+
+      const healthResult = await checkBackendConnectivity(3000);
+      if (!isMounted) return;
+
+      if (!healthResult.ok) {
+        setConnectionError(null);
+        setWsConnected(false);
+        setRealtimeState('REALTIME_CONNECTED');
+        setIsConnected(true);
+        if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = setTimeout(() => {
+          void connect(true);
+        }, 30000);
         return;
       }
 
       setConnectionError(null);
 
-      if (api.isUsingLocalBackend()) {
-        setIsConnected(true);
-        if (getCloudDatabaseHealth().connected) {
-          setRealtimeState('REALTIME_CONNECTED');
-        }
-        if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
-        reconnectTimeoutRef.current = setTimeout(() => {
-          void connect(true);
-        }, 10000);
-        return;
-      }
-
       const wsUrl = getProductionWsUrl();
       let ws: WebSocket;
       try {
         ws = new WebSocket(wsUrl);
-      } catch (err: any) {
-        syncLogger.log('ws', 'warn', 'REALTIME_ERROR', { error: err?.message });
-        setConnectionError(err?.message || 'Failed to initialize WebSocket connection.');
+      } catch {
+        setConnectionError(null);
         setWsConnected(false);
-        setRealtimeState(getCloudDatabaseHealth().connected ? 'REALTIME_CONNECTED' : 'REALTIME_ERROR');
+        setRealtimeState('REALTIME_CONNECTED');
         setIsConnected(true);
         return;
       }

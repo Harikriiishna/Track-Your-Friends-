@@ -1869,7 +1869,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         }
       }
     }
-  }, [myLocation, user?.avatarUrl, user?.fullName, hasCenteredOnce, userHeading, bearing, debugNowMs]);
+  }, [myLocation, user?.avatarUrl, user?.fullName, hasCenteredOnce, userHeading, bearing]);
 
   // Update Peer Map Markers & Accuracy Circles (Steps 3d, 3e, 3g)
   useEffect(() => {
@@ -2069,7 +2069,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         currentCircles.delete(userId);
       }
     }
-  }, [displayedUserLocations, onlineUserIds, myLocation, user?.id, bearing, memberOverridesVersion, debugNowMs]);
+  }, [displayedUserLocations, onlineUserIds, myLocation, user?.id, bearing, memberOverridesVersion]);
 
   // Update Saved Places Markers
   useEffect(() => {
@@ -2448,26 +2448,31 @@ export const LiveMap: React.FC<LiveMapProps> = ({
 
   return (
     <div
-      ref={gestureAreaRef}
-      className="relative w-full h-full flex flex-col overflow-hidden bg-slate-100 select-none touch-none"
-      style={{ touchAction: 'none' }}
+      className="relative w-full h-full flex flex-col overflow-hidden bg-slate-100 select-none touch-manipulation"
     >
-      {/* Rotatable Map Container - 150% oversized to seamlessly cover all 360-degree rotation angles */}
+      {/* Dedicated Map Gesture Layer - isolates touch-none to the map canvas so floating buttons & popovers work smoothly */}
       <div
-        ref={rotatableWrapperRef}
-        className="absolute origin-center will-change-transform"
-        style={{
-          width: '150%',
-          height: '150%',
-          left: '-25%',
-          top: '-25%',
-          transform: `rotate(${bearing}deg)`,
-          transformOrigin: '50% 50%',
-          transition: isGesturing ? 'none' : 'transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1)',
-        }}
+        ref={gestureAreaRef}
+        className="absolute inset-0 overflow-hidden z-0 touch-none"
+        style={{ touchAction: 'none' }}
       >
-        {/* Map Canvas */}
-        <div ref={mapContainerRef} className="w-full h-full z-0" />
+        {/* Rotatable Map Container - 150% oversized to seamlessly cover all 360-degree rotation angles */}
+        <div
+          ref={rotatableWrapperRef}
+          className="absolute origin-center will-change-transform"
+          style={{
+            width: '150%',
+            height: '150%',
+            left: '-25%',
+            top: '-25%',
+            transform: `rotate(${bearing}deg)`,
+            transformOrigin: '50% 50%',
+            transition: isGesturing ? 'none' : 'transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1)',
+          }}
+        >
+          {/* Map Canvas */}
+          <div ref={mapContainerRef} className="w-full h-full z-0" />
+        </div>
       </div>
 
       {/* STEP 1: Live Geolocation Debug Panel (Temporary, hidden behind ?debug=1) */}

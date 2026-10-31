@@ -719,8 +719,10 @@ export async function verifyCloudFirestoreConnection(): Promise<boolean> {
   }
 }
 
+let backendSyncCooldownUntil = 0;
+
 /**
- * Pulls the latest synchronized state from the Production Backend and merges it into `targetState`
+ * Pulls the latest synchronized state from the Production Backend (or Firestore fallback) and merges it into `targetState`
  */
 export async function pullAndMergeCloudState(
   targetState: SyncableDatabaseState,
@@ -728,7 +730,7 @@ export async function pullAndMergeCloudState(
   silentNotify = false
 ): Promise<boolean> {
   const now = Date.now();
-  if (!force && now - lastPullTime < 1200) {
+  if (!force && now - lastPullTime < 3500) {
     return false;
   }
   if (inFlightPull) {
@@ -737,33 +739,73 @@ export async function pullAndMergeCloudState(
 
   inFlightPull = (async () => {
     let anyUpdated = false;
+    lastPullTime = Date.now();
     try {
-      // 1. Pull from authoritative production backend (/api/sync/state)
-      for (const endpoint of getBackendSyncEndpoints()) {
+      // 1. Pull from authoritative production backend (/api/sync/state) if not in cooldown
+      if (Date.now() >= backendSyncCooldownUntil) {
+        for (const endpoint of getBackendSyncEndpoints()) {
+          try {
+            const res = await nativeAwareFetch(
+              endpoint,
+              {
+                method: 'GET',
+                headers: getClientAuthHeaders(false),
+                cache: 'no-store',
+                credentials: 'include',
+              },
+              2800
+            );
+            const ct = (res.headers.get('content-type') || '').toLowerCase();
+            if (res.ok && ct.includes('application/json')) {
+              const payload = await res.json();
+              cloudConnected = true;
+              lastSuccessfulSyncMs = Date.now();
+              if (payload?.state && typeof payload.state === 'object') {
+                mergeDatabaseStates(targetState, payload.state, false);
+                anyUpdated = true;
+                break;
+              }
+            } else {
+              // Proxy returned HTML or error — cool down for 20s so UI stays fast
+              backendSyncCooldownUntil = Date.now() + 20000;
+            }
+          } catch {
+            backendSyncCooldownUntil = Date.now() + 20000;
+          }
+        }
+      }
+
+      // 2. If backend endpoint was blocked by proxy/offline, try direct Firestore REST read if not in quota cooldown
+      if (!anyUpdated && Date.now() >= firestoreQuotaCooldownUntil) {
         try {
           const res = await nativeAwareFetch(
-            endpoint,
+            FIRESTORE_SYNC_URL,
             {
               method: 'GET',
-              headers: getClientAuthHeaders(false),
+              headers: { Accept: 'application/json', 'Cache-Control': 'no-cache' },
               cache: 'no-store',
-              credentials: 'include',
             },
-            5000
+            2800
           );
-          if (res.ok) {
-            const payload = await res.json();
+          if (res.status === 429) {
+            firestoreQuotaCooldownUntil = Date.now() + 15 * 60 * 1000;
+          } else if (res.ok) {
+            const doc = await res.json();
+            const rawState = doc?.fields?.stateJson?.stringValue;
+            const remoteUpdatedAt = doc?.fields?.updatedAt?.stringValue || '';
             cloudConnected = true;
             lastSuccessfulSyncMs = Date.now();
-            lastPullTime = Date.now();
-            if (payload?.state && typeof payload.state === 'object') {
-              mergeDatabaseStates(targetState, payload.state, false);
-              anyUpdated = true;
-              break;
+            if (rawState && (force || remoteUpdatedAt !== lastRemoteUpdatedAt)) {
+              lastRemoteUpdatedAt = remoteUpdatedAt;
+              const parsed = JSON.parse(rawState);
+              if (parsed && typeof parsed === 'object') {
+                mergeDatabaseStates(targetState, parsed, false);
+                anyUpdated = true;
+              }
             }
           }
         } catch {
-          // continue to next endpoint
+          // ignore fallback error
         }
       }
 
@@ -800,13 +842,6 @@ export function schedulePushCloudState(
     let pushedSuccessfully = false;
     try {
       const authHeaders = getClientAuthHeaders(true);
-      if (!authHeaders['Authorization']) {
-        // Do not push state if client is not authenticated
-        return;
-      }
-
-      // Pull and merge without letting older remote fields overwrite newer local fields
-      await pullAndMergeCloudState(localState, true, true);
 
       // Trim history arrays so payload stays well under 900KB
       const compactState: SyncableDatabaseState = {
@@ -822,32 +857,67 @@ export function schedulePushCloudState(
       const serialized = JSON.stringify(compactState);
       if (serialized.length >= 940000) return;
 
-      // Push to authoritative production backend (/api/sync/state) with Bearer token authentication
-      for (const endpoint of getBackendSyncEndpoints()) {
-        try {
-          const res = await nativeAwareFetch(
-            endpoint,
-            {
-              method: 'POST',
-              headers: authHeaders,
-              credentials: 'include',
-              body: JSON.stringify({ state: compactState }),
-            },
-            6000
-          );
-          const ct = (res.headers.get('content-type') || '').toLowerCase();
-          if (res.ok && ct.includes('application/json')) {
-            const payload = await res.json();
-            if (payload?.state && typeof payload.state === 'object') {
-              mergeDatabaseStates(localState, payload.state, false);
+      // 1. Push to authoritative production backend (/api/sync/state) if authenticated and not in cooldown
+      if (authHeaders['Authorization'] && Date.now() >= backendSyncCooldownUntil) {
+        for (const endpoint of getBackendSyncEndpoints()) {
+          try {
+            const res = await nativeAwareFetch(
+              endpoint,
+              {
+                method: 'POST',
+                headers: authHeaders,
+                credentials: 'include',
+                body: JSON.stringify({ state: compactState }),
+              },
+              3200
+            );
+            const ct = (res.headers.get('content-type') || '').toLowerCase();
+            if (res.ok && ct.includes('application/json')) {
+              const payload = await res.json();
+              if (payload?.state && typeof payload.state === 'object') {
+                mergeDatabaseStates(localState, payload.state, false);
+              }
+              cloudConnected = true;
+              lastSuccessfulSyncMs = Date.now();
+              pushedSuccessfully = true;
+              break;
+            } else {
+              backendSyncCooldownUntil = Date.now() + 20000;
             }
+          } catch {
+            backendSyncCooldownUntil = Date.now() + 20000;
+          }
+        }
+      }
+
+      // 2. Fallback push to Firestore REST if backend endpoint was blocked by proxy
+      if (!pushedSuccessfully && Date.now() >= firestoreQuotaCooldownUntil) {
+        try {
+          const nowIso = new Date().toISOString();
+          const res = await nativeAwareFetch(
+            FIRESTORE_SYNC_URL,
+            {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+              body: JSON.stringify({
+                fields: {
+                  stateJson: { stringValue: serialized },
+                  updatedAt: { stringValue: nowIso },
+                },
+              }),
+            },
+            3200
+          );
+          if (res.status === 429) {
+            firestoreQuotaCooldownUntil = Date.now() + 15 * 60 * 1000;
+          } else if (res.ok) {
+            lastRemoteUpdatedAt = nowIso;
             cloudConnected = true;
             lastSuccessfulSyncMs = Date.now();
             pushedSuccessfully = true;
-            break;
           }
         } catch {
-          // continue to next endpoint
+          // ignore
         }
       }
 
@@ -867,7 +937,7 @@ export function schedulePushCloudState(
   if (immediate) {
     void executePush();
   } else {
-    pushTimeoutId = setTimeout(executePush, 250);
+    pushTimeoutId = setTimeout(executePush, 400);
   }
 }
 

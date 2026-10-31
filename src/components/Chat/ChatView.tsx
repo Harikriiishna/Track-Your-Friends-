@@ -5,7 +5,7 @@ import { useTheme } from '../../context/ThemeContext.tsx';
 import type { ChatMessage, Room, RoomMember, UserRole, UserProfile, SavedPlace } from '../../types.ts';
 import { api } from '../../utils/api.ts';
 import { VoiceRecorder, sound, triggerHaptic } from '../../utils/audio.ts';
-import { AudioWaveformVisualizer } from './AudioWaveformVisualizer.tsx';
+import { AudioWaveformVisualizer, VoiceMessagePlayer } from './AudioWaveformVisualizer.tsx';
 import { useToast } from '../../context/ToastContext.tsx';
 import { calculateDistanceMeters, formatDistance } from '../../utils/geo.ts';
 import { LiveMap } from '../Map/LiveMap.tsx';
@@ -1306,15 +1306,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         {msg.attachments.map((att: any) => (
                           <div key={att.id}>
                             {att.type === 'voice' && (
-                              <div className={`flex items-center gap-3 p-2.5 rounded-2xl ${themeConfig.glassCard} border ${themeConfig.glassBorder} max-w-sm`}>
-                                <FileAudio className={`w-6 h-6 ${themeConfig.accentText} shrink-0`} />
-                                <audio controls src={att.url} className="h-8 flex-1" />
-                                {att.duration && (
-                                  <span className={`text-[10px] ${themeConfig.textSecondary} font-mono`}>
-                                    {att.duration}s
-                                  </span>
-                                )}
-                              </div>
+                              <VoiceMessagePlayer
+                                src={att.url}
+                                initialDuration={att.duration}
+                                isSelf={isMe}
+                              />
                             )}
 
                             {att.type === 'image' && (
@@ -1380,14 +1376,20 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
         {/* Voice Note Recording Preview */}
         {voicePreview && (
-          <div className={`px-4 py-2.5 ${themeConfig.glassCard} border-t ${themeConfig.glassBorder} flex items-center justify-between backdrop-blur-xl`}>
-            <div className="flex items-center gap-3">
-              <div className={`w-8 h-8 rounded-full ${themeConfig.accentBg} text-white flex items-center justify-center shadow`}>
+          <div className={`px-4 py-2.5 ${themeConfig.glassCard} border-t ${themeConfig.glassBorder} flex items-center justify-between gap-3 backdrop-blur-xl`}>
+            <div className="flex items-center gap-3 flex-1 min-w-0">
+              <div className={`w-8 h-8 rounded-full ${themeConfig.accentBg} text-white flex items-center justify-center shadow shrink-0`}>
                 <Mic className="w-4 h-4" />
               </div>
-              <div>
-                <p className={`text-xs font-bold ${themeConfig.textPrimary}`}>Recorded Audio Message ({voicePreview.duration}s)</p>
-                <audio controls src={voicePreview.dataUrl} className="h-6 mt-1" />
+              <div className="flex-1 min-w-0">
+                <p className={`text-[11px] font-bold ${themeConfig.textPrimary} mb-1`}>
+                  Recorded Voice Note Preview ({voicePreview.duration}s)
+                </p>
+                <VoiceMessagePlayer
+                  src={voicePreview.dataUrl}
+                  initialDuration={voicePreview.duration}
+                  compact
+                />
               </div>
             </div>
             <div className="flex items-center gap-2">

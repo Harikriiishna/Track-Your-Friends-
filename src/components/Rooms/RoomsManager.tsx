@@ -109,7 +109,7 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
   const [activeRoomDetails, setActiveRoomDetails] = useState<Room | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showJoinModal, setShowJoinModal] = useState(false);
-  const [showRoomMap, setShowRoomMap] = useState(true);
+  const [showRoomMap, setShowRoomMap] = useState(false);
   const [isRoomMapFullscreen, setIsRoomMapFullscreen] = useState(false);
   const [roomMapFocusCoords, setRoomMapFocusCoords] = useState<{ lat: number; lng: number } | null>(null);
   const roomMapPanelRef = React.useRef<HTMLDivElement>(null);
@@ -637,7 +637,6 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
 
   const handleKickMember = async (targetUserId: string, memberName: string) => {
     if (!selectedRoomId) return;
-    if (!confirm(`Are you sure you want to remove ${memberName} from this room?`)) return;
     try {
       await api.kickRoomMember(selectedRoomId, targetUserId);
       const res = await api.get<{ room: Room }>(`/api/rooms/${selectedRoomId}`);
@@ -649,7 +648,6 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
   };
 
   const handleBlockUser = async (targetUserId: string, memberName: string) => {
-    if (!confirm(`Block ${memberName}? They will not be able to message you or track your location.`)) return;
     try {
       await api.blockUser(targetUserId);
       toast.success(`Blocked ${memberName}`);
