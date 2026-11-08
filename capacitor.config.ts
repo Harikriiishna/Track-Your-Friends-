@@ -2,7 +2,7 @@ import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
   appId: 'com.beacon.mesh',
-  appName: 'Beacon',
+  appName: 'Beacon Network',
   webDir: 'dist',
   server: {
     androidScheme: 'https',

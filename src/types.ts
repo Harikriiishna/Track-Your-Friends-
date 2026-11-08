@@ -34,6 +34,8 @@ export interface UserProfile {
   markerLabel?: string;
 }
 
+export type UserPrivacySettings = UserProfile['privacy'];
+
 export interface UserSession {
   token: string;
   fullToken?: string;
@@ -246,11 +248,16 @@ export interface LocationShareRequest {
   id: string;
   fromUserId: string;
   fromUserName: string;
+  fromUsername?: string;
   fromUserAvatar: string;
   toUserId: string;
+  toUserName?: string;
+  toUsername?: string;
+  toUserAvatar?: string;
   status: 'pending' | 'accepted' | 'temporary' | 'denied';
   expiresAt?: string; // for temporary sharing
   createdAt: string;
+  updatedAt?: string;
 }
 
 export interface ReportItem {

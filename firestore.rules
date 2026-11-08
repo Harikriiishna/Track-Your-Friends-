@@ -16,26 +16,37 @@ service cloud.firestore {
     }
 
     function isValidSyncDocId(docId) {
-      return docId is string && docId.size() >= 1 && docId.size() <= 64;
+      return docId is string && docId == 'global_state';
+    }
+
+    function hasValidSyncPayload(data) {
+      return (
+        ('stateJson' in data &&
+          data.stateJson is string &&
+          data.stateJson.size() >= 2 &&
+          data.stateJson.size() < 950000) ||
+        ('payload' in data &&
+          data.payload is string &&
+          data.payload.size() >= 2 &&
+          data.payload.size() < 950000)
+      );
     }
 
     function isValidBeaconSyncDoc(data) {
-      return data.keys().hasAll(['payload', 'updatedAt']) &&
-             data.keys().hasOnly(['payload', 'updatedAt']) &&
-             data.payload is string &&
-             data.payload.size() >= 2 &&
-             data.payload.size() < 950000 &&
+      return data.keys().hasAll(['updatedAt']) &&
+             data.keys().hasOnly(['stateJson', 'payload', 'updatedAt']) &&
+             hasValidSyncPayload(data) &&
              data.updatedAt is string &&
              data.updatedAt.size() >= 10 &&
              data.updatedAt.size() <= 64;
     }
 
     // ===============================================================
-    // Beacon Synchronization State Collection (Authenticated Only)
+    // Beacon Synchronization State Collection (Validated Sync Bridge)
     // ===============================================================
     match /beacon_sync/{docId} {
-      allow read: if isAuthenticated() && isValidSyncDocId(docId);
-      allow create, update: if isAuthenticated() && isValidSyncDocId(docId) && isValidBeaconSyncDoc(request.resource.data);
+      allow get: if isValidSyncDocId(docId);
+      allow create, update: if isValidSyncDocId(docId) && isValidBeaconSyncDoc(request.resource.data);
       allow delete: if isAdmin();
     }
 

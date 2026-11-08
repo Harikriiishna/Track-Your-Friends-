@@ -1,1 +1,175 @@
-if(!self.define){let s,e={};const i=(i,n)=>(i=new URL(i+".js",n).href,e[i]||new Promise(e=>{if("document"in self){const s=document.createElement("script");s.src=i,s.onload=e,document.head.appendChild(s)}else s=i,importScripts(i),e()}).then(()=>{let s=e[i];if(!s)throw new Error(`Module ${i} didn’t register its module`);return s}));self.define=(n,r)=>{const l=s||("document"in self?document.currentScript.src:"")||location.href;if(e[l])return;let o={};const a=s=>i(s,l),t={module:{uri:l},exports:o,require:a};e[l]=Promise.all(n.map(s=>t[s]||a(s))).then(s=>(r(...s),o))}}define(["./workbox-9c191d2f"],function(s){"use strict";self.skipWaiting(),s.clientsClaim(),s.precacheAndRoute([{url:"registerSW.js",revision:"1872c500de691dce40960bb85481de07"},{url:"pwa-maskable-512x512.png",revision:"87d39b1d6116bbccfee7726622e14812"},{url:"pwa-512x512.png",revision:"87d39b1d6116bbccfee7726622e14812"},{url:"pwa-192x192.png",revision:"692c420d2bbc264d9bd2d2c0ee96428b"},{url:"index.html",revision:"ad4c1919fc8667157a6a644c486d8b53"},{url:"icon.svg",revision:"f8eacca2a095f7fc72e6f403a09b7b2d"},{url:"apple-touch-icon.png",revision:"35c10ad7360f108733d923d9e00c20f2"},{url:"assets/vendor-react-Cjm6Wwir.js",revision:null},{url:"assets/vendor-react-7Z3kCInY.js",revision:null},{url:"assets/vendor-leaflet-DT2Z_4Jm.js",revision:null},{url:"assets/vendor-leaflet-BopeWkMh.js",revision:null},{url:"assets/vendor-icons-PxteBMrr.js",revision:null},{url:"assets/vendor-icons-BpU7dYT3.js",revision:null},{url:"assets/rolldown-runtime-WkwZ5CU-.js",revision:null},{url:"assets/rolldown-runtime-CO0Nlsmt.js",revision:null},{url:"assets/index-DDQF0GXM.js",revision:null},{url:"assets/index-BibrC3ht.css",revision:null},{url:"assets/index-Beu_4vAP.js",revision:null},{url:"assets/ToastContext-ziKLJ15f.js",revision:null},{url:"assets/ToastContext-CCVGPnjh.js",revision:null},{url:"assets/SavedPlacesManager-DMOb7ylA.js",revision:null},{url:"assets/SavedPlacesManager-CejZbdp1.js",revision:null},{url:"assets/RoomsManager-KCpvT0Uj.js",revision:null},{url:"assets/RoomsManager-BccaMVDP.js",revision:null},{url:"assets/RemindersManager-CxM_3RVY.js",revision:null},{url:"assets/RemindersManager-CmAKhFtK.js",revision:null},{url:"assets/ProfilePrivacyView-DQf1hx_z.js",revision:null},{url:"assets/ProfilePrivacyView--XiC9Xyl.js",revision:null},{url:"assets/MeetingsManager-CeQU2G9D.js",revision:null},{url:"assets/MeetingsManager-8hTB4fdp.js",revision:null},{url:"assets/ChatView-CFqU3YEI.js",revision:null},{url:"assets/ChatView-B-U0O1iq.js",revision:null},{url:"assets/AdminDashboard-y9at9evH.js",revision:null},{url:"assets/AdminDashboard-CDVYC6oe.js",revision:null},{url:"apple-touch-icon.png",revision:"35c10ad7360f108733d923d9e00c20f2"},{url:"icon.svg",revision:"f8eacca2a095f7fc72e6f403a09b7b2d"},{url:"pwa-192x192.png",revision:"692c420d2bbc264d9bd2d2c0ee96428b"},{url:"pwa-512x512.png",revision:"87d39b1d6116bbccfee7726622e14812"},{url:"pwa-maskable-512x512.png",revision:"87d39b1d6116bbccfee7726622e14812"},{url:"robots.txt",revision:"453785449833473f4394d092d7e5b4f4"},{url:"manifest.webmanifest",revision:"8b76e68288f4e2c00dada8ce603b77c7"}],{}),s.cleanupOutdatedCaches(),s.registerRoute(new s.NavigationRoute(s.createHandlerBoundToURL("index.html"),{denylist:[/^\/api\//,/^\/uploads\//,/^\/ws/,/^\/sitemap\.xml$/,/^\/robots\.txt$/]}))});
+/**
+ * Copyright 2018 Google Inc. All Rights Reserved.
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+// If the loader is already loaded, just stop.
+if (!self.define) {
+  let registry = {};
+
+  // Used for `eval` and `importScripts` where we can't get script URL by other means.
+  // In both cases, it's safe to use a global var because those functions are synchronous.
+  let nextDefineUri;
+
+  const singleRequire = (uri, parentUri) => {
+    uri = new URL(uri + ".js", parentUri).href;
+    return registry[uri] || (
+      
+        new Promise(resolve => {
+          if ("document" in self) {
+            const script = document.createElement("script");
+            script.src = uri;
+            script.onload = resolve;
+            document.head.appendChild(script);
+          } else {
+            nextDefineUri = uri;
+            importScripts(uri);
+            resolve();
+          }
+        })
+      
+      .then(() => {
+        let promise = registry[uri];
+        if (!promise) {
+          throw new Error(`Module ${uri} didn’t register its module`);
+        }
+        return promise;
+      })
+    );
+  };
+
+  self.define = (depsNames, factory) => {
+    const uri = nextDefineUri || ("document" in self ? document.currentScript.src : "") || location.href;
+    if (registry[uri]) {
+      // Module is already loading or loaded.
+      return;
+    }
+    let exports = {};
+    const require = depUri => singleRequire(depUri, uri);
+    const specialDeps = {
+      module: { uri },
+      exports,
+      require
+    };
+    registry[uri] = Promise.all(depsNames.map(
+      depName => specialDeps[depName] || require(depName)
+    )).then(deps => {
+      factory(...deps);
+      return exports;
+    });
+  };
+}
+define(['./workbox-7e5eb42b'], (function (workbox) { 'use strict';
+
+  self.skipWaiting();
+  workbox.clientsClaim();
+  /**
+   * The precacheAndRoute() method efficiently caches and responds to
+   * requests for URLs in the manifest.
+   * See https://goo.gl/S9QRab
+   */
+  workbox.precacheAndRoute([{
+    "url": "pwa-maskable-512x512.png",
+    "revision": "87d39b1d6116bbccfee7726622e14812"
+  }, {
+    "url": "pwa-512x512.png",
+    "revision": "87d39b1d6116bbccfee7726622e14812"
+  }, {
+    "url": "pwa-192x192.png",
+    "revision": "692c420d2bbc264d9bd2d2c0ee96428b"
+  }, {
+    "url": "index.html",
+    "revision": "e4accbc5783a0fa2619efaab9593fc28"
+  }, {
+    "url": "icon.svg",
+    "revision": "f8eacca2a095f7fc72e6f403a09b7b2d"
+  }, {
+    "url": "apple-touch-icon.png",
+    "revision": "35c10ad7360f108733d923d9e00c20f2"
+  }, {
+    "url": "assets/vendor-react-Blvw1YtV.js",
+    "revision": null
+  }, {
+    "url": "assets/vendor-leaflet-GIXaehag.css",
+    "revision": null
+  }, {
+    "url": "assets/vendor-leaflet-DFE5GvRa.js",
+    "revision": null
+  }, {
+    "url": "assets/vendor-icons-IfKlgG3R.js",
+    "revision": null
+  }, {
+    "url": "assets/rolldown-runtime-WkwZ5CU-.js",
+    "revision": null
+  }, {
+    "url": "assets/index-DbEiFxoi.js",
+    "revision": null
+  }, {
+    "url": "assets/index-BQGuQteI.css",
+    "revision": null
+  }, {
+    "url": "assets/ToastContext-CogEJWBT.js",
+    "revision": null
+  }, {
+    "url": "assets/SavedPlacesManager-BzZh4PYP.js",
+    "revision": null
+  }, {
+    "url": "assets/RoomsManager-OUAyaWDF.js",
+    "revision": null
+  }, {
+    "url": "assets/RemindersManager-lgGGR7dn.js",
+    "revision": null
+  }, {
+    "url": "assets/ProfilePrivacyView-C7kMgD_5.js",
+    "revision": null
+  }, {
+    "url": "assets/NotificationsCenter-Dll06ioq.js",
+    "revision": null
+  }, {
+    "url": "assets/MeetingsManager-CcHmZerV.js",
+    "revision": null
+  }, {
+    "url": "assets/FriendsView-DUQo39Ub.js",
+    "revision": null
+  }, {
+    "url": "assets/ChatView-TbQPU0w0.js",
+    "revision": null
+  }, {
+    "url": "assets/AdminDashboard-COSvjLMP.js",
+    "revision": null
+  }, {
+    "url": "apple-touch-icon.png",
+    "revision": "35c10ad7360f108733d923d9e00c20f2"
+  }, {
+    "url": "icon.svg",
+    "revision": "f8eacca2a095f7fc72e6f403a09b7b2d"
+  }, {
+    "url": "pwa-192x192.png",
+    "revision": "692c420d2bbc264d9bd2d2c0ee96428b"
+  }, {
+    "url": "pwa-512x512.png",
+    "revision": "87d39b1d6116bbccfee7726622e14812"
+  }, {
+    "url": "pwa-maskable-512x512.png",
+    "revision": "87d39b1d6116bbccfee7726622e14812"
+  }, {
+    "url": "robots.txt",
+    "revision": "453785449833473f4394d092d7e5b4f4"
+  }, {
+    "url": "manifest.webmanifest",
+    "revision": "00dfeeb47f508f48c8267428a89840be"
+  }], {});
+  workbox.cleanupOutdatedCaches();
+  workbox.registerRoute(new workbox.NavigationRoute(workbox.createHandlerBoundToURL("index.html"), {
+    denylist: [/^\/api\//, /^\/uploads\//, /^\/ws/, /^\/sitemap\.xml$/, /^\/robots\.txt$/]
+  }));
+
+}));

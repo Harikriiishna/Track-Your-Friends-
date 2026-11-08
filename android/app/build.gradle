@@ -90,7 +90,7 @@ dependencies {
     implementation project(':capacitor-cordova-android-plugins')
 }
 
-apply from: 'capacitor.build.gradle'
+apply from: file('capacitor.build.gradle')
 
 try {
     def servicesJSON = file('google-services.json')

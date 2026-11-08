@@ -8,278 +8,264 @@ export type GlassThemeId =
   | 'glass-amber'
   | 'glass-stealth';
 
-export interface ThemeConfig {
+export interface GlassThemeConfig {
   id: GlassThemeId;
   name: string;
+  description: string;
   tagline: string;
-  isDark: boolean;
-  accentHex: string;
-  previewGradient: string;
-  // Dynamic CSS classes for consistent glass styling
   appBg: string;
-  ambientGlow: string;
   glassPanel: string;
   glassCard: string;
+  cardBg: string;
   glassHeader: string;
   glassBorder: string;
   glassInput: string;
   textPrimary: string;
   textSecondary: string;
-  accentText: string;
+  textMuted: string;
   accentBg: string;
-  accentBorder: string;
+  accentText: string;
+  accentHex: string;
+  accentGlow: string;
+  ambientGlow: string;
+  previewColor: string;
+  previewGradient: string;
+  isDark: boolean;
 }
 
-export const GLASS_THEMES: Record<GlassThemeId, ThemeConfig> = {
+export const GLASS_THEMES: Record<GlassThemeId, GlassThemeConfig> = {
   'glass-dark': {
     id: 'glass-dark',
-    name: 'Obsidian Frost',
-    tagline: 'Deep cosmic slate with icy cyan frosted glass & translucent reflections',
-    isDark: true,
-    accentHex: '#38bdf8',
-    previewGradient: 'from-slate-950 via-slate-900 to-sky-950',
-    appBg: 'bg-slate-950 text-slate-100',
-    ambientGlow: 'from-sky-500/10 via-indigo-500/5 to-transparent',
-    glassPanel: 'bg-slate-900/80 backdrop-blur-md border-white/10 shadow-lg',
-    glassCard: 'bg-slate-900/70 hover:bg-slate-800/80 backdrop-blur-sm border-white/10 hover:border-sky-400/30 transition-all shadow-md',
-    glassHeader: 'bg-slate-950/85 backdrop-blur-md border-white/10',
+    name: 'Beacon Midnight',
+    description: 'Vibrant Purple, Hot Pink & Electric Blue on deep midnight velvet (#0B081B)',
+    tagline: 'Beacon Network Dark Theme',
+    appBg: 'bg-[#0B081B] bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-[#8957FF]/20 via-[#0B081B] to-[#130F2B]',
+    glassPanel: 'bg-[#130F2B]/90 backdrop-blur-2xl border-[#8957FF]/25 shadow-[0_12px_36px_rgba(11,8,27,0.65)]',
+    glassCard: 'bg-[#1B153A]/85 backdrop-blur-xl border-[#8957FF]/25 hover:border-[#FF4FA3]/50 transition-all',
+    cardBg: 'bg-[#1B153A]/85 backdrop-blur-xl border-[#8957FF]/25 hover:border-[#FF4FA3]/50 transition-all',
+    glassHeader: 'bg-[#0B081B]/90 backdrop-blur-2xl border-[#8957FF]/25',
     glassBorder: 'border-white/10',
-    glassInput: 'bg-slate-900/80 border-white/15 text-white placeholder-slate-400 focus:border-sky-400',
-    textPrimary: 'text-white',
-    textSecondary: 'text-slate-400',
-    accentText: 'text-sky-400',
-    accentBg: 'bg-sky-500 hover:bg-sky-400 text-slate-950 font-semibold',
-    accentBorder: 'border-sky-500/40',
+    glassInput: 'bg-[#130F2B]/90 backdrop-blur-md border-[#8957FF]/35 focus:border-[#FF4FA3] text-[#F8F7FF]',
+    textPrimary: 'text-[#F8F7FF]',
+    textSecondary: 'text-[#A9A2D0]',
+    textMuted: 'text-[#7E76A8]',
+    accentBg: 'bg-gradient-to-r from-[#8957FF] via-[#FF4FA3] to-[#FF8066] hover:opacity-95 text-white shadow-[0_6px_20px_rgba(255,79,163,0.35)]',
+    accentText: 'text-[#00D9FF]',
+    accentHex: '#8957FF',
+    accentGlow: 'shadow-purple-500/25',
+    ambientGlow: 'from-[#8957FF]/20 via-[#FF4FA3]/15 to-transparent',
+    previewColor: 'from-[#8957FF] via-[#FF4FA3] to-[#FF8066]',
+    previewGradient: 'from-[#8957FF] via-[#FF4FA3] to-[#FF8066]',
+    isDark: true,
   },
   'glass-light': {
     id: 'glass-light',
-    name: 'Crystal Ice',
-    tagline: 'Ultra-clean luminous crystal glass with sapphire refraction',
-    isDark: false,
-    accentHex: '#2563eb',
-    previewGradient: 'from-sky-50 via-slate-100 to-indigo-50',
-    appBg: 'bg-slate-100 text-slate-900',
-    ambientGlow: 'from-blue-400/10 via-indigo-300/5 to-transparent',
-    glassPanel: 'bg-white/85 backdrop-blur-md border-white/60 shadow-md',
-    glassCard: 'bg-white/80 hover:bg-white/95 backdrop-blur-sm border-slate-200/70 hover:border-blue-400/50 transition-all shadow-sm',
-    glassHeader: 'bg-white/90 backdrop-blur-md border-slate-200/80',
-    glassBorder: 'border-slate-200/80',
-    glassInput: 'bg-white/90 border-slate-300 text-slate-900 placeholder-slate-400 focus:border-blue-500',
+    name: 'Beacon Daylight',
+    description: 'Clean daylight canvas with Lavender, Purple & Coral gradients',
+    tagline: 'Beacon Network Light Theme',
+    appBg: 'bg-[#F8F6FF] bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-[#E9DFFF]/80 via-[#F8F6FF] to-[#FFF0F7]',
+    glassPanel: 'bg-white/92 backdrop-blur-2xl border-[#8957FF]/15 shadow-[0_10px_30px_rgba(137,87,255,0.08)]',
+    glassCard: 'bg-white/95 backdrop-blur-xl border-[#8957FF]/15 hover:border-[#FF4FA3]/45 shadow-sm transition-all',
+    cardBg: 'bg-white/95 backdrop-blur-xl border-[#8957FF]/15 hover:border-[#FF4FA3]/45 shadow-sm transition-all',
+    glassHeader: 'bg-white/90 backdrop-blur-2xl border-[#8957FF]/15',
+    glassBorder: 'border-[#8957FF]/15',
+    glassInput: 'bg-white border-[#8957FF]/25 focus:border-[#8957FF] text-slate-900',
     textPrimary: 'text-slate-900',
     textSecondary: 'text-slate-600',
-    accentText: 'text-blue-600',
-    accentBg: 'bg-blue-600 hover:bg-blue-700 text-white font-semibold',
-    accentBorder: 'border-blue-300',
+    textMuted: 'text-slate-400',
+    accentBg: 'bg-gradient-to-r from-[#8957FF] via-[#FF4FA3] to-[#FF8066] hover:opacity-95 text-white shadow-[0_6px_18px_rgba(137,87,255,0.3)]',
+    accentText: 'text-[#8957FF]',
+    accentHex: '#8957FF',
+    accentGlow: 'shadow-purple-500/20',
+    ambientGlow: 'from-[#8957FF]/15 via-[#FF4FA3]/10 to-transparent',
+    previewColor: 'from-[#8957FF] via-[#FF4FA3] to-[#397BFF]',
+    previewGradient: 'from-[#8957FF] via-[#FF4FA3] to-[#397BFF]',
+    isDark: false,
   },
   'glass-cyber': {
     id: 'glass-cyber',
-    name: 'Neon Aurora',
-    tagline: 'Cyber noir translucent glass with radiant violet & electric magenta halos',
+    name: 'Sunset Pop',
+    description: 'Hot Pink (#FF4FA3), Coral (#FF8066) & Sunshine Yellow (#FFD166) social glow',
+    tagline: 'Hot Pink & Coral Vibes',
+    appBg: 'bg-[#12071D] bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-[#FF4FA3]/25 via-[#12071D] to-[#1D0B2B]',
+    glassPanel: 'bg-[#1D0E2E]/90 backdrop-blur-2xl border-[#FF4FA3]/30 shadow-2xl',
+    glassCard: 'bg-[#26123B]/80 backdrop-blur-xl border-[#FF4FA3]/25 hover:border-[#FF8066]/55',
+    cardBg: 'bg-[#26123B]/80 backdrop-blur-xl border-[#FF4FA3]/25 hover:border-[#FF8066]/55',
+    glassHeader: 'bg-[#12071D]/90 backdrop-blur-2xl border-[#FF4FA3]/30',
+    glassBorder: 'border-[#FF4FA3]/20',
+    glassInput: 'bg-[#180A26]/90 backdrop-blur-md border-[#FF4FA3]/35 focus:border-[#FF8066] text-white',
+    textPrimary: 'text-[#FFF5FA]',
+    textSecondary: 'text-[#E2B8D2]',
+    textMuted: 'text-[#B388A3]',
+    accentBg: 'bg-gradient-to-r from-[#FF4FA3] to-[#FF8066] hover:opacity-95 text-white shadow-[0_6px_20px_rgba(255,79,163,0.4)]',
+    accentText: 'text-[#FF8066]',
+    accentHex: '#FF4FA3',
+    accentGlow: 'shadow-pink-500/30',
+    ambientGlow: 'from-[#FF4FA3]/25 via-[#FF8066]/15 to-transparent',
+    previewColor: 'from-[#FF4FA3] via-[#FF8066] to-[#FFD166]',
+    previewGradient: 'from-[#FF4FA3] via-[#FF8066] to-[#FFD166]',
     isDark: true,
-    accentHex: '#e879f9',
-    previewGradient: 'from-[#0d0714] via-[#160a26] to-[#250d3a]',
-    appBg: 'bg-[#0a0512] text-slate-100',
-    ambientGlow: 'from-fuchsia-600/15 via-purple-600/10 to-cyan-500/5',
-    glassPanel: 'bg-[#150a24]/80 backdrop-blur-md border-fuchsia-500/20 shadow-lg',
-    glassCard: 'bg-[#1a0e2d]/75 hover:bg-[#23123d]/85 backdrop-blur-sm border-fuchsia-500/20 hover:border-fuchsia-400/50 transition-all shadow-md',
-    glassHeader: 'bg-[#0d0714]/85 backdrop-blur-md border-fuchsia-500/20',
-    glassBorder: 'border-fuchsia-500/20',
-    glassInput: 'bg-[#180c2b]/80 border-fuchsia-500/30 text-white placeholder-purple-300/50 focus:border-fuchsia-400',
-    textPrimary: 'text-white',
-    textSecondary: 'text-purple-200/70',
-    accentText: 'text-fuchsia-400',
-    accentBg: 'bg-fuchsia-600 hover:bg-fuchsia-500 text-white font-semibold shadow-lg shadow-fuchsia-600/30',
-    accentBorder: 'border-fuchsia-500/50',
   },
   'glass-emerald': {
     id: 'glass-emerald',
-    name: 'Boreal Spruce',
-    tagline: 'Deep Scandinavian spruce forest frosted glass with mint luminescence',
+    name: 'Mint & Aqua Wave',
+    description: 'Mint Green (#00D6A0) & Aqua Cyan (#00D9FF) fresh location pulse',
+    tagline: 'Fresh Mint & Aqua Cyan',
+    appBg: 'bg-[#06151F] bg-[radial-gradient(ellipse_at_bottom_left,_var(--tw-gradient-stops))] from-[#00D6A0]/20 via-[#06151F] to-[#081E2B]',
+    glassPanel: 'bg-[#0B2230]/90 backdrop-blur-2xl border-[#00D6A0]/30 shadow-2xl',
+    glassCard: 'bg-[#102C3D]/80 backdrop-blur-xl border-[#00D6A0]/25 hover:border-[#00D9FF]/50',
+    cardBg: 'bg-[#102C3D]/80 backdrop-blur-xl border-[#00D6A0]/25 hover:border-[#00D9FF]/50',
+    glassHeader: 'bg-[#06151F]/90 backdrop-blur-2xl border-[#00D6A0]/25',
+    glassBorder: 'border-[#00D6A0]/20',
+    glassInput: 'bg-[#091C28]/90 backdrop-blur-md border-[#00D6A0]/35 focus:border-[#00D9FF] text-white',
+    textPrimary: 'text-emerald-50',
+    textSecondary: 'text-teal-200/75',
+    textMuted: 'text-teal-400/60',
+    accentBg: 'bg-gradient-to-r from-[#00D6A0] to-[#00D9FF] hover:opacity-95 text-slate-950 font-extrabold',
+    accentText: 'text-[#00D6A0]',
+    accentHex: '#00D6A0',
+    accentGlow: 'shadow-emerald-500/25',
+    ambientGlow: 'from-[#00D6A0]/20 via-[#00D9FF]/15 to-transparent',
+    previewColor: 'from-[#00D6A0] to-[#00D9FF]',
+    previewGradient: 'from-[#00D6A0] to-[#00D9FF]',
     isDark: true,
-    accentHex: '#34d399',
-    previewGradient: 'from-[#05130e] via-[#09231a] to-[#0c3124]',
-    appBg: 'bg-[#040e0a] text-slate-100',
-    ambientGlow: 'from-emerald-500/15 via-teal-500/10 to-transparent',
-    glassPanel: 'bg-[#092219]/80 backdrop-blur-md border-emerald-500/20 shadow-lg',
-    glassCard: 'bg-[#0b281e]/75 hover:bg-[#10372a]/85 backdrop-blur-sm border-emerald-500/20 hover:border-emerald-400/50 transition-all shadow-md',
-    glassHeader: 'bg-[#05130e]/85 backdrop-blur-md border-emerald-500/20',
-    glassBorder: 'border-emerald-500/20',
-    glassInput: 'bg-[#0a231a]/80 border-emerald-500/30 text-white placeholder-emerald-200/50 focus:border-emerald-400',
-    textPrimary: 'text-white',
-    textSecondary: 'text-emerald-200/70',
-    accentText: 'text-emerald-400',
-    accentBg: 'bg-emerald-600 hover:bg-emerald-500 text-white font-semibold shadow-lg shadow-emerald-600/25',
-    accentBorder: 'border-emerald-500/50',
   },
   'glass-amber': {
     id: 'glass-amber',
-    name: 'Smoky Sunset',
-    tagline: 'Warm volcanic obsidian with molten amber and golden hour glass',
+    name: 'Electric Ocean',
+    description: 'Electric Blue (#397BFF) & Aqua Cyan (#00D9FF) Telegram-inspired theme',
+    tagline: 'Electric Blue & Cyan',
+    appBg: 'bg-[#071024] bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-[#397BFF]/25 via-[#071024] to-[#0B1936]',
+    glassPanel: 'bg-[#0E1B38]/90 backdrop-blur-2xl border-[#397BFF]/30 shadow-2xl',
+    glassCard: 'bg-[#132448]/80 backdrop-blur-xl border-[#397BFF]/25 hover:border-[#00D9FF]/50',
+    cardBg: 'bg-[#132448]/80 backdrop-blur-xl border-[#397BFF]/25 hover:border-[#00D9FF]/50',
+    glassHeader: 'bg-[#071024]/90 backdrop-blur-2xl border-[#397BFF]/30',
+    glassBorder: 'border-[#397BFF]/20',
+    glassInput: 'bg-[#0B162E]/90 backdrop-blur-md border-[#397BFF]/35 focus:border-[#00D9FF] text-white',
+    textPrimary: 'text-[#F5F9FF]',
+    textSecondary: 'text-[#9BB5E8]',
+    textMuted: 'text-[#6A88C2]',
+    accentBg: 'bg-gradient-to-r from-[#397BFF] to-[#00D9FF] hover:opacity-95 text-white shadow-[0_6px_20px_rgba(57,123,255,0.35)]',
+    accentText: 'text-[#00D9FF]',
+    accentHex: '#397BFF',
+    accentGlow: 'shadow-blue-500/25',
+    ambientGlow: 'from-[#397BFF]/20 via-[#00D9FF]/15 to-transparent',
+    previewColor: 'from-[#397BFF] to-[#00D9FF]',
+    previewGradient: 'from-[#397BFF] to-[#00D9FF]',
     isDark: true,
-    accentHex: '#fbbf24',
-    previewGradient: 'from-[#140b07] via-[#24130a] to-[#381c0d]',
-    appBg: 'bg-[#0f0805] text-amber-50',
-    ambientGlow: 'from-amber-500/15 via-orange-500/10 to-transparent',
-    glassPanel: 'bg-[#22120a]/80 backdrop-blur-md border-amber-500/20 shadow-lg',
-    glassCard: 'bg-[#29170d]/75 hover:bg-[#361e11]/85 backdrop-blur-sm border-amber-500/20 hover:border-amber-400/50 transition-all shadow-md',
-    glassHeader: 'bg-[#140b07]/85 backdrop-blur-md border-amber-500/20',
-    glassBorder: 'border-amber-500/20',
-    glassInput: 'bg-[#23130a]/80 border-amber-500/30 text-white placeholder-amber-200/50 focus:border-amber-400',
-    textPrimary: 'text-white',
-    textSecondary: 'text-amber-200/70',
-    accentText: 'text-amber-400',
-    accentBg: 'bg-amber-600 hover:bg-amber-500 text-slate-950 font-semibold shadow-lg shadow-amber-600/25',
-    accentBorder: 'border-amber-500/50',
   },
   'glass-stealth': {
     id: 'glass-stealth',
-    name: 'Midnight OLED',
-    tagline: 'Pure deep black OLED canvas with minimalist hairline platinum frost',
-    isDark: true,
-    accentHex: '#f8fafc',
-    previewGradient: 'from-black via-[#09090b] to-[#121215]',
-    appBg: 'bg-black text-zinc-100',
-    ambientGlow: 'from-zinc-700/5 via-zinc-800/5 to-transparent',
-    glassPanel: 'bg-zinc-950/85 backdrop-blur-md border-zinc-800 shadow-xl',
-    glassCard: 'bg-zinc-950/75 hover:bg-zinc-900/85 backdrop-blur-sm border-zinc-800 hover:border-zinc-700 transition-all shadow-md',
-    glassHeader: 'bg-black/90 backdrop-blur-md border-zinc-800',
-    glassBorder: 'border-zinc-800',
-    glassInput: 'bg-zinc-900/80 border-zinc-800 text-white placeholder-zinc-500 focus:border-zinc-600',
-    textPrimary: 'text-white',
-    textSecondary: 'text-zinc-400',
-    accentText: 'text-white',
-    accentBg: 'bg-white hover:bg-zinc-200 text-black font-semibold',
-    accentBorder: 'border-zinc-700',
+    name: 'Lavender Dream (Light)',
+    description: 'Soft Lavender (#E9DFFF), Vibrant Purple (#8957FF) & Electric Blue (#397BFF)',
+    tagline: 'Pastel Lavender & Electric Blue',
+    appBg: 'bg-[#F3EEFF] bg-[radial-gradient(ellipse_at_top_left,_var(--tw-gradient-stops))] from-[#E9DFFF] via-[#F6F2FF] to-[#EBF3FF]',
+    glassPanel: 'bg-white/90 backdrop-blur-2xl border-[#8957FF]/20 shadow-[0_10px_30px_rgba(137,87,255,0.1)]',
+    glassCard: 'bg-white/95 backdrop-blur-xl border-[#8957FF]/20 hover:border-[#397BFF]/45 shadow-sm',
+    cardBg: 'bg-white/95 backdrop-blur-xl border-[#8957FF]/20 hover:border-[#397BFF]/45 shadow-sm',
+    glassHeader: 'bg-white/90 backdrop-blur-2xl border-[#8957FF]/20',
+    glassBorder: 'border-[#8957FF]/20',
+    glassInput: 'bg-white border-[#8957FF]/30 focus:border-[#397BFF] text-slate-900',
+    textPrimary: 'text-slate-900',
+    textSecondary: 'text-slate-600',
+    textMuted: 'text-slate-400',
+    accentBg: 'bg-gradient-to-r from-[#8957FF] to-[#397BFF] hover:opacity-95 text-white shadow-[0_6px_18px_rgba(137,87,255,0.3)]',
+    accentText: 'text-[#8957FF]',
+    accentHex: '#8957FF',
+    accentGlow: 'shadow-indigo-500/20',
+    ambientGlow: 'from-[#E9DFFF]/50 via-[#8957FF]/10 to-transparent',
+    previewColor: 'from-[#8957FF] via-[#397BFF] to-[#00D9FF]',
+    previewGradient: 'from-[#8957FF] via-[#397BFF] to-[#00D9FF]',
+    isDark: false,
   },
 };
 
 interface ThemeContextType {
   currentTheme: GlassThemeId;
-  themeConfig: ThemeConfig;
-  setTheme: (theme: GlassThemeId) => void;
-  isDark: boolean;
+  themeConfig: GlassThemeConfig;
+  setTheme: (id: GlassThemeId) => void;
+  toggleDarkLight: () => void;
+  allThemes: GlassThemeConfig[];
   isLiteMode: boolean;
-  setLiteMode: (enabled: boolean) => void;
+  setLiteMode: (val: boolean) => void;
   isLowEndDeviceDetected: boolean;
 }
 
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
-function detectLowEndHardware(): boolean {
-  if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
-  try {
-    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-      return true;
-    }
-    const nav = navigator as any;
-    if (typeof nav.deviceMemory === 'number' && nav.deviceMemory <= 4) {
-      return true;
-    }
-    if (typeof nav.hardwareConcurrency === 'number' && nav.hardwareConcurrency <= 4) {
-      return true;
-    }
-    if (nav.connection && (nav.connection.saveData === true || nav.connection.effectiveType === '2g' || nav.connection.effectiveType === 'slow-2g')) {
-      return true;
-    }
-    const ua = navigator.userAgent || '';
-    if (/Android\s+[5-9]\./i.test(ua) || /Android.*Go\b/i.test(ua)) {
-      return true;
-    }
-  } catch (_) {}
-  return false;
-}
-
-function stripBlurForLiteMode(config: ThemeConfig): ThemeConfig {
-  const clean = (cls: string) =>
-    cls
-      .replace(/\bbackdrop-blur(?:-[a-z0-9]+)?\b/g, '')
-      .replace(/\/70\b|\/75\b|\/80\b|\/85\b|\/90\b/g, '/95')
-      .replace(/\bshadow-(?:lg|xl|2xl)\b/g, 'shadow-sm')
-      .replace(/\s+/g, ' ')
-      .trim();
-
-  return {
-    ...config,
-    glassPanel: clean(config.glassPanel),
-    glassCard: clean(config.glassCard),
-    glassHeader: clean(config.glassHeader),
-  };
-}
+const STORAGE_KEY = 'beacon_glass_theme_v1';
+const LITE_STORAGE_KEY = 'beacon_lite_mode_v1';
 
 export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [currentTheme, setCurrentThemeState] = useState<GlassThemeId>(() => {
+  const [currentTheme, setCurrentTheme] = useState<GlassThemeId>(() => {
     try {
-      const stored = localStorage.getItem('beacon_glass_theme') as GlassThemeId;
-      if (stored && GLASS_THEMES[stored]) {
-        return stored;
-      }
-    } catch (_) {}
+      const saved = localStorage.getItem(STORAGE_KEY) as GlassThemeId;
+      if (saved && GLASS_THEMES[saved]) return saved;
+    } catch {
+      // ignore storage errors
+    }
     return 'glass-dark';
   });
 
-  const [isLowEndDeviceDetected] = useState<boolean>(() => detectLowEndHardware());
-
-  const [isLiteMode, setIsLiteModeState] = useState<boolean>(() => {
+  const [isLiteMode, setIsLiteMode] = useState<boolean>(() => {
     try {
-      const stored = localStorage.getItem('beacon_lite_mode');
-      if (stored === 'on') return true;
-      if (stored === 'off') return false;
-    } catch (_) {}
-    return detectLowEndHardware();
+      return localStorage.getItem(LITE_STORAGE_KEY) === 'true';
+    } catch {
+      return false;
+    }
   });
 
-  const setTheme = (theme: GlassThemeId) => {
-    if (!GLASS_THEMES[theme]) return;
-    setCurrentThemeState(theme);
-    try {
-      localStorage.setItem('beacon_glass_theme', theme);
-    } catch (_) {}
-    document.documentElement.setAttribute('data-theme', theme);
-  };
-
-  const setLiteMode = (enabled: boolean) => {
-    setIsLiteModeState(enabled);
-    try {
-      localStorage.setItem('beacon_lite_mode', enabled ? 'on' : 'off');
-    } catch (_) {}
-    document.documentElement.classList.toggle('lite-mode', enabled);
-  };
-
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', currentTheme);
+    try {
+      localStorage.setItem(STORAGE_KEY, currentTheme);
+    } catch {
+      // ignore
+    }
   }, [currentTheme]);
 
+  const setLiteMode = (val: boolean) => {
+    setIsLiteMode(val);
+    try {
+      localStorage.setItem(LITE_STORAGE_KEY, String(val));
+    } catch {
+      // ignore
+    }
+  };
+
+  const themeConfig = GLASS_THEMES[currentTheme] || GLASS_THEMES['glass-dark'];
+
   useEffect(() => {
-    document.documentElement.classList.toggle('lite-mode', isLiteMode);
-  }, [isLiteMode]);
+    if (typeof document !== 'undefined') {
+      document.documentElement.classList.toggle('dark', themeConfig.isDark);
+      document.documentElement.style.colorScheme = themeConfig.isDark ? 'dark' : 'light';
+    }
+  }, [themeConfig.isDark]);
 
-  const rawThemeConfig = GLASS_THEMES[currentTheme] || GLASS_THEMES['glass-dark'];
-  const themeConfig = React.useMemo(
-    () => (isLiteMode ? stripBlurForLiteMode(rawThemeConfig) : rawThemeConfig),
-    [rawThemeConfig, isLiteMode]
-  );
+  const toggleDarkLight = () => {
+    setCurrentTheme((prev) => {
+      const curr = GLASS_THEMES[prev] || GLASS_THEMES['glass-dark'];
+      return curr.isDark ? 'glass-light' : 'glass-dark';
+    });
+  };
 
-  return (
-    <ThemeContext.Provider
-      value={{
-        currentTheme,
-        themeConfig,
-        setTheme,
-        isDark: themeConfig.isDark,
-        isLiteMode,
-        setLiteMode,
-        isLowEndDeviceDetected,
-      }}
-    >
-      {children}
-    </ThemeContext.Provider>
-  );
+  const value: ThemeContextType = {
+    currentTheme,
+    themeConfig,
+    setTheme: setCurrentTheme,
+    toggleDarkLight,
+    allThemes: Object.values(GLASS_THEMES),
+    isLiteMode,
+    setLiteMode,
+    isLowEndDeviceDetected: false,
+  };
+
+  return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
 };
 
-export function useTheme() {
+export const useTheme = () => {
   const context = useContext(ThemeContext);
   if (!context) {
     throw new Error('useTheme must be used within a ThemeProvider');
   }
   return context;
-}
+};

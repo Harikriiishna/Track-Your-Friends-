@@ -18,12 +18,13 @@ export default defineConfig(() => {
       react(),
       tailwindcss(),
       VitePWA({
+        injectRegister: null,
         registerType: 'autoUpdate',
         includeAssets: ['apple-touch-icon.png', 'icon.svg', 'robots.txt'],
         manifest: {
           id: '/',
-          name: 'Beacon - Real-Time Location & Community Mesh',
-          short_name: 'Beacon',
+          name: 'Beacon Network',
+          short_name: 'Beacon Network',
           description:
             'Production real-time location sharing, private rooms, live voice channels, community emergency alerts, and mapping.',
           theme_color: '#0f172a',
@@ -60,7 +61,7 @@ export default defineConfig(() => {
           cleanupOutdatedCaches: true,
         },
         devOptions: {
-          enabled: true,
+          enabled: false,
           type: 'module',
         },
       }),

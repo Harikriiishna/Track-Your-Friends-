@@ -1,5 +1,5 @@
 {
-  "name": "Beacon - Real-Time Location & Community Mesh",
+  "name": "Beacon Network",
   "description": "Production real-time location sharing, private rooms, live voice channels, voice notes, community emergency alerts, and interactive mapping.",
   "requestFramePermissions": [
     "geolocation",

@@ -1,5 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
+import 'leaflet.markercluster';
+import 'leaflet.markercluster/dist/MarkerCluster.css';
+import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
 import { useRealtime } from '../../context/RealtimeContext.tsx';
 import { useAuth } from '../../context/AuthContext.tsx';
 import type { UserLocation, SavedPlace, UserPathTrail, Room, PlaceResult, RouteData } from '../../types.ts';
@@ -114,10 +117,12 @@ export const LiveMap: React.FC<LiveMapProps> = ({
   isActive = true,
   focusCoords = null,
 }) => {
-  const { user } = useAuth();
+  const { user, updatePrivacy } = useAuth();
   const { themeConfig, isLiteMode } = useTheme();
   const isLiteModeRef = useRef<boolean>(isLiteMode);
   isLiteModeRef.current = isLiteMode;
+  const isActiveRef = useRef<boolean>(isActive);
+  isActiveRef.current = isActive;
   const {
     myLocation,
     userLocations,
@@ -152,6 +157,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
   const tileLayerRef = useRef<L.TileLayer | null>(null);
+  const markerClusterGroupRef = useRef<L.MarkerClusterGroup | null>(null);
   const userMarkersRef = useRef<Map<string, L.Marker>>(new Map());
   const userAccuracyCirclesRef = useRef<Map<string, L.Circle>>(new Map());
   const emergencyAlertLayersRef = useRef<L.Layer[]>([]);
@@ -254,6 +260,10 @@ export const LiveMap: React.FC<LiveMapProps> = ({
       return saved as MapLayerMode;
     }
     return 'terrain';
+  });
+  const [isHdrEnabled, setIsHdrEnabled] = useState<boolean>(() => {
+    const saved = localStorage.getItem('beacon_map_hdr');
+    return saved !== '0';
   });
   const [showLayerQuickToggle, setShowLayerQuickToggle] = useState<boolean>(true);
   const [selectedUser, setSelectedUser] = useState<UserLocation | null>(null);
@@ -1087,13 +1097,19 @@ export const LiveMap: React.FC<LiveMapProps> = ({
 
   const createGoogleTileLayer = (mode: 'standard' | 'satellite' | 'terrain' | 'traffic') => {
     const lite = isLiteModeRef.current;
+    // scale=2 requests 512x512 Ultra-HD Retina tiles from Google Maps.
+    // Keep detectRetina: false so Leaflet renders each 512px tile inside a crisp 256px CSS slot
+    // without shrinking street names and labels to half size.
     const scaleParam = lite ? '1' : '2';
     const commonOpts: L.TileLayerOptions = {
       subdomains: ['0', '1', '2', '3'],
-      detectRetina: !lite,
-      keepBuffer: lite ? 1 : 2,
+      tileSize: 256,
+      zoomOffset: 0,
+      detectRetina: false,
+      keepBuffer: lite ? 1 : 3,
       updateWhenIdle: lite,
       updateWhenZooming: !lite,
+      crossOrigin: true,
     };
 
     if (mode === 'terrain') {
@@ -1101,8 +1117,9 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         `https://mt{s}.google.com/vt/lyrs=p&x={x}&y={y}&z={z}&scale=${scaleParam}&hl=en`,
         {
           ...commonOpts,
-          maxZoom: 20,
-          attribution: '&copy; Google Maps Terrain Topo HD',
+          maxNativeZoom: 20,
+          maxZoom: 22,
+          attribution: '&copy; Google Maps Terrain Topo HDR',
         }
       );
     } else if (mode === 'satellite') {
@@ -1110,8 +1127,9 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         `https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}&scale=${scaleParam}&hl=en`,
         {
           ...commonOpts,
-          maxZoom: 21,
-          attribution: '&copy; Google Maps Satellite HD',
+          maxNativeZoom: 21,
+          maxZoom: 22,
+          attribution: '&copy; Google Maps Satellite HDR',
         }
       );
     } else if (mode === 'traffic') {
@@ -1119,8 +1137,9 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         `https://mt{s}.google.com/vt/lyrs=m,traffic&x={x}&y={y}&z={z}&scale=${scaleParam}&hl=en`,
         {
           ...commonOpts,
-          maxZoom: 21,
-          attribution: '&copy; Google Maps Live Traffic HD',
+          maxNativeZoom: 21,
+          maxZoom: 22,
+          attribution: '&copy; Google Maps Live Traffic HDR',
         }
       );
     } else {
@@ -1128,8 +1147,9 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         `https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}&scale=${scaleParam}&hl=en`,
         {
           ...commonOpts,
-          maxZoom: 21,
-          attribution: '&copy; Google Maps HD',
+          maxNativeZoom: 21,
+          maxZoom: 22,
+          attribution: '&copy; Google Maps Street HDR',
         }
       );
     }
@@ -1157,6 +1177,42 @@ export const LiveMap: React.FC<LiveMapProps> = ({
     });
 
     const initialLayer = createGoogleTileLayer(mapMode).addTo(map);
+
+    const clusterGroup = L.markerClusterGroup({
+      maxClusterRadius: 48,
+      spiderfyOnMaxZoom: true,
+      showCoverageOnHover: false,
+      zoomToBoundsOnClick: true,
+      animate: !isLiteModeRef.current,
+      animateAddingMarkers: false,
+      spiderLegPolylineOptions: {
+        weight: 2,
+        color: '#38bdf8',
+        opacity: 0.75,
+      },
+      iconCreateFunction: (cluster) => {
+        const count = cluster.getChildCount();
+        const sizePx = count >= 10 ? 48 : 42;
+        return L.divIcon({
+          className: 'beacon-user-cluster-marker',
+          html: `
+            <div style="width:${sizePx}px;height:${sizePx}px;" class="relative flex items-center justify-center cursor-pointer group">
+              <div class="absolute inset-0 rounded-full bg-cyan-500/25 border border-cyan-400/50 animate-pulse pointer-events-none"></div>
+              <div class="relative w-9 h-9 rounded-full bg-gradient-to-tr from-slate-900 via-sky-900 to-cyan-700 border-2 border-white shadow-[0_4px_14px_rgba(14,165,233,0.55)] flex items-center justify-center text-white font-black text-xs group-hover:scale-110 transition-transform">
+                <span>${count}</span>
+              </div>
+              <div class="absolute -bottom-2 px-1.5 py-0.5 bg-slate-950/90 border border-cyan-400/40 rounded-full text-[9px] font-bold text-cyan-300 shadow whitespace-nowrap">
+                ${count} Members
+              </div>
+            </div>
+          `,
+          iconSize: [sizePx, sizePx],
+          iconAnchor: [sizePx / 2, sizePx / 2],
+        });
+      },
+    });
+    map.addLayer(clusterGroup);
+    markerClusterGroupRef.current = clusterGroup;
 
     tileLayerRef.current = initialLayer;
     mapInstanceRef.current = map;
@@ -1221,6 +1277,10 @@ export const LiveMap: React.FC<LiveMapProps> = ({
     });
 
     return () => {
+      if (markerClusterGroupRef.current) {
+        markerClusterGroupRef.current.clearLayers();
+        markerClusterGroupRef.current = null;
+      }
       map.remove();
       mapInstanceRef.current = null;
     };
@@ -1501,7 +1561,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
     key: string,
     duration = 850
   ) => {
-    if (isLiteModeRef.current) {
+    if (isLiteModeRef.current || !isActiveRef.current || (typeof document !== 'undefined' && document.hidden)) {
       marker.setLatLng([targetLat, targetLng]);
       return;
     }
@@ -1542,120 +1602,18 @@ export const LiveMap: React.FC<LiveMapProps> = ({
       } else {
         marker.setLatLng([targetLat, targetLng]);
         markerAnimationFramesRef.current.delete(key);
+        if (key !== 'my_marker' && markerClusterGroupRef.current) {
+          try {
+            markerClusterGroupRef.current.refreshClusters(marker);
+          } catch {
+            // ignore cluster refresh error
+          }
+        }
       }
     };
 
     const firstFrame = requestAnimationFrame(step);
     markerAnimationFramesRef.current.set(key, firstFrame);
-  };
-
-  const animateAccuracyCircle = (
-    circle: L.Circle,
-    targetLat: number,
-    targetLng: number,
-    targetRadius: number,
-    duration = 850
-  ) => {
-    if (isLiteModeRef.current) {
-      circle.setLatLng([targetLat, targetLng]);
-      circle.setRadius(targetRadius);
-      return;
-    }
-
-    const currentLatLng = circle.getLatLng();
-    const startLat = currentLatLng.lat;
-    const startLng = currentLatLng.lng;
-    const startRadius = circle.getRadius();
-
-    if (Math.abs(targetLat - startLat) > 0.05 || Math.abs(targetLng - startLng) > 0.05) {
-      circle.setLatLng([targetLat, targetLng]);
-      circle.setRadius(targetRadius);
-      return;
-    }
-
-    if (accuracyCircleFrameRef.current !== null) {
-      cancelAnimationFrame(accuracyCircleFrameRef.current);
-      accuracyCircleFrameRef.current = null;
-    }
-
-    const startTime = performance.now();
-    const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
-
-    const step = (now: number) => {
-      const elapsed = now - startTime;
-      const progress = Math.min(1, elapsed / duration);
-      const ease = easeOutCubic(progress);
-
-      const nextLat = startLat + (targetLat - startLat) * ease;
-      const nextLng = startLng + (targetLng - startLng) * ease;
-      const nextRadius = startRadius + (targetRadius - startRadius) * ease;
-
-      circle.setLatLng([nextLat, nextLng]);
-      circle.setRadius(nextRadius);
-
-      if (progress < 1) {
-        accuracyCircleFrameRef.current = requestAnimationFrame(step);
-      } else {
-        circle.setLatLng([targetLat, targetLng]);
-        circle.setRadius(targetRadius);
-        accuracyCircleFrameRef.current = null;
-      }
-    };
-
-    accuracyCircleFrameRef.current = requestAnimationFrame(step);
-  };
-
-  const animatePeerAccuracyCircle = (
-    circle: L.Circle,
-    targetLat: number,
-    targetLng: number,
-    targetRadius: number,
-    key: string,
-    duration = 850
-  ) => {
-    if (isLiteModeRef.current) {
-      circle.setLatLng([targetLat, targetLng]);
-      circle.setRadius(targetRadius);
-      return;
-    }
-
-    const currentLatLng = circle.getLatLng();
-    const startLat = currentLatLng.lat;
-    const startLng = currentLatLng.lng;
-    const startRadius = circle.getRadius();
-
-    if (peerCircleAnimationFramesRef.current.has(key)) {
-      cancelAnimationFrame(peerCircleAnimationFramesRef.current.get(key)!);
-      peerCircleAnimationFramesRef.current.delete(key);
-    }
-
-    const startTime = performance.now();
-    const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
-
-    const step = (now: number) => {
-      const elapsed = now - startTime;
-      const progress = Math.min(1, elapsed / duration);
-      const ease = easeOutCubic(progress);
-
-      const nextLat = startLat + (targetLat - startLat) * ease;
-      const nextLng = startLng + (targetLng - startLng) * ease;
-      const nextRadius = startRadius + (targetRadius - startRadius) * ease;
-
-      circle.setLatLng([nextLat, nextLng]);
-      circle.setRadius(nextRadius);
-
-      if (progress < 1) {
-        const frameId = requestAnimationFrame(step);
-        peerCircleAnimationFramesRef.current.set(key, frameId);
-      } else {
-        circle.setLatLng([targetLat, targetLng]);
-        circle.setRadius(targetRadius);
-        peerCircleAnimationFramesRef.current.delete(key);
-      }
-    };
-
-    const firstFrame = requestAnimationFrame(step);
-    peerCircleAnimationFramesRef.current.set(key, firstFrame);
   };
 
   // Cleanup marker animation frames on unmount
@@ -1722,37 +1680,10 @@ export const LiveMap: React.FC<LiveMapProps> = ({
     const serverAgeMs = serverUpdatedIso ? Date.now() - Date.parse(serverUpdatedIso) : Infinity;
     const isServerLive = Number.isFinite(serverAgeMs) && serverAgeMs < 120000; // Step 3g: under 2 minutes old
 
-    // Step 3e: Draw an accuracy circle (radius = accuracy_m meters) around each marker so users see the real uncertainty.
-    if (Number.isFinite(currentAcc) && currentAcc > 0) {
-      const accuracyRadius = currentAcc; // Exact accuracy_m in meters (never fabricated or clamped)
-      const circleStyle: L.PathOptions = {
-        color: selfSignalInfo.circleColor,
-        fillColor: selfSignalInfo.circleColor,
-        fillOpacity: selfSignalInfo.isLowSignal ? 0.2 : 0.16,
-        weight: selfSignalInfo.isLowSignal ? 2.2 : 1.5,
-        opacity: selfSignalInfo.isLowSignal ? 0.85 : 0.6,
-        dashArray: selfSignalInfo.isLowSignal ? '6, 6' : undefined,
-      };
-
-      const selfTooltipHtml = `<div class="font-sans text-xs">
-          <span class="font-bold text-slate-900">Your Location${isServerLive ? ' · Live' : ''}</span><br/>
-          <span class="text-slate-600">Accuracy ±${Math.round(currentAcc)} m</span>
-        </div>`;
-
-      if (!accuracyCircleRef.current) {
-        accuracyCircleRef.current = L.circle(markerCoords, {
-          radius: accuracyRadius,
-          ...circleStyle,
-        }).addTo(map);
-        accuracyCircleRef.current.bindTooltip(selfTooltipHtml, { direction: 'top', sticky: true });
-        accuracyCircleRef.current.on('click', () => {
-          setShowBlueDotModal(true);
-        });
-      } else {
-        accuracyCircleRef.current.setStyle(circleStyle);
-        accuracyCircleRef.current.setTooltipContent(selfTooltipHtml);
-        animateAccuracyCircle(accuracyCircleRef.current, markerCoords[0], markerCoords[1], accuracyRadius);
-      }
+    // Ensure no accuracy ring/circle is rendered around the user location
+    if (accuracyCircleRef.current) {
+      map.removeLayer(accuracyCircleRef.current);
+      accuracyCircleRef.current = null;
     }
 
     const effectiveHeading =
@@ -1794,8 +1725,6 @@ export const LiveMap: React.FC<LiveMapProps> = ({
             </div>
           </div>
 
-          <div class="absolute inset-3 rounded-full ${selfSignalInfo.isLowSignal ? 'bg-amber-500/35 border border-amber-400/70 border-dashed' : 'bg-blue-500/25'} animate-ping pointer-events-none"></div>
-
           <div class="relative w-8 h-8 rounded-full bg-gradient-to-tr from-[#1557b0] to-[#4285f4] border-[3px] ${selfSignalInfo.isLowSignal ? 'border-amber-300' : 'border-white'} shadow-[0_2px_10px_rgba(0,0,0,0.4)] flex items-center justify-center pointer-events-auto group hover:scale-110 transition-transform">
             ${user?.markerIcon && user.markerIcon !== 'person' ? `
               <span class="text-xs text-white drop-shadow">${userRoleEmoji}</span>
@@ -1829,22 +1758,15 @@ export const LiveMap: React.FC<LiveMapProps> = ({
     };
 
     if (!myMarkerRef.current) {
-      // Step 3d: Leaflet L.marker([lat, lng])
+      // Step 3d: Leaflet L.marker([lat, lng]) - Non-draggable real GPS marker
       myMarkerRef.current = L.marker(markerCoords, {
         icon: myIcon,
         zIndexOffset: 1000,
-        draggable: true,
+        draggable: false,
       }).addTo(map);
       selfIconSignatureRef.current = selfSignature;
       myMarkerRef.current.on('click', () => {
         setSelectedUser(myLocation);
-      });
-      myMarkerRef.current.on('dragend', () => {
-        const marker = myMarkerRef.current;
-        if (!marker) return;
-        const pos = marker.getLatLng();
-        setManualLocation(pos.lat, pos.lng, 5);
-        toast.success(`Location calibrated to (${pos.lat.toFixed(5)}, ${pos.lng.toFixed(5)} · Accuracy ±5 m)`);
       });
       attachMarkerLongPress(myMarkerRef.current, selfTarget);
     } else {
@@ -1871,13 +1793,19 @@ export const LiveMap: React.FC<LiveMapProps> = ({
     }
   }, [myLocation, user?.avatarUrl, user?.fullName, hasCenteredOnce, userHeading, bearing]);
 
-  // Update Peer Map Markers & Accuracy Circles (Steps 3d, 3e, 3g)
+  // Update Peer Map Markers (Steps 3d, 3g)
   useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map) return;
 
     const currentMarkers = userMarkersRef.current;
     const currentCircles = userAccuracyCirclesRef.current;
+    // Clear any existing peer accuracy circles
+    for (const [, circle] of currentCircles.entries()) {
+      map.removeLayer(circle);
+    }
+    currentCircles.clear();
+
     const activePeerIds = new Set<string>();
 
     for (const peerLoc of displayedUserLocations) {
@@ -1920,72 +1848,33 @@ export const LiveMap: React.FC<LiveMapProps> = ({
       const peerRoleEmoji = getMemberIconEmoji(peerIconId);
       const peerDisplayName = peerOverride?.nickname || peerLoc.fullName.split(' ')[0];
 
-      // Step 3e: Draw an accuracy circle (radius = accuracy_m meters) around EACH marker so users see real uncertainty
-      const radiusMeters = peerAcc;
-      const circleStyle: L.PathOptions = {
-        color: peerSignalInfo.isLowSignal ? peerSignalInfo.circleColor : peerColor,
-        fillColor: peerSignalInfo.isLowSignal ? peerSignalInfo.circleColor : peerColor,
-        fillOpacity: 0.15,
-        weight: 1.8,
-        opacity: 0.75,
-        dashArray: peerSignalInfo.isLowSignal ? '6, 6' : undefined,
-      };
-
-      const tooltipHtml = `<div class="font-sans text-xs">
-        <span class="font-bold text-slate-900">${peerLoc.fullName}${isPeerLive ? ' · Live' : ''}</span><br/>
-        <span class="font-semibold text-slate-700">Accuracy ±${Math.round(peerAcc)} m</span>
-      </div>`;
-
-      if (!currentCircles.has(peerLoc.userId)) {
-        const accCircle = L.circle(peerCoords, {
-          radius: radiusMeters,
-          ...circleStyle,
-        }).addTo(map);
-        accCircle.bindTooltip(tooltipHtml, { direction: 'top', sticky: true });
-        accCircle.on('click', () => {
-          setSelectedUser(peerLoc);
-        });
-        currentCircles.set(peerLoc.userId, accCircle);
-      } else {
-        const existingCircle = currentCircles.get(peerLoc.userId)!;
-        existingCircle.setStyle(circleStyle);
-        existingCircle.setTooltipContent(tooltipHtml);
-        animatePeerAccuracyCircle(
-          existingCircle,
-          peerCoords[0],
-          peerCoords[1],
-          radiusMeters,
-          peerLoc.userId
-        );
-      }
-
       const peerStructuralSignature = `${peerLoc.avatarUrl}|${peerLoc.fullName}|${peerDisplayName}|${peerColor}|${peerIconId}|${peerSignalInfo.isLowSignal}|${isPeerLive}|${Math.round(peerAcc)}|${peerVisualAngle !== null}|${Boolean(distText)}`;
 
       const peerHtml = `
           <div class="group relative flex flex-col items-center cursor-pointer hover:scale-105 transition-transform">
-            ${peerSignalInfo.isLowSignal ? `
-              <div class="absolute -inset-2 rounded-full border-2 border-dashed animate-pulse pointer-events-none" style="border-color: ${peerSignalInfo.circleColor}; background-color: ${peerSignalInfo.circleColor}22;"></div>
-            ` : ''}
             ${peerVisualAngle !== null ? `
               <div class="beacon-peer-heading-cone absolute inset-0 flex items-center justify-center pointer-events-none transition-transform duration-150" style="transform: rotate(${Math.round(peerVisualAngle)}deg);">
                 <div class="absolute -top-3 w-0 h-0 border-l-[5px] border-l-transparent border-r-[5px] border-r-transparent border-b-[9px]" style="border-bottom-color: ${peerColor}; filter: drop-shadow(0 0 4px ${peerColor});"></div>
               </div>
             ` : ''}
-            <div class="relative w-10 h-10 rounded-full border-2 border-white shadow-md overflow-hidden bg-slate-800 ring-2" style="outline-color: ${peerColor}; box-shadow: 0 0 8px ${peerColor}80;">
-              <img src="${peerLoc.avatarUrl}" class="w-full h-full object-cover" alt="${peerLoc.fullName}" decoding="async" />
+            <div class="relative w-11 h-11 rounded-full p-[2.5px] shadow-lg" style="background: ${isPeerLive ? 'linear-gradient(135deg, #00D6A0 0%, #00D9FF 50%, #8957FF 100%)' : 'linear-gradient(135deg, #8957FF 0%, #FF4FA3 50%, #FF8066 100%)'}; box-shadow: 0 4px 14px rgba(137, 87, 255, 0.45);">
+              <div class="w-full h-full rounded-full overflow-hidden bg-slate-900 border border-white/80">
+                <img src="${peerLoc.avatarUrl}" class="w-full h-full object-cover" alt="${peerLoc.fullName}" decoding="async" />
+              </div>
+              <span class="absolute -bottom-0.5 -right-0.5 w-3.5 h-3.5 rounded-full border-2 border-slate-950" style="background-color: ${isPeerLive ? '#00D6A0' : '#FF4FA3'};"></span>
             </div>
             ${peerIconId !== 'person' ? `
               <div class="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-slate-900 border border-white text-[10px] flex items-center justify-center shadow">
                 <span>${peerRoleEmoji}</span>
               </div>
             ` : ''}
-            <div class="mt-1 px-2 py-0.5 bg-slate-900/90 backdrop-blur-sm text-[10px] text-white font-medium rounded shadow flex items-center gap-1 whitespace-nowrap ${peerSignalInfo.isLowSignal ? 'border border-amber-400/50' : ''}">
-              <span class="w-1.5 h-1.5 rounded-full" style="background-color: ${isPeerLive ? '#10b981' : '#94a3b8'};"></span>
+            <div class="mt-1 px-2.5 py-0.5 bg-[#120C29]/95 backdrop-blur-md text-[10px] text-white font-bold rounded-full shadow-lg border border-[#8957FF]/45 flex items-center gap-1 whitespace-nowrap ${peerSignalInfo.isLowSignal ? 'border-amber-400/60' : ''}">
+              <span class="w-1.5 h-1.5 rounded-full" style="background-color: ${isPeerLive ? '#00D6A0' : '#94a3b8'};"></span>
               <span>${peerRoleEmoji !== '👤' ? `${peerRoleEmoji} ` : ''}${peerDisplayName}</span>
-              ${isPeerLive ? `<span class="text-emerald-300 font-mono text-[9px]">· Live</span>` : ''}
-              ${distText ? `<span class="text-slate-400">·</span><span class="beacon-peer-dist-text text-blue-400 font-semibold">${distText}</span>` : ''}
-              <span class="text-sky-300 font-mono text-[9px]">· Accuracy ±${Math.round(peerAcc)} m</span>
-              ${peerHeading != null ? `<span class="beacon-peer-heading-text text-emerald-400 font-mono text-[9px]">· ${Math.round(peerHeading)}°</span>` : ''}
+              ${isPeerLive ? `<span class="text-[#00D6A0] font-mono text-[9px] font-extrabold">· LIVE</span>` : ''}
+              ${distText ? `<span class="text-white/40">·</span><span class="beacon-peer-dist-text text-[#00D9FF] font-extrabold">${distText}</span>` : ''}
+              <span class="text-[#E9DFFF] font-mono text-[9px]">· ±${Math.round(peerAcc)}m</span>
+              ${peerHeading != null ? `<span class="beacon-peer-heading-text text-[#FFD166] font-mono text-[9px]">· ${Math.round(peerHeading)}°</span>` : ''}
             </div>
           </div>
         `;
@@ -2010,9 +1899,16 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         heading: peerHeading,
       };
 
+      const clusterLayer = markerClusterGroupRef.current;
+
       if (!currentMarkers.has(peerLoc.userId)) {
-        // Step 3d: Leaflet L.marker([lat, lng])
-        const marker = L.marker(peerCoords, { icon: peerIcon }).addTo(map);
+        // Step 3d: Leaflet L.marker([lat, lng]) added to MarkerClusterGroup
+        const marker = L.marker(peerCoords, { icon: peerIcon });
+        if (clusterLayer) {
+          clusterLayer.addLayer(marker);
+        } else {
+          marker.addTo(map);
+        }
         peerIconHtmlMapRef.current.set(peerLoc.userId, peerStructuralSignature);
         marker.on('click', () => {
           setSelectedUser(peerLoc);
@@ -2026,6 +1922,13 @@ export const LiveMap: React.FC<LiveMapProps> = ({
           peerIconHtmlMapRef.current.set(peerLoc.userId, peerStructuralSignature);
           existingMarker.setIcon(peerIcon);
           attachMarkerLongPress(existingMarker, peerTarget);
+          if (clusterLayer) {
+            try {
+              clusterLayer.refreshClusters(existingMarker);
+            } catch {
+              // ignore
+            }
+          }
         } else {
           const el = existingMarker.getElement();
           if (el) {
@@ -2047,13 +1950,18 @@ export const LiveMap: React.FC<LiveMapProps> = ({
       }
     }
 
+    const clusterLayer = markerClusterGroupRef.current;
     for (const [userId, marker] of currentMarkers.entries()) {
       if (!activePeerIds.has(userId)) {
         if (markerAnimationFramesRef.current.has(userId)) {
           cancelAnimationFrame(markerAnimationFramesRef.current.get(userId)!);
           markerAnimationFramesRef.current.delete(userId);
         }
-        map.removeLayer(marker);
+        if (clusterLayer) {
+          clusterLayer.removeLayer(marker);
+        } else {
+          map.removeLayer(marker);
+        }
         currentMarkers.delete(userId);
         peerIconHtmlMapRef.current.delete(userId);
       }
@@ -2470,8 +2378,13 @@ export const LiveMap: React.FC<LiveMapProps> = ({
             transition: isGesturing ? 'none' : 'transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1)',
           }}
         >
-          {/* Map Canvas */}
-          <div ref={mapContainerRef} className="w-full h-full z-0" />
+          {/* Map Canvas with HDR Optical Grading */}
+          <div
+            ref={mapContainerRef}
+            className={`w-full h-full z-0 ${
+              isHdrEnabled && !isLiteMode ? `beacon-map-hdr beacon-map-hdr-${mapMode}` : ''
+            }`}
+          />
         </div>
       </div>
 
@@ -2859,13 +2772,63 @@ export const LiveMap: React.FC<LiveMapProps> = ({
             </div>
           </div>
 
+          {/* Location-Sharing Live Toggle Button (Screen 04 Spec) */}
+          <button
+            type="button"
+            onClick={async () => {
+              if (!user) return;
+              const currentlySharing = user.privacy?.locationSharingEnabled !== false;
+              const nextEnabled = !currentlySharing;
+              try {
+                await updatePrivacy({
+                  locationVisibility:
+                    nextEnabled && user.privacy.locationVisibility === 'nobody'
+                      ? 'room_members'
+                      : user.privacy.locationVisibility,
+                  phoneVisibility: user.privacy.phoneVisibility,
+                  profileVisibility: user.privacy.profileVisibility,
+                  showOnlineStatus: user.privacy.showOnlineStatus,
+                  locationSharingEnabled: nextEnabled,
+                  temporarySharingExpiry: user.privacy.temporarySharingExpiry || null,
+                });
+                if (nextEnabled) {
+                  requestLocationUpdate();
+                  toast.success('Live location sharing enabled');
+                } else {
+                  toast.info('Live location sharing paused');
+                }
+              } catch (err: any) {
+                toast.error(err?.message || 'Could not update location sharing');
+              }
+            }}
+            title={
+              user?.privacy?.locationSharingEnabled !== false
+                ? 'Sharing Location (Tap to Pause)'
+                : 'Location Paused (Tap to Resume)'
+            }
+            className={`flex items-center gap-1.5 px-3 py-2.5 rounded-2xl shadow-xl border font-bold text-xs cursor-pointer active:scale-95 transition-all shrink-0 ${
+              user?.privacy?.locationSharingEnabled !== false
+                ? 'bg-[#111D32]/95 border-[#19DCA5]/50 text-[#19DCA5] hover:bg-[#19DCA5]/20'
+                : 'bg-[#111D32]/95 border-[#FFB547]/50 text-[#FFB547] hover:bg-[#FFB547]/20'
+            }`}
+          >
+            <Radio
+              className={`w-4 h-4 ${
+                user?.privacy?.locationSharingEnabled !== false ? 'animate-pulse' : ''
+              }`}
+            />
+            <span className="hidden sm:inline">
+              {user?.privacy?.locationSharingEnabled !== false ? 'Sharing On' : 'Paused'}
+            </span>
+          </button>
+
           {/* Near Me Direct Shortcut Button */}
           <button
             onClick={() => setShowPlacesPage(true)}
             title="Explore Places Near Me"
-            className="flex items-center gap-1.5 px-3 py-2.5 bg-gradient-to-r from-sky-600 to-indigo-600 hover:from-sky-500 hover:to-indigo-500 text-white font-bold text-xs rounded-2xl shadow-xl border border-sky-400/40 cursor-pointer active:scale-95 transition-all shrink-0"
+            className="flex items-center gap-1.5 px-3 py-2.5 bg-gradient-to-r from-[#287BFF] to-[#00E5FF] hover:opacity-95 text-[#070B16] font-extrabold text-xs rounded-2xl shadow-xl border border-[#00E5FF]/40 cursor-pointer active:scale-95 transition-all shrink-0"
           >
-            <Compass className="w-4 h-4 text-sky-200" />
+            <Compass className="w-4 h-4" />
             <span className="hidden sm:inline">Near Me</span>
           </button>
 
@@ -2880,7 +2843,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
               showMapControlsPop ? 'ring-2 ring-sky-400 bg-white/20' : ''
             }`}
           >
-            <Layers className="w-4 h-4 text-sky-400" />
+            <Layers className="w-4 h-4 text-[#00E5FF]" />
             <span className="text-xs font-semibold capitalize hidden xs:inline sm:inline">
               {mapMode === 'terrain' ? 'Terrain' : mapMode === 'satellite' ? 'Satellite' : mapMode === 'traffic' ? 'Traffic' : 'Standard'}
             </span>
@@ -2963,6 +2926,23 @@ export const LiveMap: React.FC<LiveMapProps> = ({
               >
                 <Car className="w-3.5 h-3.5 text-amber-300" />
                 <span>Traffic</span>
+              </button>
+              <button
+                onClick={() => {
+                  const next = !isHdrEnabled;
+                  setIsHdrEnabled(next);
+                  localStorage.setItem('beacon_map_hdr', next ? '1' : '0');
+                  toast.info(next ? '✨ Ultra HDR map clarity enabled' : 'Standard SDR map contrast enabled');
+                }}
+                className={`px-2.5 py-1.5 rounded-xl text-[11px] font-black tracking-wide flex items-center gap-1 transition-all cursor-pointer active:scale-95 shrink-0 ${
+                  isHdrEnabled
+                    ? 'bg-gradient-to-r from-[#8957FF] via-[#FF4FA3] to-[#FF8066] text-white shadow-[0_0_14px_rgba(255,79,163,0.5)] ring-1 ring-white/40'
+                    : 'bg-white/5 text-slate-400 hover:text-white hover:bg-white/10 border border-white/10'
+                }`}
+                title="Toggle Ultra-Clear HDR Map Optical Grading"
+              >
+                <Sparkles className="w-3 h-3" />
+                <span>HDR</span>
               </button>
             </div>
 
@@ -3431,132 +3411,159 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         </div>
       )}
 
-      {/* Selected User Location Card (Product Spec Section 9) */}
+      {/* Selected User Social Location Card */}
       {selectedUser && (
-        <div className={`absolute ${roomOnlyMode ? 'bottom-4' : 'bottom-20'} left-4 right-4 md:left-auto md:right-6 md:bottom-6 md:w-96 z-30 bg-white/95 backdrop-blur-md rounded-2xl shadow-2xl border border-slate-200 p-4 transition-all`}>
-          <div className="flex items-start justify-between">
-            <div className="flex items-center gap-3">
-              <img
-                src={selectedUser.avatarUrl}
-                alt={selectedUser.fullName}
-                className="w-12 h-12 rounded-full border border-slate-200 object-cover"
-              />
-              <div>
-                <h4 className="font-bold text-slate-900 text-base">{selectedUser.fullName}</h4>
-                <p className="text-xs text-slate-500">@{selectedUser.username}</p>
+        <div
+          className={`absolute ${
+            roomOnlyMode ? 'bottom-4' : 'bottom-20'
+          } left-4 right-4 md:left-auto md:right-6 md:bottom-6 md:w-96 z-30 rounded-3xl shadow-2xl overflow-hidden border border-[#8957FF]/40 bg-[#130D2B]/95 dark:bg-[#130D2B]/95 text-white backdrop-blur-xl transition-all animate-in fade-in slide-in-from-bottom-3 duration-200`}
+        >
+          {/* Colourful Top Gradient Header Strip */}
+          <div className="p-4 bg-gradient-to-r from-[#8957FF] via-[#FF4FA3] to-[#FF8066] flex items-center justify-between">
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="relative shrink-0 p-[2px] rounded-full bg-white shadow-md">
+                <img
+                  src={selectedUser.avatarUrl}
+                  alt={selectedUser.fullName}
+                  className="w-12 h-12 rounded-full object-cover bg-slate-900"
+                />
+                <span className="absolute bottom-0 right-0 w-3.5 h-3.5 rounded-full bg-[#00D6A0] border-2 border-[#130D2B]" />
+              </div>
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <h4 className="font-extrabold text-white text-base truncate">
+                    {selectedUser.fullName}
+                  </h4>
+                  <span className="px-2 py-0.5 rounded-full bg-black/25 backdrop-blur-sm text-[10px] font-extrabold text-[#00D6A0] border border-white/20">
+                    LIVE GPS
+                  </span>
+                </div>
+                <p className="text-xs text-white/90 font-medium truncate">
+                  @{selectedUser.username}
+                </p>
               </div>
             </div>
             <button
               onClick={() => setSelectedUser(null)}
-              className="text-slate-400 hover:text-slate-700 p-1 cursor-pointer"
+              className="w-8 h-8 rounded-full bg-black/20 hover:bg-black/35 text-white flex items-center justify-center transition-colors cursor-pointer shrink-0"
             >
               <X className="w-4 h-4" />
             </button>
           </div>
 
-          <div className="mt-4 grid grid-cols-2 gap-2 text-xs border-t border-b border-slate-100 py-3">
-            <div>
-              <span className="text-slate-400 block">Distance</span>
-              <span className="font-bold text-slate-900 text-sm">
-                {myLocation && selectedUser.userId !== user?.id
-                  ? `${formatDistance(
-                      calculateDistanceMeters(
-                        myLocation.latitude,
-                        myLocation.longitude,
-                        selectedUser.latitude,
-                        selectedUser.longitude
-                      )
-                    )} away`
-                  : 'Your Current Spot'}
-              </span>
-            </div>
-
-            <div>
-              <span className="text-slate-400 block">Accuracy & Signal</span>
-              <div className="flex items-center gap-1.5 flex-wrap">
-                <span className="font-semibold text-slate-800">
-                  Accuracy ±{Math.round(Number(selectedUser.accuracy_m ?? selectedUser.accuracy))} m
+          <div className="p-4 space-y-3.5">
+            <div className="grid grid-cols-2 gap-2.5 text-xs">
+              <div className="p-2.5 rounded-2xl bg-white/5 border border-white/10">
+                <span className="text-[#E9DFFF]/70 text-[10px] font-bold uppercase tracking-wider block">
+                  Distance
                 </span>
-                {getGpsSignalInfo(selectedUser.accuracy).isLowSignal ? (
-                  <span className="px-1.5 py-0.5 rounded-md bg-amber-100 text-amber-800 border border-amber-300 text-[10px] font-bold">
-                    {getGpsSignalInfo(selectedUser.accuracy).label}
+                <span className="font-extrabold text-[#00D9FF] text-sm mt-0.5 block">
+                  {myLocation && selectedUser.userId !== user?.id
+                    ? `${formatDistance(
+                        calculateDistanceMeters(
+                          myLocation.latitude,
+                          myLocation.longitude,
+                          selectedUser.latitude,
+                          selectedUser.longitude
+                        )
+                      )} away`
+                    : 'Your Current Spot'}
+                </span>
+              </div>
+
+              <div className="p-2.5 rounded-2xl bg-white/5 border border-white/10">
+                <span className="text-[#E9DFFF]/70 text-[10px] font-bold uppercase tracking-wider block">
+                  Accuracy & Signal
+                </span>
+                <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
+                  <span className="font-extrabold text-white">
+                    ±{Math.round(Number(selectedUser.accuracy_m ?? selectedUser.accuracy))} m
                   </span>
-                ) : (
-                  <span className="px-1.5 py-0.5 rounded-md bg-emerald-100 text-emerald-800 border border-emerald-200 text-[10px] font-semibold">
-                    Strong GPS
-                  </span>
-                )}
+                  {getGpsSignalInfo(selectedUser.accuracy).isLowSignal ? (
+                    <span className="px-1.5 py-0.5 rounded-full bg-[#FFD166]/20 text-[#FFD166] border border-[#FFD166]/40 text-[9px] font-extrabold">
+                      {getGpsSignalInfo(selectedUser.accuracy).label}
+                    </span>
+                  ) : (
+                    <span className="px-1.5 py-0.5 rounded-full bg-[#00D6A0]/20 text-[#00D6A0] border border-[#00D6A0]/40 text-[9px] font-extrabold">
+                      Strong GPS
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <div className="p-2.5 rounded-2xl bg-white/5 border border-white/10">
+                <span className="text-[#E9DFFF]/70 text-[10px] font-bold uppercase tracking-wider block">
+                  Last Updated
+                </span>
+                <span className="font-bold text-white mt-0.5 block">
+                  {formatTimeAgo(selectedUser.updated_at || selectedUser.timestamp)}
+                </span>
+              </div>
+
+              <div className="p-2.5 rounded-2xl bg-white/5 border border-white/10">
+                <span className="text-[#E9DFFF]/70 text-[10px] font-bold uppercase tracking-wider block">
+                  Sharing Status
+                </span>
+                <span className="font-extrabold text-[#00D6A0] mt-0.5 block">
+                  {(() => {
+                    const serverTs = selectedUser.updated_at || selectedUser.timestamp;
+                    const ageMs = serverTs ? Date.now() - Date.parse(serverTs) : Infinity;
+                    return Number.isFinite(ageMs) && ageMs < 120000
+                      ? 'Sharing Live'
+                      : onlineUserIds.includes(selectedUser.userId)
+                      ? 'Online (Recent)'
+                      : 'Offline';
+                  })()}
+                </span>
               </div>
             </div>
 
-            <div>
-              <span className="text-slate-400 block">Last Updated</span>
-              <span className="font-medium text-slate-700">
-                {formatTimeAgo(selectedUser.updated_at || selectedUser.timestamp)}
-              </span>
-            </div>
-
-            <div>
-              <span className="text-slate-400 block">Status</span>
-              <span className="font-medium text-slate-700">
-                {(() => {
-                  const serverTs = selectedUser.updated_at || selectedUser.timestamp;
-                  const ageMs = serverTs ? Date.now() - Date.parse(serverTs) : Infinity;
-                  return Number.isFinite(ageMs) && ageMs < 120000
-                    ? 'Live'
-                    : onlineUserIds.includes(selectedUser.userId)
-                    ? 'Online (Stale fix)'
-                    : 'Offline';
-                })()}
-              </span>
-            </div>
-          </div>
-
-          <div className="mt-3 flex items-center gap-2">
-            <button
-              onClick={() => {
-                toggleUserTrail(selectedUser.userId);
-              }}
-              disabled={loadingTrailUserIds.includes(selectedUser.userId)}
-              className={`flex-1 py-2 px-3 text-xs font-semibold rounded-xl flex items-center justify-center gap-1.5 transition-all cursor-pointer active:scale-95 ${
-                activeTrails[selectedUser.userId]
-                  ? 'bg-amber-100 text-amber-900 border border-amber-300 hover:bg-amber-200'
-                  : 'bg-sky-600 hover:bg-sky-700 text-white shadow-sm'
-              }`}
-            >
-              <Route className="w-3.5 h-3.5" />
-              <span>{activeTrails[selectedUser.userId] ? 'Hide Trail' : 'Trace Path (1h)'}</span>
-            </button>
-
-            {selectedUser.userId !== user?.id && (
+            <div className="flex items-center gap-2">
               <button
                 onClick={() => {
-                  if (onSelectUserForChat) {
-                    onSelectUserForChat(selectedUser.userId);
-                  }
-                  setSelectedUser(null);
+                  toggleUserTrail(selectedUser.userId);
                 }}
-                className="py-2 px-3 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold rounded-xl flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                disabled={loadingTrailUserIds.includes(selectedUser.userId)}
+                className={`flex-1 py-2.5 px-3 text-xs font-extrabold rounded-2xl flex items-center justify-center gap-1.5 transition-all cursor-pointer active:scale-95 ${
+                  activeTrails[selectedUser.userId]
+                    ? 'bg-gradient-to-r from-[#FFD166] to-[#FF8066] text-slate-950 shadow-md'
+                    : 'bg-gradient-to-r from-[#397BFF] to-[#00D9FF] text-white shadow-md shadow-[#397BFF]/25'
+                }`}
               >
-                <MessageSquare className="w-3.5 h-3.5" />
-                Message
+                <Route className="w-3.5 h-3.5" />
+                <span>{activeTrails[selectedUser.userId] ? 'Hide Trail' : 'Trace Path (1h)'}</span>
               </button>
-            )}
 
-            <button
-              onClick={() => {
-                if (mapInstanceRef.current) {
-                  mapInstanceRef.current.flyTo(
-                    [selectedUser.latitude, selectedUser.longitude],
-                    18
-                  );
-                }
-              }}
-              className="p-2 border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-xl transition-colors cursor-pointer"
-              title="Focus on map"
-            >
-              <Compass className="w-4 h-4" />
-            </button>
+              {selectedUser.userId !== user?.id && (
+                <button
+                  onClick={() => {
+                    if (onSelectUserForChat) {
+                      onSelectUserForChat(selectedUser.userId);
+                    }
+                    setSelectedUser(null);
+                  }}
+                  className="py-2.5 px-3.5 bg-gradient-to-r from-[#8957FF] via-[#FF4FA3] to-[#FF8066] text-white text-xs font-extrabold rounded-2xl flex items-center justify-center gap-1.5 shadow-md shadow-[#FF4FA3]/25 transition-all cursor-pointer active:scale-95"
+                >
+                  <MessageSquare className="w-3.5 h-3.5" />
+                  <span>Message</span>
+                </button>
+              )}
+
+              <button
+                onClick={() => {
+                  if (mapInstanceRef.current) {
+                    mapInstanceRef.current.flyTo(
+                      [selectedUser.latitude, selectedUser.longitude],
+                      18
+                    );
+                  }
+                }}
+                className="p-2.5 bg-white/10 hover:bg-white/20 border border-white/15 text-[#00D9FF] rounded-2xl transition-colors cursor-pointer"
+                title="Focus on map"
+              >
+                <Compass className="w-4 h-4" />
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -3690,30 +3697,6 @@ export const LiveMap: React.FC<LiveMapProps> = ({
 
             {/* Context Menu Actions */}
             <div className="py-1.5 space-y-0.5 text-xs">
-              {/* Set as My Current Location (Exact Calibration) */}
-              {contextMenu.target.type !== 'self' && (
-                <button
-                  onClick={() => {
-                    const { lat, lng } = contextMenu.target;
-                    closeContextMenu();
-                    setManualLocation(lat, lng, 5);
-                    toast.success(`Exact location set to (${lat.toFixed(5)}, ${lng.toFixed(5)} · ±5m)`);
-                  }}
-                  className="w-full px-2.5 py-2 hover:bg-white/10 active:bg-white/15 rounded-xl flex items-center justify-between transition-colors cursor-pointer group text-left"
-                >
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-7 h-7 rounded-lg bg-sky-500/20 text-sky-300 flex items-center justify-center group-hover:scale-105 transition-transform">
-                      <Crosshair className="w-3.5 h-3.5" />
-                    </div>
-                    <div>
-                      <span className="font-bold text-white block">Set as My Current Location</span>
-                      <span className="text-[10px] text-slate-400 block">Calibrate exact GPS position (±5m)</span>
-                    </div>
-                  </div>
-                  <span className="text-[10px] font-mono text-sky-400 font-semibold">±5m</span>
-                </button>
-              )}
-
               {/* Navigate To */}
               <button
                 onClick={() => startNavigation(contextMenu.target.lat, contextMenu.target.lng, contextMenu.target.title)}

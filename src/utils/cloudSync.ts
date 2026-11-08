@@ -203,12 +203,112 @@ function mergeArrayById<T extends Record<string, any>>(
   return Array.from(map.values());
 }
 
+export function isExampleOrTestUser(u: any): boolean {
+  if (!u || typeof u !== 'object') return false;
+  const id = String(u.id || u.userId || '').toLowerCase();
+  const email = String(u.email || '').toLowerCase();
+  const username = String(u.username || '').toLowerCase();
+  const fullName = String(u.fullName || '').toLowerCase();
+
+  if (
+    email.endsWith('@beacon.test') ||
+    email.endsWith('@example.com') ||
+    email === 'demo@beacon.network' ||
+    username === 'alex_beacon' ||
+    username.startsWith('alice_') ||
+    username.startsWith('bob_') ||
+    username.startsWith('apk_sync_') ||
+    id.startsWith('usr-apk-') ||
+    fullName === 'alex morgan' ||
+    fullName === 'alice beacon' ||
+    fullName === 'bob android' ||
+    fullName === 'android apk sync user' ||
+    fullName === 'community member'
+  ) {
+    return true;
+  }
+  return false;
+}
+
+export function purgeExampleMembersFromState(state: SyncableDatabaseState): boolean {
+  if (!state || typeof state !== 'object') return false;
+  let mutated = false;
+  const removedUserIds = new Set<string>();
+
+  if (Array.isArray(state.users)) {
+    const beforeLen = state.users.length;
+    state.users = state.users.filter((u) => {
+      if (isExampleOrTestUser(u)) {
+        if (u?.id) removedUserIds.add(String(u.id));
+        return false;
+      }
+      return true;
+    });
+    if (state.users.length !== beforeLen) mutated = true;
+  }
+
+  const validUserIds = new Set<string>(
+    Array.isArray(state.users) ? state.users.map((u) => String(u?.id || '')).filter(Boolean) : []
+  );
+
+  if (state.locations && typeof state.locations === 'object' && !Array.isArray(state.locations)) {
+    for (const [uid, loc] of Object.entries(state.locations)) {
+      if (removedUserIds.has(uid) || isExampleOrTestUser(loc) || (validUserIds.size > 0 && !validUserIds.has(uid))) {
+        removedUserIds.add(uid);
+        delete state.locations[uid];
+        mutated = true;
+      }
+    }
+  }
+
+  if (Array.isArray(state.roomMembers) && validUserIds.size > 0) {
+    const beforeMem = state.roomMembers.length;
+    state.roomMembers = state.roomMembers.filter(
+      (m) => validUserIds.has(String(m?.userId)) && !removedUserIds.has(String(m?.userId))
+    );
+    if (state.roomMembers.length !== beforeMem) mutated = true;
+  }
+
+  if (removedUserIds.size > 0) {
+    if (!Array.isArray(state.deletedIds)) state.deletedIds = [];
+    for (const uid of removedUserIds) {
+      if (!state.deletedIds.includes(uid)) {
+        state.deletedIds.push(uid);
+      }
+    }
+    if (Array.isArray(state.sessions)) {
+      state.sessions = state.sessions.filter((s) => !removedUserIds.has(String(s?.userId)));
+    }
+    if (Array.isArray(state.messages)) {
+      state.messages = state.messages.filter((m) => !removedUserIds.has(String(m?.senderId)));
+    }
+    if (Array.isArray(state.locationShareRequests)) {
+      state.locationShareRequests = state.locationShareRequests.filter(
+        (r) => !removedUserIds.has(String(r?.requesterId)) && !removedUserIds.has(String(r?.targetUserId))
+      );
+    }
+    if (Array.isArray(state.locationHistory)) {
+      state.locationHistory = state.locationHistory.filter((h) => !removedUserIds.has(String(h?.userId)));
+    }
+  }
+
+  return mutated;
+}
+
 export function mergeDatabaseStates(
   target: SyncableDatabaseState,
   incoming: Partial<SyncableDatabaseState>,
   preferIncoming = false
 ): void {
   if (!incoming || typeof incoming !== 'object') return;
+
+  purgeExampleMembersFromState(target);
+  if (Array.isArray(incoming.users)) {
+    incoming = {
+      ...incoming,
+      users: incoming.users.filter((u) => !isExampleOrTestUser(u)),
+    };
+  }
 
   const deletedSet = new Set<string>([
     ...(Array.isArray(target.deletedIds) ? target.deletedIds : []),
@@ -222,7 +322,7 @@ export function mergeDatabaseStates(
   // 1. Merge Users (match by id, email, or username; preserve canonical ID and latest profile updates)
   if (Array.isArray(incoming.users)) {
     for (const rUser of incoming.users) {
-      if (!rUser || (!rUser.id && !rUser.email)) continue;
+      if (!rUser || (!rUser.id && !rUser.email) || isExampleOrTestUser(rUser) || deletedSet.has(String(rUser.id))) continue;
       const idx = target.users.findIndex(
         (u) =>
           u.id === rUser.id ||
@@ -324,18 +424,28 @@ export function mergeDatabaseStates(
     target.sessions = mergedSessions.slice(-150);
   }
 
-  // 3. Merge Rooms (by id)
+  // 3. Merge Rooms (by id, preserving passwordHash & salt for password-protected rooms)
   if (Array.isArray(incoming.rooms)) {
+    const existingRoomAuth = new Map<string, { passwordHash?: string; salt?: string }>();
+    for (const r of [...(target.rooms || []), ...(incoming.rooms || [])]) {
+      if (r?.id && r.passwordHash && r.salt) {
+        existingRoomAuth.set(String(r.id), { passwordHash: r.passwordHash, salt: r.salt });
+      }
+    }
     target.rooms = mergeArrayById(
       target.rooms,
       incoming.rooms,
       'id',
       deletedSet,
       preferIncoming
-    ).map((r) => ({
-      ...r,
-      ownerId: normalizeUid(r.ownerId) || r.ownerId,
-    }));
+    ).map((r) => {
+      const auth = existingRoomAuth.get(String(r.id));
+      return {
+        ...r,
+        ownerId: normalizeUid(r.ownerId) || r.ownerId,
+        ...(r.hasPassword && auth && !r.passwordHash ? auth : {}),
+      };
+    });
   }
 
   // 4. Merge Room Members (by roomId + userId) — users stay in rooms permanently until they press Leave
@@ -620,6 +730,8 @@ export function mergeDatabaseStates(
 let lastPullTime = 0;
 let lastRemoteUpdatedAt = '';
 let inFlightPull: Promise<boolean> | null = null;
+let inFlightPush: Promise<void> | null = null;
+let pendingPushState: SyncableDatabaseState | null = null;
 let pushTimeoutId: any = null;
 let cloudConnected = false;
 let lastSuccessfulSyncMs = 0;
@@ -674,26 +786,21 @@ export async function verifyCloudFirestoreConnection(): Promise<boolean> {
     }
   }
 
-  // Clients do not access Firestore directly with a bare API key; all persistence goes through the authenticated production backend
-  if (!runningOnAuthoritativeBackend) {
+  // 2. Check Cloud Firestore synchronization bridge if not in daily quota cooldown
+  if (Date.now() < firestoreQuotaCooldownUntil) {
     return cloudConnected;
   }
 
-  // 2. Server-side check if not in daily quota cooldown
-  if (Date.now() < firestoreQuotaCooldownUntil) {
-    return false;
-  }
-
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 5000);
-    const res = await fetch(FIRESTORE_SYNC_URL, {
-      method: 'GET',
-      headers: { Accept: 'application/json', 'Cache-Control': 'no-cache' },
-      cache: 'no-store',
-      signal: controller.signal,
-    });
-    clearTimeout(timer);
+    const res = await nativeAwareFetch(
+      FIRESTORE_SYNC_URL,
+      {
+        method: 'GET',
+        headers: { Accept: 'application/json', 'Cache-Control': 'no-cache' },
+        cache: 'no-store',
+      },
+      5000
+    );
     lastFirestoreHttpStatus = res.status;
     if (res.status === 429) {
       firestoreQuotaCooldownUntil = Date.now() + 15 * 60 * 1000;
@@ -703,7 +810,7 @@ export async function verifyCloudFirestoreConnection(): Promise<boolean> {
       syncLogger.log('firestore', 'warn', 'quota_cooldown_active', { status: 429 });
       return false;
     }
-    if (res.ok) {
+    if (res.ok || res.status === 404) {
       cloudConnected = true;
       lastSuccessfulSyncMs = Date.now();
       lastFirestoreErrorMsg = '';
@@ -722,7 +829,7 @@ export async function verifyCloudFirestoreConnection(): Promise<boolean> {
 let backendSyncCooldownUntil = 0;
 
 /**
- * Pulls the latest synchronized state from the Production Backend (or Firestore fallback) and merges it into `targetState`
+ * Pulls the latest synchronized state from the Production Backend (or Firestore sync bridge) and merges it into `targetState`
  */
 export async function pullAndMergeCloudState(
   targetState: SyncableDatabaseState,
@@ -730,7 +837,7 @@ export async function pullAndMergeCloudState(
   silentNotify = false
 ): Promise<boolean> {
   const now = Date.now();
-  if (!force && now - lastPullTime < 3500) {
+  if (!force && now - lastPullTime < 2000) {
     return false;
   }
   if (inFlightPull) {
@@ -738,11 +845,18 @@ export async function pullAndMergeCloudState(
   }
 
   inFlightPull = (async () => {
+    if (inFlightPush) {
+      try {
+        await inFlightPush;
+      } catch {
+        // ignore
+      }
+    }
     let anyUpdated = false;
     lastPullTime = Date.now();
     try {
       // 1. Pull from authoritative production backend (/api/sync/state) if not in cooldown
-      if (Date.now() >= backendSyncCooldownUntil) {
+      if (!runningOnAuthoritativeBackend && Date.now() >= backendSyncCooldownUntil) {
         for (const endpoint of getBackendSyncEndpoints()) {
           try {
             const res = await nativeAwareFetch(
@@ -766,17 +880,17 @@ export async function pullAndMergeCloudState(
                 break;
               }
             } else {
-              // Proxy returned HTML or error — cool down for 20s so UI stays fast
-              backendSyncCooldownUntil = Date.now() + 20000;
+              // Proxy returned HTML or error — cool down for 15s so UI stays fast
+              backendSyncCooldownUntil = Date.now() + 15000;
             }
           } catch {
-            backendSyncCooldownUntil = Date.now() + 20000;
+            backendSyncCooldownUntil = Date.now() + 15000;
           }
         }
       }
 
-      // 2. If backend endpoint was blocked by proxy/offline, try direct Firestore REST read if not in quota cooldown
-      if (!anyUpdated && Date.now() >= firestoreQuotaCooldownUntil) {
+      // 2. Also pull from Cloud Firestore sync bridge so Web Backend and Android APK stay in real-time lockstep
+      if ((runningOnAuthoritativeBackend || !anyUpdated) && Date.now() >= firestoreQuotaCooldownUntil) {
         try {
           const res = await nativeAwareFetch(
             FIRESTORE_SYNC_URL,
@@ -785,16 +899,19 @@ export async function pullAndMergeCloudState(
               headers: { Accept: 'application/json', 'Cache-Control': 'no-cache' },
               cache: 'no-store',
             },
-            2800
+            3200
           );
+          lastFirestoreHttpStatus = res.status;
           if (res.status === 429) {
             firestoreQuotaCooldownUntil = Date.now() + 15 * 60 * 1000;
           } else if (res.ok) {
             const doc = await res.json();
-            const rawState = doc?.fields?.stateJson?.stringValue;
+            const rawState =
+              doc?.fields?.stateJson?.stringValue || doc?.fields?.payload?.stringValue;
             const remoteUpdatedAt = doc?.fields?.updatedAt?.stringValue || '';
             cloudConnected = true;
             lastSuccessfulSyncMs = Date.now();
+            lastFirestoreErrorMsg = '';
             if (rawState && (force || remoteUpdatedAt !== lastRemoteUpdatedAt)) {
               lastRemoteUpdatedAt = remoteUpdatedAt;
               const parsed = JSON.parse(rawState);
@@ -821,128 +938,213 @@ export async function pullAndMergeCloudState(
   return inFlightPull;
 }
 
+async function performSinglePush(stateToPush: SyncableDatabaseState): Promise<void> {
+  let pushedSuccessfully = false;
+  try {
+    const authHeaders = getClientAuthHeaders(true);
+
+    // Strip plaintext passwords while preserving PBKDF2-SHA512 passwordHash + salt
+    const sanitizedUsers = (stateToPush.users || []).map((u) => {
+      if (!u || typeof u !== 'object') return u;
+      const { password, ...safeUser } = u;
+      return safeUser;
+    });
+
+    const sanitizedRooms = (stateToPush.rooms || []).map((r) => {
+      if (!r || typeof r !== 'object') return r;
+      const { password, ...safeRoom } = r;
+      return safeRoom;
+    });
+
+    // Trim history arrays so payload stays well under 900KB
+    const compactState: SyncableDatabaseState = {
+      ...stateToPush,
+      users: sanitizedUsers,
+      rooms: sanitizedRooms,
+      messages: (stateToPush.messages || []).slice(-250),
+      locationHistory: (stateToPush.locationHistory || []).slice(-180),
+      auditLogs: (stateToPush.auditLogs || []).slice(-80),
+      sessions: [],
+      passwordResets: [],
+      deletedIds: (stateToPush.deletedIds || []).slice(-400),
+    };
+
+    const serialized = JSON.stringify(compactState);
+    if (serialized.length >= 940000) return;
+
+    // 1. Push to authoritative production backend (/api/sync/state) if running on client/APK and authenticated
+    if (
+      !runningOnAuthoritativeBackend &&
+      authHeaders['Authorization'] &&
+      Date.now() >= backendSyncCooldownUntil
+    ) {
+      for (const endpoint of getBackendSyncEndpoints()) {
+        try {
+          const res = await nativeAwareFetch(
+            endpoint,
+            {
+              method: 'POST',
+              headers: authHeaders,
+              credentials: 'include',
+              body: JSON.stringify({ state: compactState }),
+            },
+            3200
+          );
+          const ct = (res.headers.get('content-type') || '').toLowerCase();
+          if (res.ok && ct.includes('application/json')) {
+            const payload = await res.json();
+            if (payload?.state && typeof payload.state === 'object') {
+              mergeDatabaseStates(stateToPush, payload.state, false);
+            }
+            cloudConnected = true;
+            lastSuccessfulSyncMs = Date.now();
+            pushedSuccessfully = true;
+            break;
+          } else {
+            backendSyncCooldownUntil = Date.now() + 15000;
+          }
+        } catch {
+          backendSyncCooldownUntil = Date.now() + 15000;
+        }
+      }
+    }
+
+    // 2. Push to Cloud Firestore REST sync bridge (always executed by authoritative server, and by APK/client when direct backend is unreachable)
+    if (
+      (runningOnAuthoritativeBackend || !pushedSuccessfully) &&
+      Date.now() >= firestoreQuotaCooldownUntil
+    ) {
+      try {
+        const nowIso = new Date().toISOString();
+        const res = await nativeAwareFetch(
+          FIRESTORE_SYNC_URL,
+          {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+            body: JSON.stringify({
+              fields: {
+                stateJson: { stringValue: serialized },
+                updatedAt: { stringValue: nowIso },
+              },
+            }),
+          },
+          3500
+        );
+        lastFirestoreHttpStatus = res.status;
+        if (res.status === 429) {
+          firestoreQuotaCooldownUntil = Date.now() + 15 * 60 * 1000;
+        } else if (res.ok) {
+          lastRemoteUpdatedAt = nowIso;
+          cloudConnected = true;
+          lastSuccessfulSyncMs = Date.now();
+          lastFirestoreErrorMsg = '';
+          pushedSuccessfully = true;
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    if (pushedSuccessfully && !runningOnAuthoritativeBackend) {
+      notifySyncListeners(stateToPush);
+    }
+  } catch (err: any) {
+    if (!pushedSuccessfully) {
+      cloudConnected = false;
+      syncLogger.log('firestore', 'warn', 'push_failed', {
+        message: err?.message || 'Network error',
+      });
+    }
+  }
+}
+
 /**
- * Pushes the merged state to the Production Backend (debounced or immediate)
+ * Pushes the merged state to the Production Backend and Cloud Firestore synchronization bridge (serialized & coalesced)
  */
 export function schedulePushCloudState(
   localState: SyncableDatabaseState,
   immediate = false
 ): void {
+  pendingPushState = localState;
   if (pushTimeoutId) {
     clearTimeout(pushTimeoutId);
     pushTimeoutId = null;
   }
 
-  const executePush = async () => {
-    if (runningOnAuthoritativeBackend) {
-      cloudConnected = true;
-      lastSuccessfulSyncMs = Date.now();
-      return;
-    }
-    let pushedSuccessfully = false;
-    try {
-      const authHeaders = getClientAuthHeaders(true);
+  const drainPushQueue = () => {
+    if (inFlightPush) return;
+    const nextState = pendingPushState;
+    if (!nextState) return;
+    pendingPushState = null;
 
-      // Trim history arrays so payload stays well under 900KB
-      const compactState: SyncableDatabaseState = {
-        ...localState,
-        messages: (localState.messages || []).slice(-250),
-        locationHistory: (localState.locationHistory || []).slice(-180),
-        auditLogs: (localState.auditLogs || []).slice(-80),
-        sessions: [],
-        passwordResets: [],
-        deletedIds: (localState.deletedIds || []).slice(-400),
-      };
-
-      const serialized = JSON.stringify(compactState);
-      if (serialized.length >= 940000) return;
-
-      // 1. Push to authoritative production backend (/api/sync/state) if authenticated and not in cooldown
-      if (authHeaders['Authorization'] && Date.now() >= backendSyncCooldownUntil) {
-        for (const endpoint of getBackendSyncEndpoints()) {
-          try {
-            const res = await nativeAwareFetch(
-              endpoint,
-              {
-                method: 'POST',
-                headers: authHeaders,
-                credentials: 'include',
-                body: JSON.stringify({ state: compactState }),
-              },
-              3200
-            );
-            const ct = (res.headers.get('content-type') || '').toLowerCase();
-            if (res.ok && ct.includes('application/json')) {
-              const payload = await res.json();
-              if (payload?.state && typeof payload.state === 'object') {
-                mergeDatabaseStates(localState, payload.state, false);
-              }
-              cloudConnected = true;
-              lastSuccessfulSyncMs = Date.now();
-              pushedSuccessfully = true;
-              break;
-            } else {
-              backendSyncCooldownUntil = Date.now() + 20000;
-            }
-          } catch {
-            backendSyncCooldownUntil = Date.now() + 20000;
-          }
-        }
+    inFlightPush = performSinglePush(nextState).finally(() => {
+      inFlightPush = null;
+      if (pendingPushState) {
+        drainPushQueue();
       }
-
-      // 2. Fallback push to Firestore REST if backend endpoint was blocked by proxy
-      if (!pushedSuccessfully && Date.now() >= firestoreQuotaCooldownUntil) {
-        try {
-          const nowIso = new Date().toISOString();
-          const res = await nativeAwareFetch(
-            FIRESTORE_SYNC_URL,
-            {
-              method: 'PATCH',
-              headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-              body: JSON.stringify({
-                fields: {
-                  stateJson: { stringValue: serialized },
-                  updatedAt: { stringValue: nowIso },
-                },
-              }),
-            },
-            3200
-          );
-          if (res.status === 429) {
-            firestoreQuotaCooldownUntil = Date.now() + 15 * 60 * 1000;
-          } else if (res.ok) {
-            lastRemoteUpdatedAt = nowIso;
-            cloudConnected = true;
-            lastSuccessfulSyncMs = Date.now();
-            pushedSuccessfully = true;
-          }
-        } catch {
-          // ignore
-        }
-      }
-
-      if (pushedSuccessfully) {
-        notifySyncListeners(localState);
-      }
-    } catch (err: any) {
-      if (!pushedSuccessfully) {
-        cloudConnected = false;
-        syncLogger.log('firestore', 'warn', 'push_failed', {
-          message: err?.message || 'Network error',
-        });
-      }
-    }
+    });
   };
 
   if (immediate) {
-    void executePush();
+    pushTimeoutId = setTimeout(drainPushQueue, 50);
   } else {
-    pushTimeoutId = setTimeout(executePush, 400);
+    pushTimeoutId = setTimeout(drainPushQueue, 300);
   }
 }
 
 /**
- * Verifies a password against both plaintext (`password`) and PBKDF2-SHA512 (`passwordHash` + `salt`)
+ * Generates a PBKDF2-SHA512 cryptographic password hash (100,000 iterations) using Web Crypto API.
+ * Compatible with Node.js `crypto.pbkdf2Sync(password, salt, 100000, 64, 'sha512')` so credentials
+ * created on either Android APK or Web Server are verifiable everywhere without storing plaintext passwords.
+ */
+export async function hashPasswordUniversal(
+  password: string,
+  existingSalt?: string
+): Promise<{ passwordHash: string; salt: string }> {
+  const cleanPass = String(password);
+  let salt = existingSalt;
+  if (!salt) {
+    const randomBytes = new Uint8Array(16);
+    if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+      crypto.getRandomValues(randomBytes);
+    } else {
+      for (let i = 0; i < 16; i++) randomBytes[i] = Math.floor(Math.random() * 256);
+    }
+    salt = Array.from(randomBytes)
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+  }
+
+  if (typeof crypto !== 'undefined' && crypto.subtle) {
+    const enc = new TextEncoder();
+    const key = await crypto.subtle.importKey(
+      'raw',
+      enc.encode(cleanPass),
+      { name: 'PBKDF2' },
+      false,
+      ['deriveBits']
+    );
+    const bits = await crypto.subtle.deriveBits(
+      {
+        name: 'PBKDF2',
+        salt: enc.encode(salt),
+        iterations: 100000,
+        hash: 'SHA-512',
+      },
+      key,
+      512
+    );
+    const passwordHash = Array.from(new Uint8Array(bits))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+    return { passwordHash, salt };
+  }
+
+  return { passwordHash: '', salt };
+}
+
+/**
+ * Verifies a password against PBKDF2-SHA512 (`passwordHash` + `salt`) or legacy fallback
  * using standard Web Crypto API so accounts created on the web server work in the Android APK and vice versa.
  */
 export async function verifyPasswordUniversal(
@@ -961,30 +1163,32 @@ export async function verifyPasswordUniversal(
   if (userRec.passwordHash && userRec.salt && typeof crypto !== 'undefined' && crypto.subtle) {
     try {
       const enc = new TextEncoder();
-      const key = await crypto.subtle.importKey(
-        'raw',
-        enc.encode(cleanPass),
-        { name: 'PBKDF2' },
-        false,
-        ['deriveBits']
-      );
-
-      for (const iterations of [100000, 10000]) {
-        const bits = await crypto.subtle.deriveBits(
-          {
-            name: 'PBKDF2',
-            salt: enc.encode(userRec.salt),
-            iterations,
-            hash: 'SHA-512',
-          },
-          key,
-          512
+      for (const candidate of [cleanPass, trimmedPass]) {
+        const key = await crypto.subtle.importKey(
+          'raw',
+          enc.encode(candidate),
+          { name: 'PBKDF2' },
+          false,
+          ['deriveBits']
         );
-        const hex = Array.from(new Uint8Array(bits))
-          .map((b) => b.toString(16).padStart(2, '0'))
-          .join('');
-        if (hex === userRec.passwordHash) {
-          return true;
+
+        for (const iterations of [100000, 10000]) {
+          const bits = await crypto.subtle.deriveBits(
+            {
+              name: 'PBKDF2',
+              salt: enc.encode(userRec.salt),
+              iterations,
+              hash: 'SHA-512',
+            },
+            key,
+            512
+          );
+          const hex = Array.from(new Uint8Array(bits))
+            .map((b) => b.toString(16).padStart(2, '0'))
+            .join('');
+          if (hex === userRec.passwordHash) {
+            return true;
+          }
         }
       }
     } catch {

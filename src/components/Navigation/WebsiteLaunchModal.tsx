@@ -50,7 +50,7 @@ export const WebsiteLaunchModal: React.FC<WebsiteLaunchModalProps> = ({
       try {
         await navigator.share({
           title,
-          text: 'Join me on Beacon – Real-Time Location Sharing, Private Rooms & Community Mesh:',
+          text: 'Join me on Beacon Network – Real-Time Location Sharing, Private Rooms & Community Mesh:',
           url: urlToShare,
         });
         return;
@@ -70,7 +70,7 @@ export const WebsiteLaunchModal: React.FC<WebsiteLaunchModalProps> = ({
             </div>
             <div>
               <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                <span>Live Website & Google Launch Hub</span>
+                <span>Beacon Network · Web & APK Hub</span>
                 <span className="px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 rounded-md">
                   Live
                 </span>
@@ -116,7 +116,7 @@ export const WebsiteLaunchModal: React.FC<WebsiteLaunchModalProps> = ({
                 <span>{copiedMain ? 'Copied' : 'Copy'}</span>
               </button>
               <button
-                onClick={() => handleNativeShare(websiteUrl, 'Beacon – Real-Time Location & Mesh')}
+                onClick={() => handleNativeShare(websiteUrl, 'Beacon Network')}
                 className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition-colors cursor-pointer shrink-0"
                 title="Share Website Link"
               >

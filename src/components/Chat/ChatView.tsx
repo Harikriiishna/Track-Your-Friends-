@@ -1131,219 +1131,296 @@ export const ChatView: React.FC<ChatViewProps> = ({
         )}
 
         {/* Message Feed */}
-        <div className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-4">
+        <div className="flex-1 min-h-0 overflow-y-auto px-4 py-4 space-y-3.5">
           {/* Channel Welcome Banner */}
-          <div className={`pt-6 pb-4 border-b ${themeConfig.glassBorder} mb-2`}>
-            <div className={`w-12 h-12 rounded-2xl ${themeConfig.glassCard} flex items-center justify-center mb-2 border ${themeConfig.glassBorder}`}>
-              <Hash className="w-7 h-7 text-cyan-400" />
+          <div className={`p-4 rounded-3xl border ${themeConfig.glassBorder} ${themeConfig.glassCard} mb-3 flex items-center gap-3.5`}>
+            <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-[#8957FF] via-[#FF4FA3] to-[#FF8066] flex items-center justify-center shrink-0 text-white shadow-lg">
+              {activeDirectUser ? (
+                <MessageSquare className="w-6 h-6" />
+              ) : (
+                <Hash className="w-6 h-6" />
+              )}
             </div>
-            <h3 className={`text-xl font-bold ${themeConfig.textPrimary} tracking-tight`}>
-              Welcome to #{activeChannelId}!
-            </h3>
-            <p className={`text-xs ${themeConfig.textSecondary} mt-1`}>
-              This is the start of the #{activeChannelId} channel on Beacon Mesh. Send coordinate updates, voice notes, and stay connected with everyone.
-            </p>
+            <div className="min-w-0">
+              <h3 className={`text-base sm:text-lg font-extrabold ${themeConfig.textPrimary} tracking-tight truncate`}>
+                {activeDirectUser
+                  ? `Direct Chat with ${activeDirectUser.name}`
+                  : `Welcome to #${activeChannelId}!`}
+              </h3>
+              <p className={`text-xs ${themeConfig.textSecondary} mt-0.5`}>
+                {activeDirectUser
+                  ? 'Send gradient messages, voice notes, photos, and live GPS pins in real time.'
+                  : `Share live coordinates, voice messages, and hang out with everyone in #${activeChannelId}.`}
+              </p>
+            </div>
           </div>
 
           {displayMessages.length === 0 ? (
-            <div className={`py-8 text-center ${themeConfig.textSecondary} text-xs`}>
-              No messages yet in this channel. Send the first message or share your live location!
+            <div className={`py-12 text-center ${themeConfig.textSecondary} space-y-2`}>
+              <div className="w-14 h-14 rounded-3xl bg-gradient-to-tr from-[#8957FF]/20 to-[#FF4FA3]/20 text-[#FF4FA3] flex items-center justify-center mx-auto">
+                <Sparkles className="w-6 h-6" />
+              </div>
+              <p className={`text-xs font-extrabold ${themeConfig.textPrimary}`}>No messages yet</p>
+              <p className="text-xs">Say hello, record a voice note, or share your live location!</p>
             </div>
           ) : (
             displayMessages.map((msg: DisplayChatMessage) => {
-              const isMe = msg.isSelf || msg.senderId === user?.id || (user?.fullName && (msg.senderName === user.fullName || msg.sender === user.fullName));
+              const isMe =
+                msg.isSelf ||
+                msg.senderId === user?.id ||
+                Boolean(user?.fullName && (msg.senderName === user.fullName || msg.sender === user.fullName));
               const isEditing = editingMessageId === msg.id;
               const msgMember = roomDetails?.members?.find((m) => m.userId === msg.senderId);
-              const senderDisplayName = msg.sender || msg.senderName || (isMe ? (user?.fullName || 'Reddy') : 'Peer Node');
+              const senderDisplayName =
+                msg.sender || msg.senderName || (isMe ? user?.fullName || 'You' : 'Friend');
               const roleToDisplay = msg.role || (isMe ? 'ADMIN' : msgMember?.role);
-              const formattedTime = msg.timestamp || (msg.createdAt ? new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
-              const avatarSrc = msg.senderAvatar || (isMe ? (user?.avatarUrl || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=128&q=80') : 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=128&q=80');
+              const formattedTime =
+                msg.timestamp ||
+                (msg.createdAt
+                  ? new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                  : new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+              const avatarSrc =
+                msg.senderAvatar ||
+                (isMe
+                  ? user?.avatarUrl ||
+                    'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&w=128&q=80'
+                  : 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=128&q=80');
+              const isSenderOnline =
+                isMe || (msg.senderId ? onlineUserIds.includes(msg.senderId) : true);
 
               return (
                 <div
                   key={msg.id}
-                  className="group relative flex gap-3.5 hover:bg-white/5 -mx-4 px-4 py-1.5 rounded-xl transition-colors"
+                  className={`group relative flex items-end gap-2.5 transition-all duration-200 ${
+                    isMe ? 'flex-row-reverse' : 'flex-row'
+                  }`}
                 >
-                  {/* Floating Action Toolbar on Hover */}
-                  <div className={`absolute right-4 -top-3 hidden group-hover:flex items-center gap-1 ${themeConfig.glassPanel} border ${themeConfig.glassBorder} rounded-xl shadow-lg px-1.5 py-0.5 z-20 backdrop-blur-xl`}>
-                    <button
-                      onClick={() => sendReaction(msg.id, '👍')}
-                      className="p-1 hover:bg-white/10 text-xs rounded transition-colors cursor-pointer"
-                      title="React 👍"
-                    >
-                      👍
-                    </button>
-                    <button
-                      onClick={() => sendReaction(msg.id, '❤️')}
-                      className="p-1 hover:bg-white/10 text-xs rounded transition-colors cursor-pointer"
-                      title="React ❤️"
-                    >
-                      ❤️
-                    </button>
-                    <button
-                      onClick={() => sendReaction(msg.id, '📍')}
-                      className="p-1 hover:bg-white/10 text-xs rounded transition-colors cursor-pointer"
-                      title="React 📍"
-                    >
-                      📍
-                    </button>
-                    <button
-                      onClick={() => setReplyTarget(msg)}
-                      className={`p-1 hover:bg-white/10 ${themeConfig.textSecondary} hover:${themeConfig.textPrimary} rounded transition-colors cursor-pointer`}
-                      title="Reply"
-                    >
-                      <Reply className="w-3.5 h-3.5" />
-                    </button>
-                    {isMe && (
-                      <>
-                        <button
-                          onClick={() => {
-                            setEditingMessageId(msg.id);
-                            setEditingText(msg.text);
-                          }}
-                          className={`p-1 hover:bg-white/10 ${themeConfig.textSecondary} hover:${themeConfig.textPrimary} rounded transition-colors cursor-pointer`}
-                          title="Edit"
-                        >
-                          <Edit2 className="w-3.5 h-3.5" />
-                        </button>
-                        <button
-                          onClick={() => {
-                            deleteMessage(msg.id);
-                            setChannelMessages((prev) => ({
-                              ...prev,
-                              [activeChannelId]: (prev[activeChannelId] || []).filter((m) => m.id !== msg.id),
-                            }));
-                          }}
-                          className="p-1 hover:bg-rose-500/20 text-rose-400 rounded transition-colors cursor-pointer"
-                          title="Delete"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </>
-                    )}
-                  </div>
-
-                  {/* Sender Avatar */}
-                  <img
-                    src={avatarSrc}
-                    alt={senderDisplayName}
-                    className={`w-10 h-10 rounded-full object-cover shrink-0 cursor-pointer hover:opacity-90 transition-opacity border ${themeConfig.glassBorder}`}
+                  {/* Sender Avatar with Online Status Ring */}
+                  <div
+                    className="relative shrink-0 cursor-pointer"
                     onClick={() => {
                       const peerUser = roomDetails?.members?.find((m) => m.userId === msg.senderId)?.user;
                       if (peerUser) setSelectedProfileUser(peerUser);
                     }}
-                  />
+                  >
+                    <div className={`${isMe ? 'social-story-ring' : 'social-story-ring-live'} rounded-full p-[2px]`}>
+                      <img
+                        src={avatarSrc}
+                        alt={senderDisplayName}
+                        className="w-9 h-9 rounded-full object-cover"
+                      />
+                    </div>
+                    <span
+                      className={`absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border-2 border-[#0B081B] ${
+                        isSenderOnline ? 'bg-[#00D6A0]' : 'bg-slate-400'
+                      }`}
+                    />
+                  </div>
 
-                  {/* Message Content Body */}
-                  <div className="flex-1 min-w-0">
-                    {/* Quoted Reply context */}
-                    {msg.replyToText && (
-                      <div className={`flex items-center gap-1.5 text-xs ${themeConfig.textSecondary} mb-1 opacity-80`}>
-                        <div className={`w-3 h-3 border-l-2 border-t-2 ${themeConfig.glassBorder} rounded-tl-sm -mb-2`} />
-                        <span className={`font-bold ${themeConfig.textPrimary} text-[11px] truncate`}>
-                          @{msg.replyToSender}
-                        </span>
-                        <span className="truncate text-[11px] italic">{msg.replyToText}</span>
-                      </div>
-                    )}
-
-                    {/* Sender Meta Header */}
-                    <div className="flex items-baseline gap-2 mb-0.5">
+                  {/* Message Bubble Container */}
+                  <div className={`max-w-[78%] sm:max-w-[70%] flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
+                    {/* Sender Name & Timestamp Header */}
+                    <div
+                      className={`flex items-center gap-1.5 mb-1 px-1 ${
+                        isMe ? 'flex-row-reverse' : 'flex-row'
+                      }`}
+                    >
                       <span
-                        className={`text-sm font-bold cursor-pointer hover:underline ${
-                          roleToDisplay === 'OWNER'
-                            ? 'text-amber-400'
-                            : roleToDisplay === 'ADMIN'
-                            ? themeConfig.accentText
-                            : themeConfig.textPrimary
+                        className={`text-[11px] font-extrabold cursor-pointer hover:underline ${
+                          isMe
+                            ? 'text-[#FF4FA3]'
+                            : roleToDisplay === 'OWNER'
+                              ? 'text-[#FFD166]'
+                              : themeConfig.textPrimary
                         }`}
                         onClick={() => {
                           const peerUser = roomDetails?.members?.find((m) => m.userId === msg.senderId)?.user;
                           if (peerUser) setSelectedProfileUser(peerUser);
                         }}
                       >
-                        {senderDisplayName}
+                        {isMe ? 'You' : senderDisplayName}
                       </span>
-                      {renderRoleBadge(roleToDisplay)}
+                      {!isMe && renderRoleBadge(roleToDisplay)}
                       <span className={`text-[10px] ${themeConfig.textSecondary}`}>
                         {formattedTime}
                       </span>
-                      {msg.isEdited && <span className={`text-[10px] ${themeConfig.textSecondary}`}>(edited)</span>}
+                      {msg.isEdited && (
+                        <span className={`text-[10px] ${themeConfig.textSecondary}`}>(edited)</span>
+                      )}
                     </div>
 
-                    {/* Text Message or Edit Box */}
-                    {isEditing ? (
-                      <div className="mt-1 flex items-center gap-2">
-                        <input
-                          type="text"
-                          value={editingText}
-                          onChange={(e) => setEditingText(e.target.value)}
-                          className={`flex-1 ${themeConfig.glassInput} text-white px-3 py-1.5 rounded-xl text-sm focus:outline-none border ${themeConfig.glassBorder}`}
-                        />
-                        <button
-                          onClick={() => {
-                            editMessage(msg.id, editingText);
-                            setEditingMessageId(null);
-                          }}
-                          className={`p-1.5 ${themeConfig.accentBg} text-white rounded-xl shadow-sm transition-colors`}
-                        >
-                          <Check className="w-3.5 h-3.5" />
-                        </button>
-                        <button
-                          onClick={() => setEditingMessageId(null)}
-                          className="p-1.5 bg-white/10 hover:bg-white/20 text-white rounded-xl transition-colors"
-                        >
-                          <X className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    ) : (
-                      renderDiscordMarkdown(msg.text)
-                    )}
-
-                    {/* Attachments: Voice Notes or Images */}
-                    {msg.attachments && msg.attachments.length > 0 && (
-                      <div className="mt-2 space-y-2">
-                        {msg.attachments.map((att: any) => (
-                          <div key={att.id}>
-                            {att.type === 'voice' && (
-                              <VoiceMessagePlayer
-                                src={att.url}
-                                initialDuration={att.duration}
-                                isSelf={isMe}
-                              />
-                            )}
-
-                            {att.type === 'image' && (
-                              <img
-                                src={att.url}
-                                alt="Attachment"
-                                className={`max-h-72 rounded-2xl object-cover cursor-pointer hover:opacity-95 border ${themeConfig.glassBorder} shadow-lg`}
-                                onClick={() => window.open(att.url, '_blank')}
-                              />
-                            )}
-                          </div>
-                        ))}
+                    {/* Quoted Reply Context */}
+                    {msg.replyToText && (
+                      <div
+                        className={`mb-1 px-3 py-1.5 rounded-2xl text-[11px] border flex items-center gap-1.5 max-w-full ${
+                          themeConfig.isDark
+                            ? 'bg-white/5 border-white/10 text-[#A9A2D0]'
+                            : 'bg-[#F3EEFF] border-[#8957FF]/20 text-slate-600'
+                        }`}
+                      >
+                        <Reply className="w-3 h-3 text-[#FF4FA3] shrink-0" />
+                        <span className="font-extrabold text-[#FF4FA3] shrink-0">
+                          @{msg.replyToSender}:
+                        </span>
+                        <span className="truncate italic">{msg.replyToText}</span>
                       </div>
                     )}
+
+                    {/* Gradient Chat Bubble (Sent vs Received) */}
+                    <div
+                      className={`relative px-4 py-2.5 text-xs sm:text-sm shadow-md transition-all ${
+                        isMe
+                          ? 'bg-gradient-to-tr from-[#8957FF] via-[#6B66FF] to-[#397BFF] text-white rounded-[24px] rounded-br-md shadow-[0_6px_20px_rgba(137,87,255,0.3)]'
+                          : themeConfig.isDark
+                            ? 'bg-[#1B153A] border border-[#8957FF]/30 text-[#F8F7FF] rounded-[24px] rounded-bl-md'
+                            : 'bg-white border border-[#8957FF]/20 text-slate-900 rounded-[24px] rounded-bl-md shadow-xs'
+                      }`}
+                    >
+                      {/* Floating Hover Action Pill */}
+                      <div
+                        className={`absolute -top-8 ${
+                          isMe ? 'right-0' : 'left-0'
+                        } hidden group-hover:flex items-center gap-0.5 ${
+                          themeConfig.glassPanel
+                        } border ${
+                          themeConfig.glassBorder
+                        } rounded-full shadow-xl px-2 py-0.5 z-20 backdrop-blur-xl`}
+                      >
+                        <button
+                          onClick={() => sendReaction(msg.id, '❤️')}
+                          className="p-1 hover:scale-125 text-xs transition-transform cursor-pointer"
+                          title="React ❤️"
+                        >
+                          ❤️
+                        </button>
+                        <button
+                          onClick={() => sendReaction(msg.id, '🔥')}
+                          className="p-1 hover:scale-125 text-xs transition-transform cursor-pointer"
+                          title="React 🔥"
+                        >
+                          🔥
+                        </button>
+                        <button
+                          onClick={() => sendReaction(msg.id, '📍')}
+                          className="p-1 hover:scale-125 text-xs transition-transform cursor-pointer"
+                          title="React 📍"
+                        >
+                          📍
+                        </button>
+                        <button
+                          onClick={() => setReplyTarget(msg)}
+                          className={`p-1 hover:bg-white/10 ${themeConfig.textSecondary} hover:${themeConfig.textPrimary} rounded-full transition-colors cursor-pointer`}
+                          title="Reply"
+                        >
+                          <Reply className="w-3.5 h-3.5" />
+                        </button>
+                        {isMe && (
+                          <>
+                            <button
+                              onClick={() => {
+                                setEditingMessageId(msg.id);
+                                setEditingText(msg.text);
+                              }}
+                              className={`p-1 hover:bg-white/10 ${themeConfig.textSecondary} hover:${themeConfig.textPrimary} rounded-full transition-colors cursor-pointer`}
+                              title="Edit"
+                            >
+                              <Edit2 className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              onClick={() => {
+                                deleteMessage(msg.id);
+                                setChannelMessages((prev) => ({
+                                  ...prev,
+                                  [activeChannelId]: (prev[activeChannelId] || []).filter(
+                                    (m) => m.id !== msg.id
+                                  ),
+                                }));
+                              }}
+                              className="p-1 hover:bg-rose-500/20 text-[#FF4FA3] rounded-full transition-colors cursor-pointer"
+                              title="Delete"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </>
+                        )}
+                      </div>
+
+                      {/* Text Message or Edit Box */}
+                      {isEditing ? (
+                        <div className="flex items-center gap-2 min-w-[220px]">
+                          <input
+                            type="text"
+                            value={editingText}
+                            onChange={(e) => setEditingText(e.target.value)}
+                            className="flex-1 bg-black/30 text-white px-3 py-1.5 rounded-xl text-xs focus:outline-none border border-white/25"
+                          />
+                          <button
+                            onClick={() => {
+                              editMessage(msg.id, editingText);
+                              setEditingMessageId(null);
+                            }}
+                            className="p-1.5 bg-[#00D6A0] text-slate-950 rounded-xl shadow-sm"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => setEditingMessageId(null)}
+                            className="p-1.5 bg-white/20 text-white rounded-xl"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ) : (
+                        renderDiscordMarkdown(msg.text)
+                      )}
+
+                      {/* Attachments: Voice Notes or Images */}
+                      {msg.attachments && msg.attachments.length > 0 && (
+                        <div className="mt-2 space-y-2">
+                          {msg.attachments.map((att: any) => (
+                            <div key={att.id}>
+                              {att.type === 'voice' && (
+                                <VoiceMessagePlayer
+                                  src={att.url}
+                                  initialDuration={att.duration}
+                                  isSelf={Boolean(isMe)}
+                                />
+                              )}
+
+                              {att.type === 'image' && (
+                                <img
+                                  src={att.url}
+                                  alt="Attachment"
+                                  className="max-h-72 rounded-2xl object-cover cursor-pointer hover:opacity-95 border border-white/20 shadow-lg"
+                                  onClick={() => window.open(att.url, '_blank')}
+                                />
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
 
                     {/* Reactions Pill Display */}
                     {msg.reactions && Object.keys(msg.reactions).length > 0 && (
-                      <div className="flex flex-wrap gap-1 mt-1.5">
+                      <div className="flex flex-wrap gap-1 mt-1 px-1">
                         {Object.entries(msg.reactions).map(([emoji, rawUserIds]) => {
-                          const userIds: string[] = Array.isArray(rawUserIds) ? (rawUserIds as string[]) : [];
+                          const userIds: string[] = Array.isArray(rawUserIds)
+                            ? (rawUserIds as string[])
+                            : [];
                           const hasReacted = userIds.includes(user?.id || '');
                           return (
                             <button
                               key={emoji}
                               onClick={() => sendReaction(msg.id, emoji)}
-                              className={`px-2 py-0.5 rounded-lg text-xs flex items-center gap-1.5 transition-colors cursor-pointer ${
+                              className={`px-2 py-0.5 rounded-full text-xs flex items-center gap-1 transition-all cursor-pointer ${
                                 hasReacted
-                                  ? `${themeConfig.accentBg} text-white shadow-sm font-semibold`
-                                  : `${themeConfig.glassCard} border ${themeConfig.glassBorder} ${themeConfig.textPrimary} hover:bg-white/10`
+                                  ? 'bg-gradient-to-r from-[#8957FF] to-[#FF4FA3] text-white shadow-sm font-extrabold'
+                                  : `${themeConfig.glassCard} border ${themeConfig.glassBorder} ${themeConfig.textPrimary}`
                               }`}
                             >
                               <span>{emoji}</span>
-                              <span className="text-[11px] font-semibold">{userIds.length}</span>
+                              <span className="text-[10px] font-bold">{userIds.length}</span>
                             </button>
                           );
                         })}
@@ -1362,7 +1439,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
           <div className={`px-4 py-2 ${themeConfig.glassCard} border-t ${themeConfig.glassBorder} flex items-center justify-between text-xs`}>
             <div className="flex items-center gap-2 truncate">
               <span className={themeConfig.textSecondary}>Replying to</span>
-              <span className={`font-bold ${themeConfig.textPrimary}`}>@{replyTarget.senderName}:</span>
+              <span className="font-extrabold text-[#FF4FA3]">@{replyTarget.senderName}:</span>
               <span className={`truncate ${themeConfig.textSecondary}`}>{replyTarget.text}</span>
             </div>
             <button
@@ -1378,7 +1455,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
         {voicePreview && (
           <div className={`px-4 py-2.5 ${themeConfig.glassCard} border-t ${themeConfig.glassBorder} flex items-center justify-between gap-3 backdrop-blur-xl`}>
             <div className="flex items-center gap-3 flex-1 min-w-0">
-              <div className={`w-8 h-8 rounded-full ${themeConfig.accentBg} text-white flex items-center justify-center shadow shrink-0`}>
+              <div className="w-8 h-8 rounded-full bg-gradient-to-r from-[#8957FF] to-[#FF4FA3] text-white flex items-center justify-center shadow shrink-0">
                 <Mic className="w-4 h-4" />
               </div>
               <div className="flex-1 min-w-0">
@@ -1402,7 +1479,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               <button
                 onClick={handleSendVoiceNote}
                 disabled={isUploading}
-                className={`px-3.5 py-1.5 text-xs ${themeConfig.accentBg} text-white font-bold rounded-xl shadow-sm`}
+                className="px-3.5 py-1.5 text-xs bg-gradient-to-r from-[#8957FF] to-[#FF4FA3] text-white font-extrabold rounded-xl shadow-sm"
               >
                 {isUploading ? 'Uploading...' : 'Send Voice'}
               </button>
@@ -1415,10 +1492,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
           <div className={`px-4 py-2.5 ${themeConfig.glassPanel} border-t ${themeConfig.glassBorder} flex items-center justify-between gap-3 text-white backdrop-blur-2xl`}>
             <div className="flex items-center gap-2">
               <span className="relative flex h-3 w-3">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-3 w-3 bg-rose-500"></span>
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#FF4FA3] opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-3 w-3 bg-[#FF4FA3]"></span>
               </span>
-              <span className="text-xs font-mono font-bold tabular-nums text-rose-300">
+              <span className="text-xs font-mono font-bold tabular-nums text-[#FF4FA3]">
                 {Math.floor(recordingSeconds / 60)}:{(recordingSeconds % 60).toString().padStart(2, '0')}
               </span>
             </div>
@@ -1436,7 +1513,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               </button>
               <button
                 onClick={stopRecording}
-                className="px-3.5 py-1 bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold rounded-xl shadow-sm"
+                className="px-3.5 py-1 bg-gradient-to-r from-[#FF4FA3] to-[#FF8066] text-white text-xs font-extrabold rounded-xl shadow-sm"
               >
                 Done
               </button>
@@ -1444,25 +1521,25 @@ export const ChatView: React.FC<ChatViewProps> = ({
           </div>
         )}
 
-        {/* Typing indicator */}
+        {/* Animated Social Typing Indicator */}
         <div className="px-4 min-h-6 py-0.5 text-xs flex items-center">
           {currentTyping && currentTyping.userId !== user?.id && (
-            <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-cyan-500/10 border border-cyan-500/25 text-cyan-300 shadow-sm animate-pulse">
+            <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-gradient-to-r from-[#8957FF]/15 to-[#FF4FA3]/15 border border-[#FF4FA3]/35 text-[#FF4FA3] shadow-sm">
               <div className="flex items-center gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-bounce" style={{ animationDelay: '0ms' }} />
-                <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-bounce" style={{ animationDelay: '150ms' }} />
-                <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-bounce" style={{ animationDelay: '300ms' }} />
+                <span className="w-1.5 h-1.5 rounded-full bg-[#8957FF] animate-bounce" style={{ animationDelay: '0ms' }} />
+                <span className="w-1.5 h-1.5 rounded-full bg-[#FF4FA3] animate-bounce" style={{ animationDelay: '150ms' }} />
+                <span className="w-1.5 h-1.5 rounded-full bg-[#00D9FF] animate-bounce" style={{ animationDelay: '300ms' }} />
               </div>
-              <span className="text-[11px] font-medium tracking-wide">
-                <strong className="text-white font-semibold">{currentTyping.name || 'User'}</strong> is typing...
+              <span className="text-[11px] font-bold tracking-wide">
+                <strong>{currentTyping.name || 'Friend'}</strong> is typing...
               </span>
             </div>
           )}
         </div>
 
-        {/* Discord Chat Input Box */}
+        {/* Colourful Modern Message Composer */}
         <div className="px-3 sm:px-4 pb-3 md:pb-4 pt-1.5 shrink-0 z-20">
-          <div className={`relative ${themeConfig.glassInput} rounded-2xl flex items-center px-3 py-2 shadow-lg border ${themeConfig.glassBorder}`}>
+          <div className={`relative ${themeConfig.glassInput} rounded-[26px] flex items-center px-3 py-2 shadow-xl border ${themeConfig.glassBorder}`}>
             {/* Hidden File Input */}
             <input
               type="file"
@@ -1472,38 +1549,38 @@ export const ChatView: React.FC<ChatViewProps> = ({
               className="hidden"
             />
 
-            {/* Plus Action Button */}
+            {/* Plus Attachment Menu Trigger */}
             <div className="relative">
               <button
                 type="button"
                 onClick={() => setShowPlusMenu(!showPlusMenu)}
-                className={`w-8 h-8 rounded-xl bg-white/10 hover:${themeConfig.accentBg} flex items-center justify-center text-white transition-colors cursor-pointer mr-2 shrink-0`}
-                title="Add attachment or location"
+                className="w-9 h-9 rounded-full bg-gradient-to-tr from-[#8957FF] to-[#FF4FA3] flex items-center justify-center text-white shadow-md transition-transform active:scale-90 cursor-pointer mr-2 shrink-0"
+                title="Share photo, voice note or live location"
               >
                 <Plus className="w-4 h-4" />
               </button>
 
               {/* Plus Menu Popup */}
               {showPlusMenu && (
-                <div className={`absolute bottom-12 left-0 ${themeConfig.glassPanel} border ${themeConfig.glassBorder} rounded-2xl shadow-2xl p-2 w-56 z-50 space-y-1 backdrop-blur-2xl`}>
+                <div className={`absolute bottom-13 left-0 ${themeConfig.glassPanel} border ${themeConfig.glassBorder} rounded-2xl shadow-2xl p-2 w-56 z-50 space-y-1 backdrop-blur-2xl`}>
                   <button
                     type="button"
                     onClick={() => {
                       fileInputRef.current?.click();
                       setShowPlusMenu(false);
                     }}
-                    className={`w-full px-3 py-2 text-xs font-semibold ${themeConfig.textPrimary} hover:bg-white/10 rounded-xl flex items-center gap-2.5 transition-colors cursor-pointer`}
+                    className={`w-full px-3 py-2 text-xs font-extrabold ${themeConfig.textPrimary} hover:bg-[#8957FF]/15 rounded-xl flex items-center gap-2.5 transition-colors cursor-pointer`}
                   >
-                    <Image className="w-4 h-4 text-cyan-400" />
-                    <span>Upload Image</span>
+                    <Image className="w-4 h-4 text-[#FF4FA3]" />
+                    <span>Upload Photo</span>
                   </button>
                   <button
                     type="button"
                     onClick={handleShareCurrentLocation}
-                    className={`w-full px-3 py-2 text-xs font-semibold ${themeConfig.textPrimary} hover:bg-white/10 rounded-xl flex items-center gap-2.5 transition-colors cursor-pointer`}
+                    className={`w-full px-3 py-2 text-xs font-extrabold ${themeConfig.textPrimary} hover:bg-[#00D6A0]/15 rounded-xl flex items-center gap-2.5 transition-colors cursor-pointer`}
                   >
-                    <MapPin className="w-4 h-4 text-emerald-400" />
-                    <span>Broadcast Live GPS</span>
+                    <MapPin className="w-4 h-4 text-[#00D6A0]" />
+                    <span>Share Live GPS Pin</span>
                   </button>
                   <button
                     type="button"
@@ -1511,9 +1588,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       startRecording();
                       setShowPlusMenu(false);
                     }}
-                    className={`w-full px-3 py-2 text-xs font-semibold ${themeConfig.textPrimary} hover:bg-white/10 rounded-xl flex items-center gap-2.5 transition-colors cursor-pointer`}
+                    className={`w-full px-3 py-2 text-xs font-extrabold ${themeConfig.textPrimary} hover:bg-[#FFD166]/15 rounded-xl flex items-center gap-2.5 transition-colors cursor-pointer`}
                   >
-                    <Mic className="w-4 h-4 text-amber-400" />
+                    <Mic className="w-4 h-4 text-[#FFD166]" />
                     <span>Record Voice Note</span>
                   </button>
                 </div>
@@ -1539,13 +1616,22 @@ export const ChatView: React.FC<ChatViewProps> = ({
               className={`flex-1 bg-transparent text-sm ${themeConfig.textPrimary} placeholder-slate-400 focus:outline-none min-w-0 pr-2`}
             />
 
-            {/* Quick Actions Right */}
-            <div className="flex items-center gap-1.5 shrink-0">
+            {/* Quick Composer Actions Right */}
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="p-2 text-[#FF4FA3] hover:bg-[#FF4FA3]/10 rounded-full transition-colors cursor-pointer hidden sm:flex items-center justify-center"
+                title="Attach Photo"
+              >
+                <Image className="w-4 h-4" />
+              </button>
+
               <button
                 type="button"
                 onClick={startRecording}
-                className={`p-2 text-slate-400 hover:${themeConfig.textPrimary} hover:bg-white/10 rounded-xl transition-colors cursor-pointer hidden sm:flex items-center justify-center`}
-                title="Voice Note"
+                className="p-2 text-[#00D9FF] hover:bg-[#00D9FF]/10 rounded-full transition-colors cursor-pointer flex items-center justify-center"
+                title="Record Voice Note"
               >
                 <Mic className="w-4 h-4" />
               </button>
@@ -1553,26 +1639,26 @@ export const ChatView: React.FC<ChatViewProps> = ({
               <button
                 type="button"
                 onClick={() => setShowEmojiPicker(!showEmojiPicker)}
-                className={`p-2 text-slate-400 hover:${themeConfig.textPrimary} hover:bg-white/10 rounded-xl transition-colors cursor-pointer hidden sm:flex items-center justify-center`}
+                className="p-2 text-[#FFD166] hover:bg-[#FFD166]/10 rounded-full transition-colors cursor-pointer hidden sm:flex items-center justify-center"
                 title="Add Emoji"
               >
                 <Smile className="w-4 h-4" />
               </button>
 
-              {/* Prominent Active Send Button */}
+              {/* Prominent Gradient Send Button */}
               <button
                 type="button"
                 onClick={() => handleSendMessage()}
                 disabled={!inputVal.trim() && !voicePreview}
                 aria-label="Send Message"
-                className={`h-9 px-3 rounded-xl flex items-center justify-center gap-1.5 transition-all duration-150 shrink-0 font-medium text-xs cursor-pointer shadow-md ${
+                className={`h-9 px-4 rounded-full flex items-center justify-center gap-1.5 transition-all duration-150 shrink-0 font-extrabold text-xs cursor-pointer shadow-md ${
                   inputVal.trim() || voicePreview
-                    ? 'bg-gradient-to-r from-sky-500 via-indigo-500 to-cyan-500 hover:opacity-95 text-white shadow-sky-500/30 active:scale-95'
-                    : 'bg-white/10 text-white/40 cursor-not-allowed hover:bg-white/15'
+                    ? 'bg-gradient-to-r from-[#8957FF] via-[#FF4FA3] to-[#FF8066] hover:opacity-95 text-white shadow-[0_6px_18px_rgba(255,79,163,0.4)] active:scale-95'
+                    : 'bg-slate-500/20 text-slate-400 cursor-not-allowed'
                 }`}
               >
                 <Send className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline font-semibold">Send</span>
+                <span className="hidden sm:inline">Send</span>
               </button>
             </div>
 

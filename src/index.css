@@ -1,189 +1,366 @@
 @import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
 
-@layer utilities {
-  .glass-panel {
-    backdrop-filter: blur(24px);
-    -webkit-backdrop-filter: blur(24px);
-  }
-  .glass-specular {
-    box-shadow: inset 0 1px 1px 0 rgba(255, 255, 255, 0.25), 0 8px 32px 0 rgba(0, 0, 0, 0.37);
-  }
-  .glass-specular-light {
-    box-shadow: inset 0 1px 1px 0 rgba(255, 255, 255, 0.7), 0 8px 32px 0 rgba(31, 38, 135, 0.08);
+/* ==================================================
+   BEACON NETWORK — COLOURFUL SOCIAL UI DESIGN SYSTEM
+   (Instagram + Snapchat + Telegram + Live Location)
+   ================================================== */
+:root {
+  /* Core Colourful Social Palette */
+  --social-purple: #8957FF;
+  --social-blue: #397BFF;
+  --social-pink: #FF4FA3;
+  --social-coral: #FF8066;
+  --social-cyan: #00D9FF;
+  --social-mint: #00D6A0;
+  --social-yellow: #FFD166;
+  --social-lavender: #E9DFFF;
+
+  /* Legacy Tactical Aliases mapped to Vibrant Social Palette */
+  --beacon-bg-main: #0B081B;
+  --beacon-bg-secondary: #130F2B;
+  --beacon-bg-card: #1B153A;
+  --beacon-blue: #397BFF;
+  --beacon-cyan: #00D9FF;
+  --beacon-purple: #8957FF;
+  --beacon-success: #00D6A0;
+  --beacon-warning: #FFD166;
+  --beacon-danger: #FF4FA3;
+  --beacon-text-primary: #F8F7FF;
+  --beacon-text-secondary: #A9A2D0;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    min-height: 100dvh;
+    font-family: 'Plus Jakarta Sans', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow-x: hidden;
   }
 
-  /* GPU-accelerated composition layer for active viewports */
-  .transform-gpu-smooth {
-    transform: translate3d(0, 0, 0);
-    -webkit-transform: translate3d(0, 0, 0);
+  button,
+  a,
+  input,
+  select,
+  textarea,
+  [role="button"] {
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  button,
+  [role="button"] {
+    transition: transform 0.18s cubic-bezier(0.22, 1, 0.36, 1),
+      opacity 0.18s ease,
+      background-color 0.18s ease,
+      border-color 0.18s ease,
+      box-shadow 0.2s ease;
     backface-visibility: hidden;
     -webkit-backface-visibility: hidden;
   }
 
-  /* Isolated layout & paint container to prevent whole-screen redraws */
-  .tab-pane-container {
-    contain: layout paint;
-    overscroll-behavior: contain;
-    -webkit-overflow-scrolling: touch;
+  button:active:not(:disabled),
+  [role="button"]:active:not(:disabled) {
+    transform: scale3d(0.96, 0.96, 1);
   }
 
-  /* Mobile Safe Area & Bottom Navigation Viewport clearance */
-  .tab-pane-mobile-safe {
-    bottom: calc(4rem + env(safe-area-inset-bottom, 0px));
-  }
-  @media (min-width: 768px) {
-    .tab-pane-mobile-safe {
-      bottom: 0px;
-    }
+  html.dark body {
+    background-color: #0B081B;
+    color: #F8F7FF;
   }
 
-  .pb-safe {
-    padding-bottom: max(0.5rem, env(safe-area-inset-bottom, 0px));
+  html:not(.dark) body {
+    background-color: #F8F6FF;
+    color: #130F2B;
   }
 }
 
-/* Fluid hardware-accelerated tab switching animations */
-@keyframes tabEnter {
-  0% {
-    opacity: 0;
-    transform: translate3d(0, 3px, 0);
-  }
-  100% {
-    opacity: 1;
-    transform: translate3d(0, 0, 0);
-  }
+/* Instagram / Snapchat Story Gradient Ring */
+.social-story-ring {
+  background: linear-gradient(135deg, #8957FF 0%, #FF4FA3 50%, #FF8066 100%);
+  padding: 2.5px;
 }
 
-@keyframes fadeInSmooth {
-  0% {
-    opacity: 0;
-  }
-  100% {
-    opacity: 1;
-  }
+.social-story-ring-live {
+  background: linear-gradient(135deg, #00D6A0 0%, #00D9FF 50%, #397BFF 100%);
+  padding: 2.5px;
 }
 
-@keyframes popIn {
-  0% {
-    opacity: 0;
-    transform: scale(0.96);
-  }
-  100% {
-    opacity: 1;
-    transform: scale(1);
-  }
+/* Signature Social Gradients */
+.bg-gradient-purple-pink {
+  background: linear-gradient(135deg, #8957FF 0%, #FF4FA3 100%);
+}
+.bg-gradient-blue-cyan {
+  background: linear-gradient(135deg, #397BFF 0%, #00D9FF 100%);
+}
+.bg-gradient-pink-orange {
+  background: linear-gradient(135deg, #FF4FA3 0%, #FF8066 100%);
+}
+.bg-gradient-purple-blue {
+  background: linear-gradient(135deg, #8957FF 0%, #397BFF 100%);
+}
+.bg-gradient-mint-aqua {
+  background: linear-gradient(135deg, #00D6A0 0%, #00D9FF 100%);
 }
 
-.animate-tab-enter {
-  contain: layout paint;
-  animation: tabEnter 140ms cubic-bezier(0.16, 1, 0.3, 1) both;
-}
-
-.animate-fade-smooth {
-  animation: fadeInSmooth 120ms ease-out both;
-}
-
-.animate-pop-in {
-  animation: popIn 140ms cubic-bezier(0.16, 1, 0.3, 1) both;
-}
-
-/* Eliminate 300ms mobile tap delay & grey selection box without global GPU layer bloat */
-* {
-  -webkit-tap-highlight-color: transparent;
-}
-
-button, a, [role="button"] {
-  touch-action: manipulation;
-}
-
-/* Smooth Leaflet map rendering */
-.leaflet-container {
-  font-family: inherit;
-  transform: translate3d(0, 0, 0);
-  -webkit-transform: translate3d(0, 0, 0);
-}
-.leaflet-marker-icon, .leaflet-marker-shadow {
-  will-change: transform;
+/* Glassmorphism & Social Surface Utilities (GPU Layer Promoted) */
+.beacon-glass-card {
+  background: rgba(27, 21, 58, 0.82);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(137, 87, 255, 0.24);
+  box-shadow: 0 12px 34px rgba(11, 8, 27, 0.55), 0 0 24px rgba(137, 87, 255, 0.08);
+  transform: translateZ(0);
   backface-visibility: hidden;
   -webkit-backface-visibility: hidden;
 }
-.beacon-google-blue-dot-marker,
-.beacon-peer-marker,
-.beacon-place-marker {
-  contain: layout style;
+
+html:not(.dark) .beacon-glass-card {
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid rgba(137, 87, 255, 0.16);
+  box-shadow: 0 10px 30px rgba(137, 87, 255, 0.09);
 }
 
-/* Smooth theme transition */
-body, #root {
-  -webkit-font-smoothing: antialiased;
-  text-rendering: optimizeSpeed;
-  overscroll-behavior: none;
+/* Optimize heavy backdrop-blur on mobile GPUs for 60-120fps touch scrolling */
+@media (max-width: 767px) {
+  .beacon-glass-card,
+  .backdrop-blur-2xl,
+  .backdrop-blur-xl {
+    backdrop-filter: blur(10px) !important;
+    -webkit-backdrop-filter: blur(10px) !important;
+  }
 }
 
-/* Custom sleek translucent scrollbar */
+/* Custom Sleek Scrollbars */
 ::-webkit-scrollbar {
-  width: 5px;
-  height: 5px;
+  width: 6px;
+  height: 6px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.18);
+  background: rgba(137, 87, 255, 0.35);
   border-radius: 9999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.35);
+  background: rgba(255, 79, 163, 0.65);
 }
 
-/* Low-End Device / Lite Performance Mode Rules */
-html.lite-mode *,
-html.lite-mode *::before,
-html.lite-mode *::after {
-  backdrop-filter: none !important;
-  -webkit-backdrop-filter: none !important;
+.no-scrollbar::-webkit-scrollbar,
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar,
+.scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
 }
 
-html.lite-mode .animate-ping,
-html.lite-mode .animate-pulse {
-  animation: none !important;
+/* Map Container & Hardware-Accelerated HDR Tile Overrides */
+.leaflet-container {
+  font-family: inherit !important;
+  background-color: #0B081B !important;
+  transform: translate3d(0, 0, 0);
 }
 
-html.lite-mode .animate-tab-enter,
-html.lite-mode .animate-fade-smooth,
-html.lite-mode .animate-pop-in {
-  animation-duration: 0.01ms !important;
+/* Crisp 2x Retina Tile Rendering */
+.leaflet-tile {
+  image-rendering: -webkit-optimize-contrast;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
 }
 
-html.lite-mode .leaflet-marker-icon,
-html.lite-mode .leaflet-marker-shadow {
-  transition: none !important;
+/* Beacon Network Ultra-Clear HDR Map Optical Grading */
+.beacon-map-hdr .leaflet-tile-pane {
+  will-change: filter;
+  transition: filter 0.25s ease;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  *, ::before, ::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-    scroll-behavior: auto !important;
-    backdrop-filter: none !important;
-    -webkit-backdrop-filter: none !important;
+/* Terrain Topo HDR: Vivid emerald relief, crisp contour lines, rich water contrast */
+.beacon-map-hdr-terrain .leaflet-tile-pane {
+  filter: contrast(1.15) saturate(1.32) brightness(1.03);
+}
+
+/* Satellite Hybrid HDR: Deep dynamic range, vibrant foliage & razor-sharp rooftops */
+.beacon-map-hdr-satellite .leaflet-tile-pane {
+  filter: contrast(1.18) saturate(1.36) brightness(1.05);
+}
+
+/* Standard Street HDR: High-contrast road hierarchy, vivid parks & crisp labels */
+.beacon-map-hdr-standard .leaflet-tile-pane {
+  filter: contrast(1.13) saturate(1.28) brightness(1.02);
+}
+
+/* Live Traffic HDR: Electric traffic corridors with crisp street contrast */
+.beacon-map-hdr-traffic .leaflet-tile-pane {
+  filter: contrast(1.16) saturate(1.38) brightness(1.03);
+}
+
+.leaflet-div-icon {
+  background: transparent !important;
+  border: none !important;
+}
+
+/* Critical low-end device performance optimization for map markers */
+.leaflet-marker-icon {
+  will-change: transform !important;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+.leaflet-cluster-anim .leaflet-marker-icon,
+.leaflet-cluster-anim .leaflet-marker-shadow {
+  transition: transform 0.26s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.24s ease !important;
+}
+
+.leaflet-popup-content-wrapper {
+  border-radius: 1.15rem !important;
+  background: rgba(25, 19, 54, 0.96) !important;
+  backdrop-filter: blur(12px) !important;
+  -webkit-backdrop-filter: blur(12px) !important;
+  color: #F8F7FF !important;
+  border: 1px solid rgba(137, 87, 255, 0.38) !important;
+  box-shadow: 0 20px 35px -5px rgba(11, 8, 27, 0.7), 0 0 24px rgba(137, 87, 255, 0.2) !important;
+  padding: 2px !important;
+}
+
+.leaflet-popup-tip {
+  background: rgba(25, 19, 54, 0.96) !important;
+}
+
+.leaflet-popup-content {
+  margin: 10px 12px !important;
+}
+
+@keyframes spinSlow {
+  from {
+    transform: rotate3d(0, 0, 1, 0deg);
+  }
+  to {
+    transform: rotate3d(0, 0, 1, 360deg);
   }
 }
 
-/* Universal high-contrast rules for inputs inside white/light modals */
-.bg-white input,
-.bg-white textarea,
-.bg-white select {
-  color: #090d16 !important;
-  -webkit-text-fill-color: #090d16 !important;
-  color-scheme: light;
+.animate-spin-slow {
+  animation: spinSlow 14s linear infinite;
+  will-change: transform;
 }
 
-.bg-white input::placeholder,
-.bg-white textarea::placeholder {
-  color: #64748b !important;
-  -webkit-text-fill-color: #64748b !important;
-  opacity: 1 !important;
+@keyframes floatSubtle {
+  0%, 100% {
+    transform: translate3d(0, 0px, 0);
+  }
+  50% {
+    transform: translate3d(0, -4px, 0);
+  }
 }
+
+.animate-float-subtle {
+  animation: floatSubtle 3.5s ease-in-out infinite;
+  will-change: transform;
+}
+
+/* Respect Android & iOS Safe Area Insets */
+.safe-area-pb {
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom, 0px));
+}
+.safe-area-pt {
+  padding-top: max(0.25rem, env(safe-area-inset-top, 0px));
+}
+
+/* Tab Pane Layout & Mobile Touch Scrolling Architecture */
+.tab-pane-container {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+  transform: translateZ(0);
+}
+
+.tab-pane-mobile-safe {
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: 100%;
+  height: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: calc(4.75rem + env(safe-area-inset-bottom, 0px));
+}
+
+@media (min-width: 768px) {
+  .tab-pane-mobile-safe {
+    padding-bottom: 0;
+  }
+}
+
+/* Guarantee inactive tabs never intercept touch events or waste CPU/GPU on animations */
+.tab-pane-inactive,
+.tab-pane-inactive * {
+  pointer-events: none !important;
+  user-select: none !important;
+  animation-play-state: paused !important;
+  transition: none !important;
+}
+
+/* Silky-Smooth 60/120fps Spring Tab & Modal Animations */
+@keyframes tabEnter {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 6px, 0) scale3d(0.992, 0.992, 1);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale3d(1, 1, 1);
+  }
+}
+
+.animate-tab-enter {
+  animation: tabEnter 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  will-change: transform, opacity;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+@keyframes popIn {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, -6px, 0) scale3d(0.94, 0.94, 1);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale3d(1, 1, 1);
+  }
+}
+
+.animate-pop-in,
+.animate-popIn {
+  animation: popIn 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  will-change: transform, opacity;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+@keyframes fadeSmooth {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.animate-fade-smooth {
+  animation: fadeSmooth 0.18s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  will-change: opacity;
+}
+
 

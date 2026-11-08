@@ -1,18 +1,21 @@
-# 🌐 Beacon — Real-Time Location Sharing & Community Mesh
+# 🌐 Beacon Network — Real-Time Location Sharing & Social Mesh
 
-[![Direct APK Download](https://img.shields.io/badge/Download-app--debug.apk-emerald?logo=android&logoColor=white&style=for-the-badge)](https://github.com/Harikrishna8118/Track-Your-Friends-/releases/latest/download/app-debug.apk)
-[![Android APK Ready](https://img.shields.io/badge/Android-APK%20Ready-brightgreen?logo=android&logoColor=white)](#-android-apk-compilation--deployment-runbook)
+[![Direct APK Download](https://img.shields.io/badge/Download-Beacon--Network.apk-8957FF?logo=android&logoColor=white&style=for-the-badge)](https://github.com/Harikrishna8118/Track-Your-Friends-/releases/latest/download/Beacon-Network.apk)
+[![Debug APK Download](https://img.shields.io/badge/Download-app--debug.apk-00D6A0?logo=android&logoColor=white&style=for-the-badge)](https://github.com/Harikrishna8118/Track-Your-Friends-/releases/latest/download/app-debug.apk)
+[![Android APK Ready](https://img.shields.io/badge/Android-APK%20Ready-brightgreen?logo=android&logoColor=white)](./GITHUB_APK_RELEASE_GUIDE.md)
 [![Capacitor 8](https://img.shields.io/badge/Capacitor-8.0-blue?logo=capacitor&logoColor=white)](https://capacitorjs.com/)
 [![React 19](https://img.shields.io/badge/React-19.0-61DAFB?logo=react&logoColor=black)](https://react.dev/)
 [![Vite 8](https://img.shields.io/badge/Vite-8.0-646CFF?logo=vite&logoColor=white)](https://vitejs.dev/)
 [![Tailwind CSS v4](https://img.shields.io/badge/Tailwind-v4.0-38B2AC?logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-> **Beacon** is a real-time location sharing, community coordination, and communication mesh platform. It features sub-50ms coordinate streaming, a Discord-style 4-pane communication interface, hardware-accelerated mapping with geodesic interpolation, 6 physical glassmorphism themes, and native Android compilation support via Capacitor 8.
+> **Beacon Network** is a real-time location sharing, social coordination, and communication mesh platform. It features sub-50ms coordinate streaming, an Instagram/Snapchat/Telegram-inspired social UI, 2x Retina + Ultra-HDR mapping with geodesic marker interpolation, and native Android compilation support via Capacitor 8.
 
-### 📲 Permanent Direct APK Download Link:
-👉 **[Download Latest Android Debug APK (`app-debug.apk`)](https://github.com/Harikrishna8118/Track-Your-Friends-/releases/latest/download/app-debug.apk)**  
-*(Automatically compiled and published by GitHub Actions on every push to `main`)*
+### 📲 Permanent Direct APK Download Links:
+- 👉 **[Download Latest Signed Release APK (`Beacon-Network.apk`)](https://github.com/Harikrishna8118/Track-Your-Friends-/releases/latest/download/Beacon-Network.apk)**
+- 👉 **[Download Latest Debug APK (`app-debug.apk`)](https://github.com/Harikrishna8118/Track-Your-Friends-/releases/latest/download/app-debug.apk)**
+- 📖 **[Step-by-Step GitHub APK Release Guide (`GITHUB_APK_RELEASE_GUIDE.md`)](./GITHUB_APK_RELEASE_GUIDE.md)**
+*(Automatically compiled and published by GitHub Actions on every push to `main` or version tag `v*`)*
 
 ---
 

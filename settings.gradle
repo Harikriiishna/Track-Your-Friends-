@@ -1,0 +1,55 @@
+// Root settings.gradle supporting direct root-level `gradle :app:assembleDebug` execution
+def capAndroidDir = new File(settingsDir, 'node_modules/@capacitor/android/capacitor')
+def webAssetsIndex = new File(settingsDir, 'android/app/src/main/assets/public/index.html')
+
+if (!capAndroidDir.exists() || !webAssetsIndex.exists()) {
+    println "Bootstrapping Capacitor web assets and node_modules for root Gradle build..."
+    def bootstrapCmd = [
+        'bash', '-c',
+        '''
+        set -e
+        if [ ! -d "node_modules/@capacitor/android" ]; then
+          if [ -f "package-lock.json" ]; then
+            npm ci --legacy-peer-deps
+          else
+            npm install --legacy-peer-deps
+          fi
+        fi
+        if [ ! -f "dist/index.html" ]; then
+          npm run build
+        fi
+        mkdir -p android/capacitor-cordova-android-plugins/src/main/libs android/app/libs
+        npx cap sync android
+        find android node_modules/@capacitor -name "*.gradle" -type f -exec sed -i 's/VERSION_21/VERSION_17/g' {} +
+        find android node_modules/@capacitor -name "*.gradle" -type f -exec sed -i 's/com\\.android\\.tools\\.build:gradle:8\\.13\\.0/com.android.tools.build:gradle:9.1.1/g' {} +
+        find android node_modules/@capacitor -name "*.gradle" -type f -exec sed -i 's/tasks\\.withType(Javadoc)\\.all/tasks.withType(Javadoc).configureEach/g' {} +
+        if [ -f "android/app/capacitor.build.gradle" ]; then
+          sed -i 's|apply from: "../capacitor-cordova-android-plugins/cordova.variables.gradle"|apply from: file("../capacitor-cordova-android-plugins/cordova.variables.gradle")|g' android/app/capacitor.build.gradle
+        fi
+        '''
+    ]
+    def proc = new ProcessBuilder(bootstrapCmd)
+        .directory(settingsDir)
+        .redirectErrorStream(true)
+        .start()
+    proc.inputStream.eachLine { line -> println line }
+    int exitCode = proc.waitFor()
+    if (exitCode != 0) {
+        throw new GradleException("Capacitor bootstrap failed with exit code ${exitCode}")
+    }
+}
+
+include ':app'
+project(':app').projectDir = new File(settingsDir, 'android/app')
+
+include ':capacitor-cordova-android-plugins'
+project(':capacitor-cordova-android-plugins').projectDir = new File(settingsDir, 'android/capacitor-cordova-android-plugins')
+
+include ':capacitor-android'
+project(':capacitor-android').projectDir = new File(settingsDir, 'node_modules/@capacitor/android/capacitor')
+
+include ':capacitor-app'
+project(':capacitor-app').projectDir = new File(settingsDir, 'node_modules/@capacitor/app/android')
+
+include ':capacitor-status-bar'
+project(':capacitor-status-bar').projectDir = new File(settingsDir, 'node_modules/@capacitor/status-bar/android')

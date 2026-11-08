@@ -658,44 +658,94 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
 
   const myMembership = activeRoomDetails?.members?.find((m) => m.userId === user?.id);
   const canManageRoles = myMembership?.role === 'OWNER' || myMembership?.role === 'ADMIN';
+  const isDark = themeConfig.isDark;
+
+  const ROOM_PALETTES = [
+    {
+      gradient: 'from-[#8957FF] to-[#FF4FA3]',
+      border: 'border-[#8957FF]/45',
+      badgeBg: 'bg-[#8957FF]/15 text-[#8957FF] dark:text-[#E9DFFF]',
+      topStrip: 'bg-gradient-to-r from-[#8957FF] via-[#FF4FA3] to-[#FF8066]',
+    },
+    {
+      gradient: 'from-[#397BFF] to-[#00D9FF]',
+      border: 'border-[#397BFF]/45',
+      badgeBg: 'bg-[#397BFF]/15 text-[#397BFF] dark:text-[#00D9FF]',
+      topStrip: 'bg-gradient-to-r from-[#397BFF] to-[#00D9FF]',
+    },
+    {
+      gradient: 'from-[#00D6A0] to-[#00D9FF]',
+      border: 'border-[#00D6A0]/45',
+      badgeBg: 'bg-[#00D6A0]/15 text-[#00D6A0]',
+      topStrip: 'bg-gradient-to-r from-[#00D6A0] to-[#00D9FF]',
+    },
+    {
+      gradient: 'from-[#FF4FA3] to-[#FF8066]',
+      border: 'border-[#FF4FA3]/45',
+      badgeBg: 'bg-[#FF4FA3]/15 text-[#FF4FA3]',
+      topStrip: 'bg-gradient-to-r from-[#FF4FA3] to-[#FF8066]',
+    },
+    {
+      gradient: 'from-[#FFD166] to-[#FF8066]',
+      border: 'border-[#FFD166]/45',
+      badgeBg: 'bg-[#FFD166]/20 text-amber-600 dark:text-[#FFD166]',
+      topStrip: 'bg-gradient-to-r from-[#FFD166] to-[#FF8066]',
+    },
+  ];
 
   return (
-    <div className={`flex flex-col h-full border-r ${themeConfig.glassBorder} transition-colors duration-200`}>
-      {/* Top Header */}
-      <div className={`p-4 border-b ${themeConfig.glassBorder} ${themeConfig.glassHeader} space-y-3`}>
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className={`font-bold ${themeConfig.textPrimary} text-base flex items-center gap-2`}>
-              <Users className="w-5 h-5 text-sky-400" />
-              <span>Rooms & Mesh</span>
-            </h2>
-            <p className={`text-xs ${themeConfig.textSecondary}`}>Private encrypted groups & mesh coordinates</p>
+    <div className={`flex flex-col h-full border-r ${themeConfig.glassBorder} ${themeConfig.appBg} transition-colors duration-200`}>
+      {/* Top Social Header */}
+      <div className={`p-4 border-b ${themeConfig.glassBorder} ${themeConfig.glassHeader} space-y-3.5`}>
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-[#8957FF] via-[#FF4FA3] to-[#FF8066] flex items-center justify-center text-white shadow-md shadow-[#8957FF]/25">
+              <Users className="w-5 h-5" />
+            </div>
+            <div>
+              <h2 className={`font-extrabold ${themeConfig.textPrimary} text-base sm:text-lg tracking-tight flex items-center gap-2`}>
+                <span>Beacon Network Rooms</span>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-gradient-to-r from-[#8957FF]/20 to-[#FF4FA3]/20 text-[#FF4FA3] border border-[#FF4FA3]/30">
+                  {rooms.length} Active
+                </span>
+              </h2>
+              <p className={`text-xs ${themeConfig.textSecondary}`}>
+                Colourful private groups, live audio channels & real-time friend coordinates
+              </p>
+            </div>
           </div>
-          <div className="flex items-center gap-1.5">
+
+          <div className="flex items-center gap-2">
             <button
               onClick={() => setShowJoinModal(true)}
-              className={`px-3 py-1.5 text-xs font-semibold rounded-xl transition-colors flex items-center gap-1 border ${themeConfig.glassBorder} hover:bg-white/10 ${themeConfig.textPrimary} cursor-pointer`}
+              className="px-3.5 py-2 text-xs font-extrabold rounded-2xl transition-all flex items-center gap-1.5 bg-gradient-to-r from-[#397BFF] to-[#00D9FF] text-white shadow-md shadow-[#397BFF]/25 hover:opacity-95 active:scale-95 cursor-pointer"
             >
               <KeyRound className="w-3.5 h-3.5" />
-              Join
+              <span>Join Room</span>
             </button>
             <button
               onClick={() => setShowCreateModal(true)}
-              className={`px-3 py-1.5 text-xs font-semibold rounded-xl transition-colors flex items-center gap-1 shadow-md cursor-pointer ${themeConfig.accentBg}`}
+              className="px-3.5 py-2 text-xs font-extrabold rounded-2xl transition-all flex items-center gap-1.5 bg-gradient-to-r from-[#8957FF] via-[#FF4FA3] to-[#FF8066] text-white shadow-md shadow-[#FF4FA3]/25 hover:opacity-95 active:scale-95 cursor-pointer"
             >
-              <Plus className="w-3.5 h-3.5" />
-              New
+              <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
+              <span>Create Room</span>
             </button>
           </div>
         </div>
 
         {/* Search Bar at Top of Rooms Tab */}
         <div className="relative">
-          <div className={`flex items-center gap-2.5 px-3 py-2 rounded-2xl border ${themeConfig.glassBorder} bg-black/20 focus-within:ring-2 focus-within:ring-sky-500/50 transition-all shadow-inner`}>
-            <Search className="w-4 h-4 text-sky-400 shrink-0" />
+          <div
+            className={`flex items-center gap-2.5 px-3.5 py-2.5 rounded-2xl border transition-all shadow-inner ${
+              isDark
+                ? 'bg-[#171130]/90 border-[#8957FF]/30 focus-within:border-[#FF4FA3]'
+                : 'bg-white border-purple-200 focus-within:border-[#8957FF]'
+            }`}
+          >
+            <Search className="w-4 h-4 text-[#8957FF] shrink-0" />
             <input
               type="text"
-              placeholder="Search rooms or members by name, handle, role..."
+              placeholder="Search rooms or members by name, @handle, or role..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className={`w-full bg-transparent text-xs ${themeConfig.textPrimary} focus:outline-none placeholder-slate-400 font-medium`}
@@ -703,7 +753,7 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
             {searchQuery && (
               <button
                 onClick={() => setSearchQuery('')}
-                className="p-1 text-slate-400 hover:text-white rounded-lg transition-colors cursor-pointer"
+                className="p-1 text-slate-400 hover:text-[#FF4FA3] rounded-lg transition-colors cursor-pointer"
                 title="Clear search"
               >
                 <X className="w-3.5 h-3.5" />
@@ -716,30 +766,36 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
             <div className="flex items-center gap-1.5 mt-2 overflow-x-auto pb-0.5 text-[11px]">
               <button
                 onClick={() => setSearchCategory('all')}
-                className={`px-2.5 py-1 rounded-xl font-semibold transition-all cursor-pointer ${
+                className={`px-3 py-1 rounded-xl font-bold transition-all cursor-pointer ${
                   searchCategory === 'all'
-                    ? 'bg-sky-500 text-white shadow-sm'
-                    : 'bg-white/5 text-slate-300 hover:bg-white/10'
+                    ? 'bg-gradient-to-r from-[#8957FF] to-[#FF4FA3] text-white shadow-sm'
+                    : isDark
+                    ? 'bg-white/5 text-slate-300 hover:bg-white/10'
+                    : 'bg-purple-50 text-slate-700 hover:bg-purple-100'
                 }`}
               >
                 All ({filteredRooms.length + filteredMembers.length})
               </button>
               <button
                 onClick={() => setSearchCategory('rooms')}
-                className={`px-2.5 py-1 rounded-xl font-semibold transition-all cursor-pointer ${
+                className={`px-3 py-1 rounded-xl font-bold transition-all cursor-pointer ${
                   searchCategory === 'rooms'
-                    ? 'bg-sky-500 text-white shadow-sm'
-                    : 'bg-white/5 text-slate-300 hover:bg-white/10'
+                    ? 'bg-gradient-to-r from-[#397BFF] to-[#00D9FF] text-white shadow-sm'
+                    : isDark
+                    ? 'bg-white/5 text-slate-300 hover:bg-white/10'
+                    : 'bg-purple-50 text-slate-700 hover:bg-purple-100'
                 }`}
               >
                 Rooms ({filteredRooms.length})
               </button>
               <button
                 onClick={() => setSearchCategory('members')}
-                className={`px-2.5 py-1 rounded-xl font-semibold transition-all cursor-pointer ${
+                className={`px-3 py-1 rounded-xl font-bold transition-all cursor-pointer ${
                   searchCategory === 'members'
-                    ? 'bg-sky-500 text-white shadow-sm'
-                    : 'bg-white/5 text-slate-300 hover:bg-white/10'
+                    ? 'bg-gradient-to-r from-[#00D6A0] to-[#00D9FF] text-slate-950 shadow-sm'
+                    : isDark
+                    ? 'bg-white/5 text-slate-300 hover:bg-white/10'
+                    : 'bg-purple-50 text-slate-700 hover:bg-purple-100'
                 }`}
               >
                 Members ({filteredMembers.length})
@@ -752,13 +808,13 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
       {/* Real-time Search Results View */}
       {searchQuery.trim() ? (
         <div className="flex-1 overflow-y-auto p-4 pb-28 space-y-4">
-          <div className="flex items-center justify-between text-xs text-slate-400">
+          <div className={`flex items-center justify-between text-xs ${themeConfig.textSecondary}`}>
             <span>
-              Search results for <strong className="text-white font-semibold">"{searchQuery}"</strong>
+              Search results for <strong className={`${themeConfig.textPrimary} font-bold`}>"{searchQuery}"</strong>
             </span>
             <button
               onClick={() => setSearchQuery('')}
-              className="text-sky-400 hover:underline cursor-pointer"
+              className="text-[#FF4FA3] font-bold hover:underline cursor-pointer"
             >
               Clear filter
             </button>
@@ -768,53 +824,58 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
           {(searchCategory === 'all' || searchCategory === 'rooms') && (
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider font-mono">
+                <span className={`text-[10px] font-extrabold ${themeConfig.textMuted} uppercase tracking-wider font-mono`}>
                   Matching Rooms ({filteredRooms.length})
                 </span>
               </div>
               {filteredRooms.length === 0 ? (
-                <div className="p-3 rounded-2xl bg-white/5 text-center text-xs text-slate-400">
+                <div className={`p-3 rounded-2xl ${themeConfig.cardBg} border text-center text-xs ${themeConfig.textSecondary}`}>
                   No rooms matched "{searchQuery}"
                 </div>
               ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                  {filteredRooms.map((room) => {
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                  {filteredRooms.map((room, idx) => {
                     const isSelected = room.id === selectedRoomId;
                     const isUniversal = room.isUniversal || room.id === 'room-universal';
+                    const palette = ROOM_PALETTES[idx % ROOM_PALETTES.length];
                     return (
                       <div
                         key={room.id}
-                        className={`p-3 rounded-2xl border transition-all flex items-center justify-between ${
-                          isSelected
-                            ? 'bg-sky-500/15 border-sky-400/60 ring-1 ring-sky-400/40'
-                            : 'bg-white/5 border-white/10 hover:bg-white/10'
+                        className={`p-3.5 rounded-2xl border transition-all flex items-center justify-between ${themeConfig.cardBg} ${
+                          isSelected ? 'ring-2 ring-[#FF4FA3] border-[#FF4FA3]/60' : ''
                         }`}
                       >
-                        <div className="min-w-0 flex-1 pr-3">
-                          <div className="flex items-center gap-1.5">
-                            {isUniversal && <Globe className="w-3.5 h-3.5 text-indigo-400 shrink-0" />}
-                            <h4 className="font-bold text-xs text-white truncate">{room.name}</h4>
-                            {room.hasPassword && <Lock className="w-3 h-3 text-amber-400 shrink-0" />}
+                        <div className="flex items-center gap-3 min-w-0 flex-1 pr-3">
+                          <div className={`w-10 h-10 rounded-2xl bg-gradient-to-tr ${palette.gradient} flex items-center justify-center text-white font-extrabold text-sm shrink-0 shadow-md`}>
+                            {isUniversal ? <Globe className="w-5 h-5" /> : room.name.slice(0, 2).toUpperCase()}
                           </div>
-                          <p className="text-[11px] text-slate-400 truncate mt-0.5">
-                            {room.description || 'Secure communication and location sharing channel.'}
-                          </p>
-                          <span className="text-[10px] text-sky-300 font-mono">
-                            {room.memberCount} members · ID: {room.id}
-                          </span>
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5">
+                              <h4 className={`font-extrabold text-xs ${themeConfig.textPrimary} truncate`}>{room.name}</h4>
+                              {room.hasPassword && <Lock className="w-3 h-3 text-[#FFD166] shrink-0" />}
+                            </div>
+                            <p className={`text-[11px] ${themeConfig.textSecondary} truncate mt-0.5`}>
+                              {room.description || 'Social communication and live location sharing room.'}
+                            </p>
+                            <span className="text-[10px] text-[#00D9FF] font-mono font-bold">
+                              {room.memberCount} members · ID: {room.id}
+                            </span>
+                          </div>
                         </div>
                         <button
                           onClick={() => {
                             onSelectRoom(room.id);
                             toast.success(`Switched to room: ${room.name}`);
                           }}
-                          className={`px-3 py-1.5 rounded-xl text-xs font-semibold shrink-0 cursor-pointer transition-all ${
+                          className={`px-3.5 py-1.5 rounded-xl text-xs font-extrabold shrink-0 cursor-pointer transition-all ${
                             isSelected
-                              ? 'bg-sky-500 text-white shadow-sm'
-                              : 'bg-white/10 hover:bg-white/20 text-white'
+                              ? 'bg-gradient-to-r from-[#8957FF] to-[#FF4FA3] text-white shadow-sm'
+                              : isDark
+                              ? 'bg-white/10 hover:bg-white/20 text-white'
+                              : 'bg-purple-100 hover:bg-purple-200 text-purple-900'
                           }`}
                         >
-                          {isSelected ? 'Active' : 'Select'}
+                          {isSelected ? 'Active' : 'Open'}
                         </button>
                       </div>
                     );
@@ -828,12 +889,12 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
           {(searchCategory === 'all' || searchCategory === 'members') && (
             <div className="space-y-2 pt-2">
               <div className="flex items-center justify-between">
-                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider font-mono">
+                <span className={`text-[10px] font-extrabold ${themeConfig.textMuted} uppercase tracking-wider font-mono`}>
                   Matching Members ({filteredMembers.length})
                 </span>
               </div>
               {filteredMembers.length === 0 ? (
-                <div className="p-3 rounded-2xl bg-white/5 text-center text-xs text-slate-400">
+                <div className={`p-3 rounded-2xl ${themeConfig.cardBg} border text-center text-xs ${themeConfig.textSecondary}`}>
                   No members matched "{searchQuery}"
                 </div>
               ) : (
@@ -841,31 +902,33 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
                   {filteredMembers.map((member) => (
                     <div
                       key={member.userId}
-                      className="p-3 rounded-2xl border border-white/10 bg-white/5 hover:bg-white/10 transition-all flex items-center justify-between gap-3"
+                      className={`p-3 rounded-2xl border ${themeConfig.cardBg} transition-all flex items-center justify-between gap-3`}
                     >
                       <div className="flex items-center gap-3 min-w-0">
-                        <div className="relative w-9 h-9 shrink-0">
-                          <img
-                            src={member.avatarUrl || `https://api.dicebear.com/7.x/bottts/svg?seed=${member.userId}`}
-                            alt={member.fullName}
-                            className="w-full h-full rounded-full object-cover border border-white/20 bg-slate-800"
-                          />
+                        <div className="relative w-10 h-10 shrink-0">
+                          <div className={member.isOnline ? 'social-story-ring-live w-full h-full' : 'social-story-ring w-full h-full'}>
+                            <img
+                              src={member.avatarUrl || `https://api.dicebear.com/7.x/bottts/svg?seed=${member.userId}`}
+                              alt={member.fullName}
+                              className="w-full h-full rounded-full object-cover bg-slate-800"
+                            />
+                          </div>
                           <span
-                            className={`absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full border border-slate-900 ${
-                              member.isOnline ? 'bg-emerald-400' : 'bg-slate-500'
+                            className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-[#0B0719] ${
+                              member.isOnline ? 'bg-[#00D6A0]' : 'bg-slate-400'
                             }`}
                           />
                         </div>
                         <div className="min-w-0">
                           <div className="flex items-center gap-1.5">
-                            <span className="font-bold text-xs text-white truncate">{member.fullName}</span>
+                            <span className={`font-extrabold text-xs ${themeConfig.textPrimary} truncate`}>{member.fullName}</span>
                             {member.role && (
-                              <span className="px-1.5 py-0.2 rounded bg-white/10 text-[9px] font-mono text-sky-300 uppercase">
+                              <span className="px-1.5 py-0.5 rounded-full bg-[#8957FF]/15 text-[9px] font-mono font-bold text-[#8957FF] dark:text-[#E9DFFF] uppercase">
                                 {member.role}
                               </span>
                             )}
                           </div>
-                          <span className="text-[11px] text-slate-400 block truncate">
+                          <span className={`text-[11px] ${themeConfig.textSecondary} block truncate`}>
                             @{member.username} {member.roomName ? `· in ${member.roomName}` : ''}
                           </span>
                         </div>
@@ -876,20 +939,17 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
                           <button
                             type="button"
                             onClick={() => handleToggleMemberGeofenceAlert(member.userId, member.fullName)}
-                            className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1 transition-all cursor-pointer border ${
+                            className={`px-2.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1 transition-all cursor-pointer border ${
                               getMemberAlertConfig(member.userId).enabled
-                                ? 'bg-amber-500/25 border-amber-400/50 text-amber-200 hover:bg-amber-500/35'
-                                : 'bg-white/5 border-white/15 text-slate-300 hover:bg-white/15'
+                                ? 'bg-[#FFD166]/20 border-[#FFD166]/50 text-amber-600 dark:text-[#FFD166]'
+                                : isDark
+                                ? 'bg-white/5 border-white/15 text-slate-300 hover:bg-white/15'
+                                : 'bg-slate-100 border-slate-200 text-slate-700 hover:bg-slate-200'
                             }`}
-                            title={
-                              getMemberAlertConfig(member.userId).enabled
-                                ? `Disable saved location geofence enter/leave alerts for ${member.fullName}`
-                                : `Alert me when ${member.fullName} enters or leaves a saved location geofence`
-                            }
                           >
                             {getMemberAlertConfig(member.userId).enabled ? (
                               <>
-                                <BellRing className="w-3.5 h-3.5 text-amber-300" />
+                                <BellRing className="w-3.5 h-3.5 text-[#FFD166]" />
                                 <span>Geofence On</span>
                               </>
                             ) : (
@@ -903,30 +963,21 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
                         {onSelectUserForChat && member.userId !== user?.id && (
                           <button
                             onClick={() => onSelectUserForChat(member.userId)}
-                            className="px-2.5 py-1.5 rounded-xl bg-sky-600/30 hover:bg-sky-600/50 text-sky-300 text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer"
+                            className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-[#8957FF] to-[#FF4FA3] text-white text-xs font-extrabold flex items-center gap-1 transition-all cursor-pointer shadow-sm"
                             title="Direct Message"
                           >
                             <MessageSquare className="w-3.5 h-3.5" />
-                            <span>Message</span>
+                            <span>Chat</span>
                           </button>
                         )}
                         {member.latitude !== undefined && member.longitude !== undefined && onFocusMapLocation && (
                           <button
                             onClick={() => onFocusMapLocation(member.latitude!, member.longitude!)}
-                            className="px-2.5 py-1.5 rounded-xl bg-emerald-600/30 hover:bg-emerald-600/50 text-emerald-300 text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer"
+                            className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-[#00D6A0] to-[#00D9FF] text-slate-950 text-xs font-extrabold flex items-center gap-1 transition-all cursor-pointer shadow-sm"
                             title="Locate on Map"
                           >
                             <MapPin className="w-3.5 h-3.5" />
                             <span>Map</span>
-                          </button>
-                        )}
-                        {member.roomId && (
-                          <button
-                            onClick={() => onSelectRoom(member.roomId!)}
-                            className="px-2.5 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-semibold transition-colors cursor-pointer"
-                            title="Go to Room"
-                          >
-                            Room
                           </button>
                         )}
                       </div>
@@ -939,10 +990,10 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
 
           {filteredRooms.length === 0 && filteredMembers.length === 0 && (
             <div className="py-10 text-center space-y-2">
-              <Users className="w-10 h-10 text-slate-600 mx-auto" />
-              <p className="text-sm font-semibold text-slate-300">No rooms or members found</p>
-              <p className="text-xs text-slate-500 max-w-xs mx-auto">
-                Try searching by first name, username, or room topic name.
+              <Users className="w-10 h-10 text-[#8957FF]/60 mx-auto" />
+              <p className={`text-sm font-extrabold ${themeConfig.textPrimary}`}>No rooms or members found</p>
+              <p className={`text-xs ${themeConfig.textSecondary} max-w-xs mx-auto`}>
+                Try searching by first name, @username, or room topic name.
               </p>
             </div>
           )}
@@ -951,958 +1002,982 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
         <>
           {/* Universal Hub Pinned Notification Banner */}
           {rooms.some((r) => r.isUniversal || r.id === 'room-universal') && (
-        <div className="mx-3 mt-3 p-3 rounded-2xl bg-gradient-to-r from-indigo-900 via-slate-900 to-blue-900 text-white flex items-center justify-between shadow-lg border border-indigo-500/30">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-indigo-500/30 border border-indigo-400/40 flex items-center justify-center text-indigo-200 shadow-inner">
-              <Globe className="w-5 h-5 text-indigo-300 animate-spin-slow" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-bold tracking-tight text-white">Universal Hub</span>
-                <span className="px-1.5 py-0.5 rounded-full bg-indigo-500/40 text-indigo-200 text-[10px] font-semibold border border-indigo-400/30">
-                  Open to All
-                </span>
-              </div>
-              <p className="text-[11px] text-indigo-200/80">
-                Universal room pinned to top — open communication & live mesh coordinates
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              onClick={() => {
-                onSelectRoom('room-universal');
-                if (onOpenChat) {
-                  onOpenChat('room-universal');
-                  toast.success('Opening Universal Hub Messages & Chat...');
-                }
-              }}
-              className="px-3.5 py-2 rounded-xl text-xs font-bold bg-white hover:bg-slate-100 text-indigo-900 shadow-md transition-all cursor-pointer flex items-center gap-1.5 active:scale-95 shrink-0"
-              title="Message in Universal Hub"
-            >
-              <MessageSquare className="w-4 h-4 text-indigo-700" />
-              <span>Message</span>
-            </button>
-            <button
-              onClick={() => {
-                onSelectRoom('room-universal');
-                joinVoiceChannel('room-universal');
-                toast.info('Connecting to Universal WebRTC voice channel...');
-              }}
-              className="px-2.5 py-2 rounded-xl text-xs font-semibold bg-indigo-500/40 hover:bg-indigo-500/60 text-white border border-indigo-400/30 transition-all cursor-pointer flex items-center gap-1 shrink-0"
-              title="Join Universal Live Audio"
-            >
-              <PhoneCall className="w-3.5 h-3.5" />
-              <span>Voice</span>
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Room Tabs List */}
-      <div className={`p-3 overflow-x-auto flex gap-2 border-b ${themeConfig.glassBorder} ${themeConfig.glassPanel} shrink-0`}>
-        {rooms.map((room) => {
-          const isSelected = room.id === selectedRoomId;
-          const isUniversal = room.isUniversal || room.id === 'room-universal';
-          return (
-            <button
-              key={room.id}
-              onClick={() => onSelectRoom(room.id)}
-              className={`px-3 py-2 rounded-xl text-xs font-semibold transition-all whitespace-nowrap flex items-center gap-2 ${
-                isSelected
-                  ? isUniversal
-                    ? 'bg-gradient-to-r from-indigo-700 to-blue-700 text-white shadow-md'
-                    : 'bg-slate-900 text-white shadow'
-                  : isUniversal
-                  ? 'bg-indigo-50 text-indigo-900 hover:bg-indigo-100 border border-indigo-200'
-                  : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
-              }`}
-            >
-              {isUniversal ? (
-                <Globe className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
-              ) : null}
-              <span>{room.name}</span>
-              {isUniversal ? (
-                <span className="text-[9px] uppercase px-1.5 py-0.2 rounded-full bg-indigo-400/20 text-indigo-600 font-bold">
-                  Top
-                </span>
-              ) : null}
-              {room.hasPassword && <Lock className="w-3 h-3 opacity-70" />}
-              <span className="text-[10px] opacity-75 font-mono">({room.memberCount})</span>
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Active Room Detailed Content */}
-      {activeRoomDetails ? (
-        <div className="flex-1 overflow-y-auto p-4 pb-28 space-y-6">
-          {/* Room Banner Card */}
-          <div
-            className={`rounded-2xl border p-4 shadow-sm ${
-              activeRoomDetails.isUniversal || activeRoomDetails.id === 'room-universal'
-                ? 'bg-gradient-to-br from-indigo-50/50 via-white to-blue-50/50 border-indigo-200'
-                : 'bg-white border-slate-200'
-            }`}
-          >
-            <div className="flex items-start justify-between">
-              <div>
-                <div className="flex items-center gap-2">
-                  {activeRoomDetails.isUniversal || activeRoomDetails.id === 'room-universal' ? (
-                    <div className="w-6 h-6 rounded-lg bg-indigo-600 text-white flex items-center justify-center">
-                      <Globe className="w-3.5 h-3.5" />
-                    </div>
-                  ) : null}
-                  <h3 className="font-bold text-slate-900 text-lg">{activeRoomDetails.name}</h3>
-                  {(activeRoomDetails.isUniversal || activeRoomDetails.id === 'room-universal') && (
-                    <span className="px-2 py-0.5 rounded-md bg-indigo-100 text-indigo-800 text-[10px] font-bold">
-                      🌐 Universal Room (Open to All)
-                    </span>
-                  )}
-                  {activeRoomDetails.hasPassword && (
-                    <span className="px-2 py-0.5 rounded-md bg-amber-50 text-amber-700 text-[10px] font-semibold flex items-center gap-1">
-                      <Lock className="w-3 h-3" /> Password Protected
-                    </span>
-                  )}
+            <div className="mx-3 mt-3 p-3.5 rounded-3xl bg-gradient-to-r from-[#8957FF] via-[#6C47FF] to-[#397BFF] text-white flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-lg shadow-[#8957FF]/25 border border-white/20">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-white/20 backdrop-blur-md border border-white/30 flex items-center justify-center text-white shadow-inner shrink-0">
+                  <Globe className="w-5 h-5 text-[#00D9FF] animate-spin-slow" />
                 </div>
-                <p className="text-xs text-slate-600 mt-1">
-                  {activeRoomDetails.description || 'Secure communication and location sharing channel.'}
-                </p>
-                <div className="mt-2 flex items-center gap-3 text-xs text-slate-400">
-                  <span>Room ID: <code className="bg-slate-100 px-1 py-0.5 rounded text-slate-700 font-mono select-all">{activeRoomDetails.id}</code></span>
-                  <span>·</span>
-                  <span>Your Role: <strong className="text-slate-800">{myMembership?.role || 'MEMBER'}</strong></span>
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs sm:text-sm font-extrabold tracking-tight text-white">Beacon Network Universal Hub</span>
+                    <span className="px-2 py-0.5 rounded-full bg-[#00D6A0] text-slate-950 text-[10px] font-extrabold shadow-xs">
+                      Open to All
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-white/85">
+                    Community room pinned to top — live chat, voice lounge & shared GPS map
+                  </p>
                 </div>
               </div>
-
               <div className="flex items-center gap-2 shrink-0">
-                {/* Small Room Map Button */}
                 <button
                   onClick={() => {
-                    setRoomMapFocusCoords(null);
-                    if (!showRoomMap) {
-                      setShowRoomMap(true);
-                      setTimeout(() => {
-                        roomMapPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-                      }, 80);
-                    } else {
-                      setIsRoomMapFullscreen(true);
+                    onSelectRoom('room-universal');
+                    if (onOpenChat) {
+                      onOpenChat('room-universal');
+                      toast.success('Opening Universal Hub Messages & Chat...');
                     }
                   }}
-                  className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer active:scale-95"
-                  title={`Open Live Map showing users in ${activeRoomDetails.name}`}
+                  className="px-3.5 py-2 rounded-2xl text-xs font-extrabold bg-white hover:bg-slate-100 text-[#6C47FF] shadow-md transition-all cursor-pointer flex items-center gap-1.5 active:scale-95 shrink-0"
+                  title="Message in Universal Hub"
                 >
-                  <MapIcon className="w-3.5 h-3.5" />
-                  <span>Map ({activeRoomDetails.members?.length || 1})</span>
+                  <MessageSquare className="w-4 h-4 text-[#8957FF]" />
+                  <span>Open Chat</span>
                 </button>
-
-                {!(activeRoomDetails.isUniversal || activeRoomDetails.id === 'room-universal') ? (
-                  <>
-                    <button
-                      onClick={() => {
-                        onOpenChat?.(activeRoomDetails.id);
-                        toast.success(`Opening chat in ${activeRoomDetails.name}...`);
-                      }}
-                      className="px-3 py-1.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer active:scale-95"
-                      title={`Open Messages in ${activeRoomDetails.name}`}
-                    >
-                      <MessageSquare className="w-3.5 h-3.5" />
-                      <span>Chat</span>
-                    </button>
-                    <button
-                      onClick={() => handleLeaveRoom(activeRoomDetails.id)}
-                      className="px-3 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 font-bold text-xs flex items-center gap-1.5 transition-all cursor-pointer active:scale-95"
-                      title="Leave Room"
-                    >
-                      <LogOut className="w-3.5 h-3.5" />
-                      <span>Leave</span>
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <div className="hidden sm:block px-2.5 py-1 rounded-lg bg-indigo-100/80 text-indigo-700 text-[10px] font-bold">
-                      Permanent Hub
-                    </div>
-                    <button
-                      onClick={() => {
-                        onOpenChat?.('room-universal');
-                        toast.success('Opening Universal Hub Messages & Chat...');
-                      }}
-                      className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-indigo-600 to-sky-600 hover:from-indigo-500 hover:to-sky-500 text-white font-bold text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer active:scale-95"
-                      title="Open Universal Hub Messages"
-                    >
-                      <MessageSquare className="w-3.5 h-3.5" />
-                      <span>Message</span>
-                    </button>
-                  </>
-                )}
+                <button
+                  onClick={() => {
+                    onSelectRoom('room-universal');
+                    joinVoiceChannel('room-universal');
+                    toast.info('Connecting to Universal WebRTC voice channel...');
+                  }}
+                  className="px-3 py-2 rounded-2xl text-xs font-extrabold bg-white/15 hover:bg-white/25 text-white border border-white/30 transition-all cursor-pointer flex items-center gap-1.5 shrink-0"
+                  title="Join Universal Live Audio"
+                >
+                  <PhoneCall className="w-3.5 h-3.5 text-[#00D6A0]" />
+                  <span>Voice</span>
+                </button>
               </div>
             </div>
+          )}
 
-            {/* Quick Action Suite for Universal Hub */}
-            {(activeRoomDetails.isUniversal || activeRoomDetails.id === 'room-universal') && (
-              <div className="mt-4 p-3.5 rounded-2xl bg-gradient-to-r from-indigo-950 via-slate-900 to-blue-950 border border-indigo-500/30 text-white space-y-3 shadow-md">
-                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-                  <div className="flex items-center gap-2.5">
-                    <div className="w-8 h-8 rounded-xl bg-indigo-500/30 flex items-center justify-center text-indigo-300">
-                      <Globe className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <span className="text-xs font-bold text-white block">Universal Lounge Communication Hub</span>
-                      <span className="text-[11px] text-indigo-200/80 block">#general · #live-locations · #announcements · #lounge</span>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2 w-full sm:w-auto">
-                    <button
-                      onClick={() => {
-                        onOpenChat?.('room-universal');
-                        toast.success('Switching to Universal Hub Messages & Chat...');
-                      }}
-                      className="flex-1 sm:flex-initial px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 shadow-sm transition-all cursor-pointer active:scale-95"
-                      title="Open full conversation in Universal Hub"
-                    >
-                      <MessageSquare className="w-3.5 h-3.5" />
-                      <span>Message (Open Chat)</span>
-                    </button>
-                    {myLocation && onFocusMapLocation && (
-                      <button
-                        onClick={() => onFocusMapLocation(myLocation.latitude, myLocation.longitude)}
-                        className="px-3 py-2 bg-white/10 hover:bg-white/20 text-white text-xs font-semibold rounded-xl flex items-center gap-1.5 border border-white/20 transition-all cursor-pointer"
-                        title="View my location on map"
-                      >
-                        <MapPin className="w-3.5 h-3.5 text-emerald-400" />
-                        <span>Live Pin</span>
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {/* Inline Quick Message Composer */}
-                <form
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    if (!quickHubMessage.trim()) return;
-                    sendMessage({
-                      roomId: 'room-universal',
-                      channelId: 'general',
-                      text: quickHubMessage.trim(),
-                    });
-                    setQuickHubMessage('');
-                    toast.success('Message sent to Universal Hub!');
-                  }}
-                  className="flex items-center gap-2 pt-2 border-t border-white/10"
+          {/* Colourful Room Cards Horizontal Carousel */}
+          <div className={`px-3 py-3 overflow-x-auto flex gap-2.5 border-b ${themeConfig.glassBorder} shrink-0 no-scrollbar`}>
+            {rooms.map((room, idx) => {
+              const isSelected = room.id === selectedRoomId;
+              const isUniversal = room.isUniversal || room.id === 'room-universal';
+              const palette = ROOM_PALETTES[idx % ROOM_PALETTES.length];
+              return (
+                <button
+                  key={room.id}
+                  onClick={() => onSelectRoom(room.id)}
+                  className={`group relative px-3.5 py-2.5 rounded-2xl text-xs font-extrabold transition-all whitespace-nowrap flex items-center gap-2.5 cursor-pointer border ${
+                    isSelected
+                      ? `bg-gradient-to-r ${palette.gradient} text-white border-white/30 shadow-md scale-[1.02]`
+                      : `${themeConfig.cardBg} ${themeConfig.textPrimary} hover:scale-[1.01]`
+                  }`}
                 >
-                  <div className="relative flex-1">
-                    <input
-                      type="text"
-                      placeholder="Send a quick message to Universal Hub..."
-                      value={quickHubMessage}
-                      onChange={(e) => setQuickHubMessage(e.target.value)}
-                      className="w-full px-3.5 py-2 rounded-xl bg-white/10 border border-white/15 text-xs text-white placeholder-indigo-200/60 focus:outline-none focus:ring-2 focus:ring-indigo-400"
-                    />
-                  </div>
-                  <button
-                    type="submit"
-                    disabled={!quickHubMessage.trim()}
-                    className="px-3 py-2 rounded-xl bg-sky-500 hover:bg-sky-400 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-bold transition-all cursor-pointer flex items-center gap-1 shrink-0"
-                  >
-                    <span>Send</span>
-                  </button>
-                </form>
-              </div>
-            )}
-
-            {/* Live WebRTC Voice Channel Island */}
-            <div className="mt-4 pt-4 border-t border-slate-100">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
                   <div
-                    className={`w-3 h-3 rounded-full ${
-                      activeVoiceRoomId === activeRoomDetails.id
-                        ? 'bg-emerald-500 animate-pulse'
-                        : 'bg-slate-300'
+                    className={`w-7 h-7 rounded-xl flex items-center justify-center text-[11px] font-black shrink-0 ${
+                      isSelected
+                        ? 'bg-white/20 text-white'
+                        : `bg-gradient-to-tr ${palette.gradient} text-white shadow-xs`
                     }`}
-                  />
-                  <span className="text-xs font-bold text-slate-900">
-                    Live WebRTC Audio Channel
-                  </span>
-                </div>
-
-                {activeVoiceRoomId === activeRoomDetails.id ? (
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={toggleMicMute}
-                      className={`p-2 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-colors ${
-                        isMicMuted
-                          ? 'bg-amber-100 text-amber-800'
-                          : 'bg-slate-100 hover:bg-slate-200 text-slate-800'
-                      }`}
-                    >
-                      {isMicMuted ? <MicOff className="w-4 h-4 text-amber-600" /> : <Mic className="w-4 h-4" />}
-                      {isMicMuted ? 'Muted' : 'Mute'}
-                    </button>
-                    <button
-                      onClick={leaveVoiceChannel}
-                      className="px-3 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 shadow"
-                    >
-                      <PhoneOff className="w-4 h-4" />
-                      Disconnect
-                    </button>
-                  </div>
-                ) : (
-                  <button
-                    onClick={() => joinVoiceChannel(activeRoomDetails.id)}
-                    className="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-colors"
                   >
-                    <PhoneCall className="w-4 h-4" />
-                    Join Voice
-                  </button>
-                )}
-              </div>
+                    {isUniversal ? <Globe className="w-3.5 h-3.5" /> : room.name.slice(0, 2).toUpperCase()}
+                  </div>
+                  <div className="text-left">
+                    <div className="flex items-center gap-1.5">
+                      <span>{room.name}</span>
+                      {room.hasPassword && <Lock className="w-3 h-3 opacity-80" />}
+                    </div>
+                    <span className={`block text-[10px] font-medium ${isSelected ? 'text-white/85' : themeConfig.textSecondary}`}>
+                      {room.memberCount} member{room.memberCount === 1 ? '' : 's'}
+                    </span>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
 
-              {/* Active Voice Participants Grid */}
-              {activeVoiceRoomId === activeRoomDetails.id && (
-                <div className="mt-3 p-3 bg-slate-900 rounded-xl text-white">
-                  <span className="text-[11px] text-slate-400 block mb-2">Connected Speakers:</span>
-                  <div className="flex flex-wrap gap-3">
-                    {/* Self */}
-                    <div className="flex items-center gap-2 bg-slate-800/80 px-2.5 py-1.5 rounded-lg border border-slate-700">
-                      <div className={`relative w-6 h-6 rounded-full overflow-hidden ${isSpeaking ? 'ring-2 ring-emerald-400' : ''}`}>
-                        <img src={user?.avatarUrl} alt="" className="w-full h-full object-cover" />
+          {/* Active Room Detailed Content */}
+          {activeRoomDetails ? (
+            <div className="flex-1 overflow-y-auto p-4 pb-28 space-y-5">
+              {/* Active Colourful Room Banner Card */}
+              <div className={`rounded-3xl border overflow-hidden shadow-lg ${themeConfig.cardBg}`}>
+                <div className="h-2 w-full bg-gradient-to-r from-[#8957FF] via-[#FF4FA3] to-[#00D9FF]" />
+                <div className="p-4 sm:p-5">
+                  <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
+                    <div className="flex items-start gap-3.5">
+                      <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-[#8957FF] via-[#FF4FA3] to-[#FF8066] text-white flex items-center justify-center font-black text-base shadow-lg shadow-[#8957FF]/25 shrink-0">
+                        {activeRoomDetails.isUniversal || activeRoomDetails.id === 'room-universal' ? (
+                          <Globe className="w-6 h-6" />
+                        ) : (
+                          activeRoomDetails.name.slice(0, 2).toUpperCase()
+                        )}
                       </div>
-                      <span className="text-xs font-medium">You</span>
-                      {isMicMuted ? (
-                        <MicOff className="w-3 h-3 text-amber-400" />
-                      ) : isSpeaking ? (
-                        <Volume2 className="w-3 h-3 text-emerald-400 animate-pulse" />
+                      <div>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <h3 className={`font-extrabold ${themeConfig.textPrimary} text-lg tracking-tight`}>
+                            {activeRoomDetails.name}
+                          </h3>
+                          {(activeRoomDetails.isUniversal || activeRoomDetails.id === 'room-universal') && (
+                            <span className="px-2.5 py-0.5 rounded-full bg-gradient-to-r from-[#8957FF]/20 to-[#397BFF]/20 text-[#8957FF] dark:text-[#00D9FF] border border-[#8957FF]/30 text-[10px] font-extrabold">
+                              🌐 Universal Hub
+                            </span>
+                          )}
+                          {activeRoomDetails.hasPassword && (
+                            <span className="px-2.5 py-0.5 rounded-full bg-[#FFD166]/20 text-amber-600 dark:text-[#FFD166] border border-[#FFD166]/40 text-[10px] font-extrabold flex items-center gap-1">
+                              <Lock className="w-3 h-3" /> Private Key
+                            </span>
+                          )}
+                        </div>
+                        <p className={`text-xs ${themeConfig.textSecondary} mt-1`}>
+                          {activeRoomDetails.description || 'Colourful social room with live location sharing and group chat.'}
+                        </p>
+
+                        {/* Member Avatar Stack & Room Metadata */}
+                        <div className="mt-3 flex items-center gap-3 flex-wrap">
+                          {activeRoomDetails.members && activeRoomDetails.members.length > 0 && (
+                            <div className="flex items-center -space-x-2">
+                              {activeRoomDetails.members.slice(0, 6).map((m) => {
+                                const mOnline = onlineUserIds.includes(m.userId);
+                                return (
+                                  <div key={m.userId} className="relative">
+                                    <img
+                                      src={m.user.avatarUrl}
+                                      alt={m.user.fullName}
+                                      title={`${m.user.fullName} (${mOnline ? 'Online' : 'Offline'})`}
+                                      className="w-7 h-7 rounded-full object-cover ring-2 ring-[#8957FF]/60 bg-slate-800"
+                                    />
+                                    {mOnline && (
+                                      <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-[#00D6A0] ring-1 ring-slate-950" />
+                                    )}
+                                  </div>
+                                );
+                              })}
+                              {activeRoomDetails.members.length > 6 && (
+                                <span className="w-7 h-7 rounded-full bg-gradient-to-r from-[#8957FF] to-[#FF4FA3] text-white text-[10px] font-extrabold flex items-center justify-center ring-2 ring-white/20">
+                                  +{activeRoomDetails.members.length - 6}
+                                </span>
+                              )}
+                            </div>
+                          )}
+                          <div className={`flex items-center gap-2 text-xs ${themeConfig.textSecondary}`}>
+                            <span>
+                              ID:{' '}
+                              <code className="px-1.5 py-0.5 rounded-lg bg-[#8957FF]/15 text-[#8957FF] dark:text-[#00D9FF] font-mono font-bold select-all">
+                                {activeRoomDetails.id}
+                              </code>
+                            </span>
+                            <span>·</span>
+                            <span>
+                              Role: <strong className="text-[#FF4FA3]">{myMembership?.role || 'MEMBER'}</strong>
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 flex-wrap shrink-0">
+                      <button
+                        onClick={() => {
+                          setRoomMapFocusCoords(null);
+                          if (!showRoomMap) {
+                            setShowRoomMap(true);
+                            setTimeout(() => {
+                              roomMapPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                            }, 80);
+                          } else {
+                            setIsRoomMapFullscreen(true);
+                          }
+                        }}
+                        className="px-3.5 py-2 rounded-2xl bg-gradient-to-r from-[#00D6A0] to-[#00D9FF] text-slate-950 font-extrabold text-xs flex items-center gap-1.5 shadow-md shadow-[#00D6A0]/20 transition-all cursor-pointer active:scale-95"
+                        title={`Open Live Map showing users in ${activeRoomDetails.name}`}
+                      >
+                        <MapIcon className="w-3.5 h-3.5" />
+                        <span>Live Map ({activeRoomDetails.members?.length || 1})</span>
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          onOpenChat?.(activeRoomDetails.id);
+                          toast.success(`Opening chat in ${activeRoomDetails.name}...`);
+                        }}
+                        className="px-3.5 py-2 rounded-2xl bg-gradient-to-r from-[#8957FF] via-[#FF4FA3] to-[#FF8066] text-white font-extrabold text-xs flex items-center gap-1.5 shadow-md shadow-[#FF4FA3]/25 transition-all cursor-pointer active:scale-95"
+                        title={`Open Messages in ${activeRoomDetails.name}`}
+                      >
+                        <MessageSquare className="w-3.5 h-3.5" />
+                        <span>Room Chat</span>
+                      </button>
+
+                      {!(activeRoomDetails.isUniversal || activeRoomDetails.id === 'room-universal') && (
+                        <button
+                          onClick={() => handleLeaveRoom(activeRoomDetails.id)}
+                          className="px-3 py-2 rounded-2xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-500 border border-rose-500/30 font-extrabold text-xs flex items-center gap-1.5 transition-all cursor-pointer active:scale-95"
+                          title="Leave Room"
+                        >
+                          <LogOut className="w-3.5 h-3.5" />
+                          <span>Leave</span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Quick Action Suite for Universal Hub */}
+                  {(activeRoomDetails.isUniversal || activeRoomDetails.id === 'room-universal') && (
+                    <div className="mt-4 p-4 rounded-2xl bg-gradient-to-r from-[#1D143D] via-[#25184E] to-[#1A2954] border border-[#8957FF]/40 text-white space-y-3 shadow-md">
+                      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                        <div className="flex items-center gap-2.5">
+                          <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-[#8957FF] to-[#00D9FF] flex items-center justify-center text-white shadow">
+                            <Globe className="w-4 h-4" />
+                          </div>
+                          <div>
+                            <span className="text-xs font-extrabold text-white block">
+                              Universal Lounge Conversation Bar
+                            </span>
+                            <span className="text-[11px] text-[#E9DFFF]/80 block">
+                              #general · #live-locations · #announcements · #lounge
+                            </span>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 w-full sm:w-auto">
+                          <button
+                            onClick={() => {
+                              onOpenChat?.('room-universal');
+                              toast.success('Switching to Universal Hub Messages & Chat...');
+                            }}
+                            className="flex-1 sm:flex-initial px-3.5 py-2 bg-gradient-to-r from-[#8957FF] to-[#FF4FA3] text-white text-xs font-extrabold rounded-xl flex items-center justify-center gap-1.5 shadow-sm transition-all cursor-pointer active:scale-95"
+                          >
+                            <MessageSquare className="w-3.5 h-3.5" />
+                            <span>Open Full Chat</span>
+                          </button>
+                          {myLocation && onFocusMapLocation && (
+                            <button
+                              onClick={() => onFocusMapLocation(myLocation.latitude, myLocation.longitude)}
+                              className="px-3 py-2 bg-white/10 hover:bg-white/20 text-white text-xs font-bold rounded-xl flex items-center gap-1.5 border border-white/20 transition-all cursor-pointer"
+                            >
+                              <MapPin className="w-3.5 h-3.5 text-[#00D6A0]" />
+                              <span>My Pin</span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Inline Quick Message Composer */}
+                      <form
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          if (!quickHubMessage.trim()) return;
+                          sendMessage({
+                            roomId: 'room-universal',
+                            channelId: 'general',
+                            text: quickHubMessage.trim(),
+                          });
+                          setQuickHubMessage('');
+                          toast.success('Message sent to Universal Hub!');
+                        }}
+                        className="flex items-center gap-2 pt-2 border-t border-white/10"
+                      >
+                        <div className="relative flex-1">
+                          <input
+                            type="text"
+                            placeholder="Send a quick message to Universal Hub..."
+                            value={quickHubMessage}
+                            onChange={(e) => setQuickHubMessage(e.target.value)}
+                            className="w-full px-3.5 py-2 rounded-xl bg-white/10 border border-white/20 text-xs text-white placeholder-white/60 focus:outline-none focus:ring-2 focus:ring-[#FF4FA3]"
+                          />
+                        </div>
+                        <button
+                          type="submit"
+                          disabled={!quickHubMessage.trim()}
+                          className="px-4 py-2 rounded-xl bg-gradient-to-r from-[#397BFF] to-[#00D9FF] disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-extrabold transition-all cursor-pointer flex items-center gap-1 shrink-0 shadow-sm"
+                        >
+                          <span>Send</span>
+                        </button>
+                      </form>
+                    </div>
+                  )}
+
+                  {/* Live WebRTC Voice Channel Island */}
+                  <div className={`mt-4 pt-4 border-t ${themeConfig.glassBorder}`}>
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <div className="flex items-center gap-2.5">
+                        <div
+                          className={`w-3 h-3 rounded-full ${
+                            activeVoiceRoomId === activeRoomDetails.id
+                              ? 'bg-[#00D6A0] animate-ping'
+                              : 'bg-[#8957FF]'
+                          }`}
+                        />
+                        <span className={`text-xs font-extrabold ${themeConfig.textPrimary}`}>
+                          Beacon Network Voice Lounge (WebRTC)
+                        </span>
+                      </div>
+
+                      {activeVoiceRoomId === activeRoomDetails.id ? (
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={toggleMicMute}
+                            className={`px-3 py-1.5 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                              isMicMuted
+                                ? 'bg-[#FFD166]/25 text-amber-600 dark:text-[#FFD166] border border-[#FFD166]/40'
+                                : isDark
+                                ? 'bg-white/10 hover:bg-white/20 text-white'
+                                : 'bg-purple-100 hover:bg-purple-200 text-purple-900'
+                            }`}
+                          >
+                            {isMicMuted ? <MicOff className="w-4 h-4 text-[#FF8066]" /> : <Mic className="w-4 h-4 text-[#00D6A0]" />}
+                            {isMicMuted ? 'Muted' : 'Mic On'}
+                          </button>
+                          <button
+                            onClick={leaveVoiceChannel}
+                            className="px-3.5 py-1.5 bg-gradient-to-r from-[#FF4FA3] to-[#FF8066] text-white rounded-xl text-xs font-extrabold flex items-center gap-1.5 shadow cursor-pointer"
+                          >
+                            <PhoneOff className="w-4 h-4" />
+                            Disconnect
+                          </button>
+                        </div>
                       ) : (
-                        <Mic className="w-3 h-3 text-slate-400" />
+                        <button
+                          onClick={() => joinVoiceChannel(activeRoomDetails.id)}
+                          className="px-3.5 py-2 bg-gradient-to-r from-[#00D6A0] to-[#00D9FF] text-slate-950 rounded-2xl text-xs font-extrabold flex items-center gap-1.5 shadow-sm transition-all cursor-pointer active:scale-95"
+                        >
+                          <PhoneCall className="w-4 h-4" />
+                          Join Voice Lounge
+                        </button>
                       )}
                     </div>
 
-                    {/* Remote voice peers */}
-                    {voiceParticipants.map((p) => (
-                      <div
-                        key={p.peerId}
-                        className="flex items-center gap-2 bg-slate-800/80 px-2.5 py-1.5 rounded-lg border border-slate-700"
-                      >
-                        <div className={`relative w-6 h-6 rounded-full overflow-hidden ${p.isSpeaking ? 'ring-2 ring-emerald-400' : ''}`}>
-                          <img src={p.user.avatarUrl} alt="" className="w-full h-full object-cover" />
-                        </div>
-                        <span className="text-xs font-medium">{p.user.fullName.split(' ')[0]}</span>
-                        {p.isSpeaking && <Volume2 className="w-3 h-3 text-emerald-400 animate-pulse" />}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Room Live Map View Panel (Mirroring Main LiveMap Functionality & UI Style) */}
-          <div ref={roomMapPanelRef} className="space-y-2.5">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-ping" />
-                <h4 className="font-bold text-slate-900 text-sm flex items-center gap-1.5">
-                  <MapIcon className="w-4 h-4 text-emerald-600" />
-                  <span>Room Live Map Panel — {activeRoomDetails.name}</span>
-                </h4>
-              </div>
-              <div className="flex items-center gap-1.5">
-                {showRoomMap && (
-                  <button
-                    onClick={() => setIsRoomMapFullscreen((prev) => !prev)}
-                    className="px-2.5 py-1 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all cursor-pointer active:scale-95"
-                    title={isRoomMapFullscreen ? 'Dock Map into Panel' : 'Expand Room Map to Full Screen'}
-                  >
-                    {isRoomMapFullscreen ? (
-                      <>
-                        <Minimize2 className="w-3.5 h-3.5 text-sky-400" />
-                        <span>Dock Panel</span>
-                      </>
-                    ) : (
-                      <>
-                        <Maximize2 className="w-3.5 h-3.5 text-sky-400" />
-                        <span>Full Screen</span>
-                      </>
-                    )}
-                  </button>
-                )}
-                <button
-                  onClick={() => {
-                    if (showRoomMap) {
-                      setIsRoomMapFullscreen(false);
-                      setShowRoomMap(false);
-                    } else {
-                      setShowRoomMap(true);
-                    }
-                  }}
-                  className={`px-2.5 py-1 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all cursor-pointer active:scale-95 ${
-                    showRoomMap
-                      ? 'bg-slate-200 hover:bg-slate-300 text-slate-800'
-                      : 'bg-emerald-600 hover:bg-emerald-500 text-white'
-                  }`}
-                  title={showRoomMap ? 'Hide Room Map Panel' : 'Show Room Map Panel'}
-                >
-                  {showRoomMap ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                  <span>{showRoomMap ? 'Hide Map' : 'Show Map'}</span>
-                </button>
-              </div>
-            </div>
-
-            {showRoomMap && (
-              <div
-                className={
-                  isRoomMapFullscreen
-                    ? 'fixed inset-0 z-50 bg-slate-950 flex flex-col animate-in fade-in duration-150'
-                    : 'relative w-full h-[520px] sm:h-[580px] rounded-2xl overflow-hidden border-2 border-slate-200 shadow-xl bg-slate-950 flex flex-col transition-all duration-200'
-                }
-              >
-                {isRoomMapFullscreen && (
-                  <div className="bg-slate-900/95 border-b border-white/10 px-4 py-2 flex items-center justify-between text-white shrink-0 z-40">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
-                      <span className="font-bold text-xs truncate">
-                        {activeRoomDetails.name} — Full Screen Room Map
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      <button
-                        onClick={() => setIsRoomMapFullscreen(false)}
-                        className="px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white text-xs font-semibold flex items-center gap-1 cursor-pointer transition-colors"
-                      >
-                        <Minimize2 className="w-3.5 h-3.5 text-sky-400" />
-                        <span>Dock Panel</span>
-                      </button>
-                      <button
-                        onClick={() => {
-                          setIsRoomMapFullscreen(false);
-                          setShowRoomMap(false);
-                        }}
-                        className="p-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/40 text-rose-300 cursor-pointer transition-colors"
-                        title="Close Room Map"
-                      >
-                        <X className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                <div className="relative flex-1 w-full h-full">
-                  <LiveMap
-                    isActive={isActive && showRoomMap}
-                    roomOnlyMode={true}
-                    activeRoomDetails={activeRoomDetails}
-                    onCloseRoomMap={
-                      isRoomMapFullscreen
-                        ? () => setIsRoomMapFullscreen(false)
-                        : () => setShowRoomMap(false)
-                    }
-                    focusCoords={roomMapFocusCoords}
-                    savedPlaces={savedPlaces}
-                    onRefreshSavedPlaces={onRefreshSavedPlaces}
-                    rooms={rooms}
-                    selectedRoomId={activeRoomDetails.id}
-                    onSelectUserForChat={(targetUserId) => {
-                      setIsRoomMapFullscreen(false);
-                      onSelectUserForChat?.(targetUserId);
-                    }}
-                    onAddPlaceAtCoords={(lat, lng) => {
-                      setIsRoomMapFullscreen(false);
-                      onAddPlaceAtCoords?.(lat, lng);
-                    }}
-                    onSetReminderAtCoords={(lat, lng, title) => {
-                      setIsRoomMapFullscreen(false);
-                      onSetReminderAtCoords?.(lat, lng, title);
-                    }}
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Room Members Roster with Real Distances & Saved Location Geofence Alerts */}
-          <div className="space-y-3">
-            <div className="flex items-center justify-between flex-wrap gap-2">
-              <div>
-                <h4 className="font-bold text-slate-900 text-sm flex items-center gap-1.5">
-                  <Users className="w-4 h-4 text-slate-500" />
-                  <span>Members & Live Coordinates ({activeRoomDetails.members?.length || 0})</span>
-                </h4>
-                <p className="text-[11px] text-slate-500">
-                  Toggle <strong className="text-slate-700">Geofence Alert</strong> on any member to get notified when they enter or leave your {savedPlaces.length} saved location{savedPlaces.length === 1 ? '' : 's'}.
-                </p>
-              </div>
-              <div className="flex items-center gap-1.5 flex-wrap">
-                {activeRoomDetails.members &&
-                  activeRoomDetails.members.some((m) => m.userId !== user?.id) && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const peers = (activeRoomDetails.members || []).filter(
-                          (m) => m.userId !== user?.id
-                        );
-                        const allEnabled = peers.every(
-                          (m) => getMemberAlertConfig(m.userId).enabled
-                        );
-                        const nextState = !allEnabled;
-                        saveMemberGeofenceAlerts((prev) => {
-                          const copy = { ...prev };
-                          peers.forEach((m) => {
-                            const existing = copy[m.userId] || {
-                              enabled: false,
-                              notifyOnEnter: true,
-                              notifyOnLeave: true,
-                              placeIds: [],
-                            };
-                            copy[m.userId] = { ...existing, enabled: nextState };
-                          });
-                          return copy;
-                        });
-                        sound.playChime();
-                        toast.info(
-                          nextState
-                            ? `Enabled geofence enter/leave alerts for all ${peers.length} room member${peers.length === 1 ? '' : 's'}`
-                            : 'Muted geofence alerts for all members in this room'
-                        );
-                      }}
-                      className="px-2.5 py-1 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer active:scale-95"
-                      title="Toggle geofence enter/leave notifications for all members in this room"
-                    >
-                      <Bell className="w-3.5 h-3.5 text-amber-600" />
-                      <span>
-                        {(activeRoomDetails.members || [])
-                          .filter((m) => m.userId !== user?.id)
-                          .every((m) => getMemberAlertConfig(m.userId).enabled)
-                          ? 'Mute All Geofences'
-                          : 'Alert All Members'}
-                      </span>
-                    </button>
-                  )}
-
-                <button
-                  onClick={() => {
-                    setRoomMapFocusCoords(null);
-                    setShowRoomMap(true);
-                    setIsRoomMapFullscreen(true);
-                  }}
-                  className="px-2.5 py-1 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all cursor-pointer active:scale-95"
-                  title={`View all members of ${activeRoomDetails.name} on Full Screen Room Map`}
-                >
-                  <MapIcon className="w-3.5 h-3.5" />
-                  <span>Full Room Map</span>
-                </button>
-              </div>
-            </div>
-
-            {/* Recent Geofence Enter/Exit Activity Feed (shown when transitions occur) */}
-            {geofenceEvents.length > 0 && (
-              <div className="p-3 rounded-2xl bg-amber-50/90 border border-amber-200 space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-bold text-amber-900 flex items-center gap-1.5">
-                    <BellRing className="w-3.5 h-3.5 text-amber-600" />
-                    <span>Recent Saved Location Geofence Alerts ({geofenceEvents.length})</span>
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setGeofenceEvents([])}
-                    className="text-[11px] font-semibold text-amber-700 hover:underline cursor-pointer"
-                  >
-                    Clear
-                  </button>
-                </div>
-                <div className="space-y-1 max-h-28 overflow-y-auto">
-                  {geofenceEvents.slice(0, 5).map((ev) => (
-                    <div
-                      key={ev.id}
-                      className="text-xs text-amber-950 flex items-center justify-between gap-2 bg-white/80 px-2.5 py-1 rounded-lg border border-amber-200/60"
-                    >
-                      <span>
-                        <strong>{ev.memberName}</strong>{' '}
-                        <span
-                          className={
-                            ev.action === 'entered'
-                              ? 'text-emerald-700 font-bold'
-                              : 'text-rose-700 font-bold'
-                          }
-                        >
-                          {ev.action}
-                        </span>{' '}
-                        <strong>{ev.placeName}</strong> ({ev.distanceMeters}m)
-                      </span>
-                      <span className="text-[10px] text-slate-500 font-mono shrink-0">
-                        {new Date(ev.timestamp).toLocaleTimeString([], {
-                          hour: '2-digit',
-                          minute: '2-digit',
-                        })}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            <div className="space-y-2">
-              {activeRoomDetails.members?.map((mem) => {
-                const isOnline = onlineUserIds.includes(mem.userId);
-                const peerLoc = userLocations.find((l) => l.userId === mem.userId);
-                const alertCfg = getMemberAlertConfig(mem.userId);
-                const isExpanded = expandedGeofenceMemberId === mem.userId;
-
-                let distanceText = 'Location private / offline';
-                if (mem.userId === user?.id) {
-                  distanceText = 'You (Current device)';
-                } else if (myLocation && peerLoc) {
-                  const m = calculateDistanceMeters(
-                    myLocation.latitude,
-                    myLocation.longitude,
-                    peerLoc.latitude,
-                    peerLoc.longitude
-                  );
-                  distanceText = `${formatDistance(m)} away`;
-                }
-
-                // Check if this member is currently inside any saved location geofence
-                const insideSavedPlaces =
-                  peerLoc && savedPlaces.length > 0
-                    ? savedPlaces.filter((place) => {
-                        const d = calculateDistanceMeters(
-                          peerLoc.latitude,
-                          peerLoc.longitude,
-                          place.latitude,
-                          place.longitude
-                        );
-                        return d <= (place.radiusMeters || 150);
-                      })
-                    : [];
-
-                return (
-                  <div
-                    key={mem.userId}
-                    className={`p-3 bg-white rounded-xl border transition-all shadow-sm space-y-2.5 ${
-                      alertCfg.enabled && mem.userId !== user?.id
-                        ? 'border-amber-300 ring-1 ring-amber-200/60'
-                        : 'border-slate-200'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-2 flex-wrap">
-                      <div className="flex items-center gap-3 min-w-0">
-                        <div className="relative shrink-0">
-                          <img
-                            src={mem.user.avatarUrl}
-                            alt={mem.user.fullName}
-                            className="w-10 h-10 rounded-full object-cover border border-slate-200"
-                          />
-                          <div
-                            className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-white ${
-                              isOnline ? 'bg-emerald-500' : 'bg-slate-300'
-                            }`}
-                          />
-                        </div>
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className="font-bold text-slate-900 text-sm truncate">
-                              {mem.user.fullName}
-                            </span>
-                            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-700">
-                              {mem.role}
-                            </span>
-                            {insideSavedPlaces.map((pl) => (
-                              <span
-                                key={pl.id}
-                                className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-1"
-                                title={`${mem.user.fullName} is currently inside "${pl.name}" geofence (${pl.radiusMeters}m radius)`}
-                              >
-                                <MapPin className="w-2.5 h-2.5 text-emerald-600" />
-                                <span>At {pl.name}</span>
-                              </span>
-                            ))}
-                          </div>
-                          <div className="flex items-center gap-2 text-xs text-slate-500 mt-0.5 flex-wrap">
-                            <span>@{mem.user.username}</span>
-                            <span>·</span>
-                            <span className="text-blue-600 font-medium">{distanceText}</span>
-                            {alertCfg.enabled && mem.userId !== user?.id && (
-                              <>
-                                <span>·</span>
-                                <span className="text-amber-700 font-semibold text-[11px]">
-                                  Watching{' '}
-                                  {alertCfg.placeIds.length > 0
-                                    ? `${alertCfg.placeIds.length} place${alertCfg.placeIds.length === 1 ? '' : 's'}`
-                                    : `all ${savedPlaces.length} saved place${savedPlaces.length === 1 ? '' : 's'}`}
-                                </span>
-                              </>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        {mem.userId !== user?.id && (
-                          <>
-                            {/* Geofence Enter/Exit Notification Toggle Button */}
-                            <div className="flex items-center rounded-xl border overflow-hidden shadow-2xs">
-                              <button
-                                type="button"
-                                role="switch"
-                                aria-checked={alertCfg.enabled}
-                                onClick={() =>
-                                  handleToggleMemberGeofenceAlert(mem.userId, mem.user.fullName)
-                                }
-                                className={`px-2.5 py-1.5 text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
-                                  alertCfg.enabled
-                                    ? 'bg-amber-500 hover:bg-amber-600 text-white'
-                                    : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
-                                }`}
-                                title={
-                                  alertCfg.enabled
-                                    ? `Geofence notifications ON for ${mem.user.fullName} (click to mute)`
-                                    : `Enable notifications when ${mem.user.fullName} enters or leaves a saved location geofence`
-                                }
-                              >
-                                {alertCfg.enabled ? (
-                                  <>
-                                    <BellRing className="w-3.5 h-3.5" />
-                                    <span>Geofence Alert On</span>
-                                  </>
-                                ) : (
-                                  <>
-                                    <BellOff className="w-3.5 h-3.5 text-slate-500" />
-                                    <span>Geofence Alert</span>
-                                  </>
-                                )}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setExpandedGeofenceMemberId((prev) =>
-                                    prev === mem.userId ? null : mem.userId
-                                  )
-                                }
-                                className={`px-2 py-1.5 border-l text-xs transition-colors cursor-pointer ${
-                                  isExpanded
-                                    ? 'bg-slate-900 text-white border-slate-800'
-                                    : alertCfg.enabled
-                                    ? 'bg-amber-50 hover:bg-amber-100 text-amber-900 border-amber-300'
-                                    : 'bg-slate-50 hover:bg-slate-200 text-slate-600 border-slate-200'
-                                }`}
-                                title={`Configure saved location geofence rules for ${mem.user.fullName}`}
-                              >
-                                <SlidersHorizontal className="w-3.5 h-3.5" />
-                              </button>
+                    {/* Active Voice Participants Grid */}
+                    {activeVoiceRoomId === activeRoomDetails.id && (
+                      <div className="mt-3 p-3.5 bg-[#150E2E] rounded-2xl text-white border border-[#8957FF]/30">
+                        <span className="text-[11px] text-[#E9DFFF]/70 font-bold block mb-2">
+                          Connected Speakers:
+                        </span>
+                        <div className="flex flex-wrap gap-3">
+                          <div className="flex items-center gap-2 bg-white/10 px-3 py-1.5 rounded-xl border border-white/15">
+                            <div className={`relative w-6 h-6 rounded-full overflow-hidden ${isSpeaking ? 'ring-2 ring-[#00D6A0]' : ''}`}>
+                              <img src={user?.avatarUrl} alt="" className="w-full h-full object-cover" />
                             </div>
+                            <span className="text-xs font-bold">You</span>
+                            {isMicMuted ? (
+                              <MicOff className="w-3 h-3 text-[#FFD166]" />
+                            ) : isSpeaking ? (
+                              <Volume2 className="w-3 h-3 text-[#00D6A0] animate-pulse" />
+                            ) : (
+                              <Mic className="w-3 h-3 text-slate-300" />
+                            )}
+                          </div>
 
-                            <button
-                              onClick={() => {
-                                onSelectUserForChat?.(mem.userId);
-                                toast.info(`Opening direct chat with ${mem.user.fullName}`);
-                              }}
-                              className="px-2.5 py-1.5 bg-sky-50 hover:bg-sky-100 text-sky-700 dark:bg-sky-950/50 dark:hover:bg-sky-900/60 dark:text-sky-300 rounded-xl text-xs font-semibold flex items-center gap-1.5 border border-sky-200 dark:border-sky-800/50 transition-colors cursor-pointer"
-                              title={`Direct Message ${mem.user.fullName}`}
+                          {voiceParticipants.map((p) => (
+                            <div
+                              key={p.peerId}
+                              className="flex items-center gap-2 bg-white/10 px-3 py-1.5 rounded-xl border border-white/15"
                             >
-                              <MessageSquare className="w-3.5 h-3.5" />
-                              <span>Message</span>
-                            </button>
+                              <div className={`relative w-6 h-6 rounded-full overflow-hidden ${p.isSpeaking ? 'ring-2 ring-[#00D6A0]' : ''}`}>
+                                <img src={p.user.avatarUrl} alt="" className="w-full h-full object-cover" />
+                              </div>
+                              <span className="text-xs font-bold">{p.user.fullName.split(' ')[0]}</span>
+                              {p.isSpeaking && <Volume2 className="w-3 h-3 text-[#00D6A0] animate-pulse" />}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
 
-                            {mem.user.phoneNumber && mem.user.privacy?.phoneVisibility !== 'nobody' && (
-                              <a
-                                href={`tel:${mem.user.phoneNumber}`}
-                                className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors"
-                                title={`Call ${mem.user.phoneNumber}`}
-                              >
-                                <Phone className="w-4 h-4" />
-                              </a>
-                            )}
-
-                            {peerLoc && (
-                              <button
-                                onClick={() => {
-                                  setRoomMapFocusCoords({ lat: peerLoc.latitude, lng: peerLoc.longitude });
-                                  setShowRoomMap(true);
-                                  setTimeout(() => {
-                                    roomMapPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-                                  }, 60);
-                                }}
-                                className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors cursor-pointer"
-                                title={`Focus ${mem.user.fullName} on Room Map Panel`}
-                              >
-                                <Compass className="w-4 h-4" />
-                              </button>
-                            )}
+              {/* Room Live Map View Panel */}
+              <div ref={roomMapPanelRef} className="space-y-2.5">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <div className="flex items-center gap-2">
+                    <div className="w-2.5 h-2.5 rounded-full bg-[#00D6A0] animate-ping" />
+                    <h4 className={`font-extrabold ${themeConfig.textPrimary} text-sm flex items-center gap-1.5`}>
+                      <MapIcon className="w-4 h-4 text-[#00D6A0]" />
+                      <span>Room Live Map — {activeRoomDetails.name}</span>
+                    </h4>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    {showRoomMap && (
+                      <button
+                        onClick={() => setIsRoomMapFullscreen((prev) => !prev)}
+                        className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-[#397BFF] to-[#00D9FF] text-white text-xs font-extrabold flex items-center gap-1.5 shadow-sm transition-all cursor-pointer active:scale-95"
+                        title={isRoomMapFullscreen ? 'Dock Map into Panel' : 'Expand Room Map to Full Screen'}
+                      >
+                        {isRoomMapFullscreen ? (
+                          <>
+                            <Minimize2 className="w-3.5 h-3.5" />
+                            <span>Dock Panel</span>
+                          </>
+                        ) : (
+                          <>
+                            <Maximize2 className="w-3.5 h-3.5" />
+                            <span>Full Screen</span>
                           </>
                         )}
+                      </button>
+                    )}
+                    <button
+                      onClick={() => {
+                        if (showRoomMap) {
+                          setIsRoomMapFullscreen(false);
+                          setShowRoomMap(false);
+                        } else {
+                          setShowRoomMap(true);
+                        }
+                      }}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-extrabold flex items-center gap-1.5 shadow-sm transition-all cursor-pointer active:scale-95 ${
+                        showRoomMap
+                          ? isDark
+                            ? 'bg-white/10 text-white hover:bg-white/20'
+                            : 'bg-purple-100 text-purple-900 hover:bg-purple-200'
+                          : 'bg-gradient-to-r from-[#00D6A0] to-[#00D9FF] text-slate-950'
+                      }`}
+                    >
+                      {showRoomMap ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                      <span>{showRoomMap ? 'Hide Map' : 'Show Map'}</span>
+                    </button>
+                  </div>
+                </div>
 
-                        {/* Role changer for admins */}
-                        {canManageRoles && mem.userId !== user?.id && (
-                          <select
-                            value={mem.role}
-                            onChange={(e) => handleChangeRole(mem.userId, e.target.value as UserRole)}
-                            className="text-xs bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 text-slate-700 focus:outline-none ml-1"
-                          >
-                            <option value="ADMIN">ADMIN</option>
-                            <option value="MODERATOR">MODERATOR</option>
-                            <option value="MEMBER">MEMBER</option>
-                            <option value="GUEST">GUEST</option>
-                          </select>
-                        )}
-
-                        {/* Kick member for admins/owner (cannot kick owner) */}
-                        {canManageRoles && mem.userId !== user?.id && mem.role !== 'OWNER' && (
-                          <button
-                            type="button"
-                            onClick={() => handleKickMember(mem.userId, mem.user.fullName)}
-                            className="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
-                            title={`Remove ${mem.user.fullName} from room`}
-                          >
-                            <LogOut className="w-3.5 h-3.5 rotate-180" />
-                          </button>
-                        )}
-
-                        {/* Block user option */}
-                        {mem.userId !== user?.id && (
-                          <button
-                            type="button"
-                            onClick={() => handleBlockUser(mem.userId, mem.user.fullName)}
-                            className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
-                            title={`Block ${mem.user.fullName}`}
-                          >
-                            <UserX className="w-3.5 h-3.5" />
-                          </button>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Expandable Per-Member Saved Location Geofence Configuration Drawer */}
-                    {isExpanded && mem.userId !== user?.id && (
-                      <div className="pt-2.5 border-t border-slate-100 bg-slate-50/80 -mx-3 -mb-3 p-3 rounded-b-xl space-y-2.5">
-                        <div className="flex items-center justify-between flex-wrap gap-2">
-                          <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-                            <BellRing className="w-3.5 h-3.5 text-amber-600" />
-                            <span>Geofence Alert Rules for {mem.user.fullName}</span>
+                {showRoomMap && (
+                  <div
+                    className={
+                      isRoomMapFullscreen
+                        ? 'fixed inset-0 z-50 bg-slate-950 flex flex-col animate-in fade-in duration-150'
+                        : 'relative w-full h-[520px] sm:h-[580px] rounded-3xl overflow-hidden border-2 border-[#8957FF]/35 shadow-xl bg-slate-950 flex flex-col transition-all duration-200'
+                    }
+                  >
+                    {isRoomMapFullscreen && (
+                      <div className="bg-[#120C29]/95 border-b border-white/10 px-4 py-2.5 flex items-center justify-between text-white shrink-0 z-40">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="w-2.5 h-2.5 rounded-full bg-[#00D6A0] animate-pulse shrink-0" />
+                          <span className="font-extrabold text-xs truncate">
+                            {activeRoomDetails.name} — Full Screen Beacon Room Map
                           </span>
-                          <div className="flex items-center gap-2">
-                            <label className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700 cursor-pointer">
-                              <input
-                                type="checkbox"
-                                checked={alertCfg.notifyOnEnter}
-                                onChange={(e) =>
-                                  handleUpdateMemberGeofenceConfig(mem.userId, {
-                                    enabled: true,
-                                    notifyOnEnter: e.target.checked,
-                                  })
-                                }
-                                className="rounded accent-amber-600"
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            onClick={() => setIsRoomMapFullscreen(false)}
+                            className="px-3 py-1 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-bold flex items-center gap-1 cursor-pointer transition-colors"
+                          >
+                            <Minimize2 className="w-3.5 h-3.5 text-[#00D9FF]" />
+                            <span>Dock Panel</span>
+                          </button>
+                          <button
+                            onClick={() => {
+                              setIsRoomMapFullscreen(false);
+                              setShowRoomMap(false);
+                            }}
+                            className="p-1.5 rounded-xl bg-rose-500/20 hover:bg-rose-500/40 text-rose-300 cursor-pointer transition-colors"
+                            title="Close Room Map"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="relative flex-1 w-full h-full">
+                      <LiveMap
+                        isActive={isActive && showRoomMap}
+                        roomOnlyMode={true}
+                        activeRoomDetails={activeRoomDetails}
+                        onCloseRoomMap={
+                          isRoomMapFullscreen
+                            ? () => setIsRoomMapFullscreen(false)
+                            : () => setShowRoomMap(false)
+                        }
+                        focusCoords={roomMapFocusCoords}
+                        savedPlaces={savedPlaces}
+                        onRefreshSavedPlaces={onRefreshSavedPlaces}
+                        rooms={rooms}
+                        selectedRoomId={activeRoomDetails.id}
+                        onSelectUserForChat={(targetUserId) => {
+                          setIsRoomMapFullscreen(false);
+                          onSelectUserForChat?.(targetUserId);
+                        }}
+                        onAddPlaceAtCoords={(lat, lng) => {
+                          setIsRoomMapFullscreen(false);
+                          onAddPlaceAtCoords?.(lat, lng);
+                        }}
+                        onSetReminderAtCoords={(lat, lng, title) => {
+                          setIsRoomMapFullscreen(false);
+                          onSetReminderAtCoords?.(lat, lng, title);
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Room Members Roster with Real Distances & Saved Location Geofence Alerts */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <div>
+                    <h4 className={`font-extrabold ${themeConfig.textPrimary} text-sm flex items-center gap-1.5`}>
+                      <Users className="w-4 h-4 text-[#FF4FA3]" />
+                      <span>Room Members & Live Coordinates ({activeRoomDetails.members?.length || 0})</span>
+                    </h4>
+                    <p className={`text-[11px] ${themeConfig.textSecondary}`}>
+                      Toggle <strong className="text-[#FF4FA3]">Geofence Alert</strong> on any friend to get notified when they enter or leave your {savedPlaces.length} saved location{savedPlaces.length === 1 ? '' : 's'}.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {activeRoomDetails.members &&
+                      activeRoomDetails.members.some((m) => m.userId !== user?.id) && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const peers = (activeRoomDetails.members || []).filter(
+                              (m) => m.userId !== user?.id
+                            );
+                            const allEnabled = peers.every(
+                              (m) => getMemberAlertConfig(m.userId).enabled
+                            );
+                            const nextState = !allEnabled;
+                            saveMemberGeofenceAlerts((prev) => {
+                              const copy = { ...prev };
+                              peers.forEach((m) => {
+                                const existing = copy[m.userId] || {
+                                  enabled: false,
+                                  notifyOnEnter: true,
+                                  notifyOnLeave: true,
+                                  placeIds: [],
+                                };
+                                copy[m.userId] = { ...existing, enabled: nextState };
+                              });
+                              return copy;
+                            });
+                            sound.playChime();
+                            toast.info(
+                              nextState
+                                ? `Enabled geofence enter/leave alerts for all ${peers.length} room member${peers.length === 1 ? '' : 's'}`
+                                : 'Muted geofence alerts for all members in this room'
+                            );
+                          }}
+                          className="px-3 py-1.5 rounded-xl bg-[#FFD166]/20 hover:bg-[#FFD166]/30 text-amber-600 dark:text-[#FFD166] border border-[#FFD166]/40 text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer active:scale-95"
+                        >
+                          <Bell className="w-3.5 h-3.5" />
+                          <span>
+                            {(activeRoomDetails.members || [])
+                              .filter((m) => m.userId !== user?.id)
+                              .every((m) => getMemberAlertConfig(m.userId).enabled)
+                              ? 'Mute All Geofences'
+                              : 'Alert All Members'}
+                          </span>
+                        </button>
+                      )}
+
+                    <button
+                      onClick={() => {
+                        setRoomMapFocusCoords(null);
+                        setShowRoomMap(true);
+                        setIsRoomMapFullscreen(true);
+                      }}
+                      className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-[#8957FF] to-[#397BFF] text-white text-xs font-extrabold flex items-center gap-1.5 shadow-sm transition-all cursor-pointer active:scale-95"
+                    >
+                      <MapIcon className="w-3.5 h-3.5" />
+                      <span>Full Room Map</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Recent Geofence Enter/Exit Activity Feed */}
+                {geofenceEvents.length > 0 && (
+                  <div className="p-3.5 rounded-2xl bg-gradient-to-r from-[#FFD166]/15 to-[#FF8066]/15 border border-[#FFD166]/40 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className={`text-xs font-extrabold ${themeConfig.textPrimary} flex items-center gap-1.5`}>
+                        <BellRing className="w-4 h-4 text-[#FF8066]" />
+                        <span>Recent Geofence Alerts ({geofenceEvents.length})</span>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setGeofenceEvents([])}
+                        className="text-[11px] font-bold text-[#FF4FA3] hover:underline cursor-pointer"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                    <div className="space-y-1.5 max-h-28 overflow-y-auto">
+                      {geofenceEvents.slice(0, 5).map((ev) => (
+                        <div
+                          key={ev.id}
+                          className={`text-xs ${themeConfig.textPrimary} flex items-center justify-between gap-2 ${themeConfig.cardBg} px-3 py-1.5 rounded-xl border`}
+                        >
+                          <span>
+                            <strong>{ev.memberName}</strong>{' '}
+                            <span
+                              className={
+                                ev.action === 'entered'
+                                  ? 'text-[#00D6A0] font-extrabold'
+                                  : 'text-[#FF4FA3] font-extrabold'
+                              }
+                            >
+                              {ev.action}
+                            </span>{' '}
+                            <strong>{ev.placeName}</strong> ({ev.distanceMeters}m)
+                          </span>
+                          <span className={`text-[10px] ${themeConfig.textSecondary} font-mono shrink-0`}>
+                            {new Date(ev.timestamp).toLocaleTimeString([], {
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="space-y-2.5">
+                  {activeRoomDetails.members?.map((mem) => {
+                    const isOnline = onlineUserIds.includes(mem.userId);
+                    const peerLoc = userLocations.find((l) => l.userId === mem.userId);
+                    const alertCfg = getMemberAlertConfig(mem.userId);
+                    const isExpanded = expandedGeofenceMemberId === mem.userId;
+
+                    let distanceText = 'Location private / offline';
+                    if (mem.userId === user?.id) {
+                      distanceText = 'You (Current device)';
+                    } else if (myLocation && peerLoc) {
+                      const m = calculateDistanceMeters(
+                        myLocation.latitude,
+                        myLocation.longitude,
+                        peerLoc.latitude,
+                        peerLoc.longitude
+                      );
+                      distanceText = `${formatDistance(m)} away`;
+                    }
+
+                    const insideSavedPlaces =
+                      peerLoc && savedPlaces.length > 0
+                        ? savedPlaces.filter((place) => {
+                            const d = calculateDistanceMeters(
+                              peerLoc.latitude,
+                              peerLoc.longitude,
+                              place.latitude,
+                              place.longitude
+                            );
+                            return d <= (place.radiusMeters || 150);
+                          })
+                        : [];
+
+                    return (
+                      <div
+                        key={mem.userId}
+                        className={`p-3.5 rounded-2xl border transition-all shadow-sm space-y-2.5 ${themeConfig.cardBg} ${
+                          alertCfg.enabled && mem.userId !== user?.id
+                            ? 'ring-1 ring-[#FFD166]/60 border-[#FFD166]/50'
+                            : ''
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className="relative shrink-0">
+                              <div className={isOnline ? 'social-story-ring-live' : 'social-story-ring'}>
+                                <img
+                                  src={mem.user.avatarUrl}
+                                  alt={mem.user.fullName}
+                                  className="w-11 h-11 rounded-full object-cover bg-slate-800"
+                                />
+                              </div>
+                              <div
+                                className={`absolute bottom-0 right-0 w-3.5 h-3.5 rounded-full border-2 border-[#0B0719] ${
+                                  isOnline ? 'bg-[#00D6A0]' : 'bg-slate-400'
+                                }`}
                               />
-                              <span>On Enter</span>
-                            </label>
-                            <label className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700 cursor-pointer">
-                              <input
-                                type="checkbox"
-                                checked={alertCfg.notifyOnLeave}
-                                onChange={(e) =>
-                                  handleUpdateMemberGeofenceConfig(mem.userId, {
-                                    enabled: true,
-                                    notifyOnLeave: e.target.checked,
-                                  })
-                                }
-                                className="rounded accent-amber-600"
-                              />
-                              <span>On Leave</span>
-                            </label>
+                            </div>
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className={`font-extrabold ${themeConfig.textPrimary} text-sm truncate`}>
+                                  {mem.user.fullName}
+                                </span>
+                                <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-[#8957FF]/15 text-[#8957FF] dark:text-[#E9DFFF]">
+                                  {mem.role}
+                                </span>
+                                {insideSavedPlaces.map((pl) => (
+                                  <span
+                                    key={pl.id}
+                                    className="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-[#00D6A0]/15 text-[#00D6A0] border border-[#00D6A0]/30 flex items-center gap-1"
+                                  >
+                                    <MapPin className="w-2.5 h-2.5" />
+                                    <span>At {pl.name}</span>
+                                  </span>
+                                ))}
+                              </div>
+                              <div className={`flex items-center gap-2 text-xs ${themeConfig.textSecondary} mt-0.5 flex-wrap`}>
+                                <span>@{mem.user.username}</span>
+                                <span>·</span>
+                                <span className="text-[#00D9FF] font-bold">{distanceText}</span>
+                                {alertCfg.enabled && mem.userId !== user?.id && (
+                                  <>
+                                    <span>·</span>
+                                    <span className="text-[#FFD166] font-bold text-[11px]">
+                                      Watching{' '}
+                                      {alertCfg.placeIds.length > 0
+                                        ? `${alertCfg.placeIds.length} place${alertCfg.placeIds.length === 1 ? '' : 's'}`
+                                        : `all ${savedPlaces.length} saved place${savedPlaces.length === 1 ? '' : 's'}`}
+                                    </span>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            {mem.userId !== user?.id && (
+                              <>
+                                <div className="flex items-center rounded-xl border border-[#8957FF]/30 overflow-hidden">
+                                  <button
+                                    type="button"
+                                    role="switch"
+                                    aria-checked={alertCfg.enabled}
+                                    onClick={() =>
+                                      handleToggleMemberGeofenceAlert(mem.userId, mem.user.fullName)
+                                    }
+                                    className={`px-2.5 py-1.5 text-xs font-extrabold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                                      alertCfg.enabled
+                                        ? 'bg-gradient-to-r from-[#FFD166] to-[#FF8066] text-slate-950'
+                                        : isDark
+                                        ? 'bg-white/5 hover:bg-white/10 text-slate-200'
+                                        : 'bg-purple-50 hover:bg-purple-100 text-purple-950'
+                                    }`}
+                                  >
+                                    {alertCfg.enabled ? (
+                                      <>
+                                        <BellRing className="w-3.5 h-3.5" />
+                                        <span>Alert On</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <BellOff className="w-3.5 h-3.5 opacity-70" />
+                                        <span>Geofence</span>
+                                      </>
+                                    )}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setExpandedGeofenceMemberId((prev) =>
+                                        prev === mem.userId ? null : mem.userId
+                                      )
+                                    }
+                                    className={`px-2 py-1.5 border-l border-[#8957FF]/30 text-xs transition-colors cursor-pointer ${
+                                      isExpanded
+                                        ? 'bg-[#8957FF] text-white'
+                                        : isDark
+                                        ? 'bg-white/5 hover:bg-white/15 text-slate-300'
+                                        : 'bg-white hover:bg-purple-50 text-slate-700'
+                                    }`}
+                                    title="Configure geofence rules"
+                                  >
+                                    <SlidersHorizontal className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+
+                                <button
+                                  onClick={() => {
+                                    onSelectUserForChat?.(mem.userId);
+                                    toast.info(`Opening direct chat with ${mem.user.fullName}`);
+                                  }}
+                                  className="px-3 py-1.5 bg-gradient-to-r from-[#8957FF] to-[#FF4FA3] text-white rounded-xl text-xs font-extrabold flex items-center gap-1.5 shadow-sm transition-all cursor-pointer active:scale-95"
+                                >
+                                  <MessageSquare className="w-3.5 h-3.5" />
+                                  <span>Chat</span>
+                                </button>
+
+                                {mem.user.phoneNumber && mem.user.privacy?.phoneVisibility !== 'nobody' && (
+                                  <a
+                                    href={`tel:${mem.user.phoneNumber}`}
+                                    className="p-1.5 text-[#00D6A0] hover:bg-[#00D6A0]/15 rounded-xl transition-colors"
+                                    title={`Call ${mem.user.phoneNumber}`}
+                                  >
+                                    <Phone className="w-4 h-4" />
+                                  </a>
+                                )}
+
+                                {peerLoc && (
+                                  <button
+                                    onClick={() => {
+                                      setRoomMapFocusCoords({ lat: peerLoc.latitude, lng: peerLoc.longitude });
+                                      setShowRoomMap(true);
+                                      setTimeout(() => {
+                                        roomMapPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                                      }, 60);
+                                    }}
+                                    className="p-1.5 text-[#00D9FF] hover:bg-[#00D9FF]/15 rounded-xl transition-colors cursor-pointer"
+                                    title={`Focus ${mem.user.fullName} on Room Map`}
+                                  >
+                                    <Compass className="w-4 h-4" />
+                                  </button>
+                                )}
+                              </>
+                            )}
+
+                            {canManageRoles && mem.userId !== user?.id && (
+                              <select
+                                value={mem.role}
+                                onChange={(e) => handleChangeRole(mem.userId, e.target.value as UserRole)}
+                                className={`text-xs border rounded-xl px-2 py-1 font-bold focus:outline-none ml-1 ${
+                                  isDark
+                                    ? 'bg-[#171130] border-[#8957FF]/30 text-white'
+                                    : 'bg-purple-50 border-purple-200 text-slate-900'
+                                }`}
+                              >
+                                <option value="ADMIN">ADMIN</option>
+                                <option value="MODERATOR">MODERATOR</option>
+                                <option value="MEMBER">MEMBER</option>
+                                <option value="GUEST">GUEST</option>
+                              </select>
+                            )}
+
+                            {canManageRoles && mem.userId !== user?.id && mem.role !== 'OWNER' && (
+                              <button
+                                type="button"
+                                onClick={() => handleKickMember(mem.userId, mem.user.fullName)}
+                                className="p-1.5 text-rose-500 hover:bg-rose-500/15 rounded-xl transition-colors cursor-pointer"
+                                title={`Remove ${mem.user.fullName} from room`}
+                              >
+                                <LogOut className="w-3.5 h-3.5 rotate-180" />
+                              </button>
+                            )}
+
+                            {mem.userId !== user?.id && (
+                              <button
+                                type="button"
+                                onClick={() => handleBlockUser(mem.userId, mem.user.fullName)}
+                                className="p-1.5 text-slate-400 hover:text-rose-500 hover:bg-rose-500/15 rounded-xl transition-colors cursor-pointer"
+                                title={`Block ${mem.user.fullName}`}
+                              >
+                                <UserX className="w-3.5 h-3.5" />
+                              </button>
+                            )}
                           </div>
                         </div>
 
-                        {savedPlaces.length === 0 ? (
-                          <div className="text-xs text-slate-500 bg-white p-2.5 rounded-xl border border-slate-200 flex items-center justify-between">
-                            <span>No saved locations yet. Add a saved place to monitor its geofence radius.</span>
-                          </div>
-                        ) : (
-                          <div className="space-y-1.5">
-                            <div className="flex items-center justify-between text-[11px] text-slate-500">
-                              <span>
-                                Select saved locations to watch (leave all unchecked to monitor all {savedPlaces.length} places):
+                        {/* Expandable Per-Member Geofence Configuration Drawer */}
+                        {isExpanded && mem.userId !== user?.id && (
+                          <div className={`pt-3 border-t ${themeConfig.glassBorder} space-y-2.5`}>
+                            <div className="flex items-center justify-between flex-wrap gap-2">
+                              <span className={`text-xs font-extrabold ${themeConfig.textPrimary} flex items-center gap-1.5`}>
+                                <BellRing className="w-3.5 h-3.5 text-[#FFD166]" />
+                                <span>Geofence Alert Rules for {mem.user.fullName}</span>
                               </span>
-                              {alertCfg.placeIds.length > 0 && (
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    handleUpdateMemberGeofenceConfig(mem.userId, { placeIds: [] })
-                                  }
-                                  className="text-sky-600 font-semibold hover:underline cursor-pointer"
-                                >
-                                  Monitor All ({savedPlaces.length})
-                                </button>
-                              )}
+                              <div className="flex items-center gap-3">
+                                <label className={`inline-flex items-center gap-1.5 text-xs font-bold ${themeConfig.textPrimary} cursor-pointer`}>
+                                  <input
+                                    type="checkbox"
+                                    checked={alertCfg.notifyOnEnter}
+                                    onChange={(e) =>
+                                      handleUpdateMemberGeofenceConfig(mem.userId, {
+                                        enabled: true,
+                                        notifyOnEnter: e.target.checked,
+                                      })
+                                    }
+                                    className="rounded accent-[#8957FF]"
+                                  />
+                                  <span>On Enter</span>
+                                </label>
+                                <label className={`inline-flex items-center gap-1.5 text-xs font-bold ${themeConfig.textPrimary} cursor-pointer`}>
+                                  <input
+                                    type="checkbox"
+                                    checked={alertCfg.notifyOnLeave}
+                                    onChange={(e) =>
+                                      handleUpdateMemberGeofenceConfig(mem.userId, {
+                                        enabled: true,
+                                        notifyOnLeave: e.target.checked,
+                                      })
+                                    }
+                                    className="rounded accent-[#8957FF]"
+                                  />
+                                  <span>On Leave</span>
+                                </label>
+                              </div>
                             </div>
-                            <div className="flex flex-wrap gap-1.5">
-                              {savedPlaces.map((place) => {
-                                const isWatched =
-                                  alertCfg.placeIds.length === 0 ||
-                                  alertCfg.placeIds.includes(place.id);
-                                const isSpecificallySelected = alertCfg.placeIds.includes(place.id);
-                                const distToPlace = peerLoc
-                                  ? Math.round(
-                                      calculateDistanceMeters(
-                                        peerLoc.latitude,
-                                        peerLoc.longitude,
-                                        place.latitude,
-                                        place.longitude
-                                      )
-                                    )
-                                  : null;
-                                const isInsideNow =
-                                  distToPlace !== null && distToPlace <= (place.radiusMeters || 150);
 
-                                return (
-                                  <button
-                                    key={place.id}
-                                    type="button"
-                                    onClick={() => handleToggleMemberWatchedPlace(mem.userId, place.id)}
-                                    className={`px-2.5 py-1 rounded-xl text-xs font-semibold flex items-center gap-1.5 border transition-all cursor-pointer ${
-                                      isSpecificallySelected
-                                        ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
-                                        : isWatched
-                                        ? 'bg-white text-slate-800 border-slate-300 hover:bg-slate-100'
-                                        : 'bg-slate-100 text-slate-400 border-slate-200 opacity-60 hover:opacity-100'
-                                    }`}
-                                    title={`Radius: ${place.radiusMeters}m${
-                                      distToPlace !== null ? ` · Member is ${formatDistance(distToPlace)} away` : ''
-                                    }`}
-                                  >
-                                    <MapPin
-                                      className={`w-3 h-3 ${
-                                        isInsideNow ? 'text-emerald-500' : 'text-amber-500'
-                                      }`}
-                                    />
-                                    <span>{place.name}</span>
-                                    <span className="text-[10px] opacity-75 font-mono">
-                                      ({place.radiusMeters}m
-                                      {distToPlace !== null ? ` · ${formatDistance(distToPlace)}` : ''})
-                                    </span>
-                                  </button>
-                                );
-                              })}
-                            </div>
+                            {savedPlaces.length === 0 ? (
+                              <div className={`text-xs ${themeConfig.textSecondary} p-2.5 rounded-xl border ${themeConfig.glassBorder}`}>
+                                No saved locations yet. Add a saved place to monitor its geofence radius.
+                              </div>
+                            ) : (
+                              <div className="space-y-1.5">
+                                <div className={`flex items-center justify-between text-[11px] ${themeConfig.textSecondary}`}>
+                                  <span>
+                                    Select saved locations to watch (leave all unchecked to monitor all {savedPlaces.length} places):
+                                  </span>
+                                  {alertCfg.placeIds.length > 0 && (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        handleUpdateMemberGeofenceConfig(mem.userId, { placeIds: [] })
+                                      }
+                                      className="text-[#00D9FF] font-bold hover:underline cursor-pointer"
+                                    >
+                                      Monitor All ({savedPlaces.length})
+                                    </button>
+                                  )}
+                                </div>
+                                <div className="flex flex-wrap gap-1.5">
+                                  {savedPlaces.map((place) => {
+                                    const isWatched =
+                                      alertCfg.placeIds.length === 0 ||
+                                      alertCfg.placeIds.includes(place.id);
+                                    const isSpecificallySelected = alertCfg.placeIds.includes(place.id);
+                                    const distToPlace = peerLoc
+                                      ? Math.round(
+                                          calculateDistanceMeters(
+                                            peerLoc.latitude,
+                                            peerLoc.longitude,
+                                            place.latitude,
+                                            place.longitude
+                                          )
+                                        )
+                                      : null;
+                                    const isInsideNow =
+                                      distToPlace !== null && distToPlace <= (place.radiusMeters || 150);
+
+                                    return (
+                                      <button
+                                        key={place.id}
+                                        type="button"
+                                        onClick={() => handleToggleMemberWatchedPlace(mem.userId, place.id)}
+                                        className={`px-2.5 py-1 rounded-xl text-xs font-bold flex items-center gap-1.5 border transition-all cursor-pointer ${
+                                          isSpecificallySelected
+                                            ? 'bg-gradient-to-r from-[#8957FF] to-[#FF4FA3] text-white border-transparent shadow-xs'
+                                            : isWatched
+                                            ? `${themeConfig.cardBg} ${themeConfig.textPrimary}`
+                                            : 'opacity-50 hover:opacity-100'
+                                        }`}
+                                      >
+                                        <MapPin
+                                          className={`w-3 h-3 ${
+                                            isInsideNow ? 'text-[#00D6A0]' : 'text-[#FFD166]'
+                                          }`}
+                                        />
+                                        <span>{place.name}</span>
+                                        <span className="text-[10px] opacity-75 font-mono">
+                                          ({place.radiusMeters}m
+                                          {distToPlace !== null ? ` · ${formatDistance(distToPlace)}` : ''})
+                                        </span>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>
-                    )}
-                  </div>
-                );
-              })}
+                    );
+                  })}
+                </div>
+              </div>
             </div>
-          </div>
-        </div>
-      ) : (
-        <div className="flex-1 flex flex-col items-center justify-center p-6 text-center text-slate-400">
-          <Users className="w-12 h-12 text-slate-300 mb-2" />
-          <p className="text-sm font-semibold text-slate-700">No rooms available</p>
-          <p className="text-xs text-slate-500 mt-1">Create or join a room using a unique Room ID</p>
-        </div>
+          ) : (
+            <div className="flex-1 flex flex-col items-center justify-center p-6 text-center">
+              <div className="w-16 h-16 rounded-3xl bg-gradient-to-tr from-[#8957FF] to-[#FF4FA3] flex items-center justify-center text-white shadow-lg mb-3">
+                <Users className="w-8 h-8" />
+              </div>
+              <p className={`text-sm font-extrabold ${themeConfig.textPrimary}`}>No rooms selected</p>
+              <p className={`text-xs ${themeConfig.textSecondary} mt-1`}>
+                Create a colourful room or join one using a unique Room ID
+              </p>
+            </div>
+          )}
+        </>
       )}
-      </>
-    )}
 
       {/* Create Room Modal */}
       {showCreateModal && (

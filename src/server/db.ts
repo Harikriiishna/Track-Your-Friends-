@@ -22,8 +22,10 @@ import type {
   LocationBreadcrumb,
 } from '../types.ts';
 import {
+  isExampleOrTestUser,
   mergeDatabaseStates,
   pullAndMergeCloudState,
+  purgeExampleMembersFromState,
   schedulePushCloudState,
   setRunningOnAuthoritativeBackend,
 } from '../utils/cloudSync.ts';
@@ -129,14 +131,24 @@ class Database {
   constructor() {
     setRunningOnAuthoritativeBackend(true);
     this.data = this.load();
+    const purgedInitial = purgeExampleMembersFromState(this.data);
     this.ensureUniversalRoom();
     this.snapshotKnownEntities();
+    if (purgedInitial) {
+      this.save(this.data);
+    }
 
     void pullAndMergeCloudState(this.data, true).then((updated) => {
-      if (updated) {
+      const purgedAfterPull = purgeExampleMembersFromState(this.data);
+      if (updated || purgedAfterPull) {
         this.ensureUniversalRoom();
         this.saveDiskOnly();
         this.detectAndEmitExternalDiff();
+        if (purgedAfterPull) {
+          schedulePushCloudState(this.data, true);
+        }
+      } else {
+        schedulePushCloudState(this.data, true);
       }
     });
     setInterval(() => {
@@ -147,7 +159,7 @@ class Database {
           this.detectAndEmitExternalDiff();
         }
       });
-    }, 30000);
+    }, 4000);
   }
 
   public getSyncSnapshot(): DatabaseSchema {
@@ -165,10 +177,13 @@ class Database {
     const snap = this.getSyncSnapshot();
     return {
       users: (snap.users || []).map((u) => {
-        const { password, passwordHash, salt, ...safeUser } = u;
+        const { password, ...safeUser } = u;
         return safeUser as any;
       }),
-      rooms: (snap.rooms || []).map((r) => this.sanitizeRoom(r, '')),
+      rooms: (snap.rooms || []).map((r) => ({
+        ...this.sanitizeRoom(r, ''),
+        ...(r.passwordHash && r.salt ? { passwordHash: r.passwordHash, salt: r.salt } : {}),
+      })),
       roomMembers: snap.roomMembers || [],
       locations: snap.locations || {},
       locationHistory: snap.locationHistory || [],
@@ -191,6 +206,7 @@ class Database {
     this.ensureUniversalRoom();
     this.saveDiskOnly(this.data);
     this.detectAndEmitExternalDiff();
+    schedulePushCloudState(this.data, true);
     return this.getSanitizedSyncSnapshot();
   }
 
@@ -278,6 +294,7 @@ class Database {
         const raw = fs.readFileSync(DB_FILE, 'utf-8');
         const parsed = JSON.parse(raw);
         if (!parsed.locationHistory) parsed.locationHistory = [];
+        purgeExampleMembersFromState(parsed);
         return parsed;
       }
     } catch (err) {
@@ -474,6 +491,118 @@ class Database {
     return null;
   }
 
+  public async restoreOrBindUserSession(
+    token?: string | null,
+    userPayload?: Partial<UserProfile> | null,
+    hintUserId?: string,
+    hintEmail?: string,
+    userAgent = 'Silent Re-Auth Client',
+    ip = 'Client'
+  ): Promise<{ user: UserProfile; token: string; restored: boolean } | null> {
+    const cleanToken = token ? token.trim() : '';
+    const candidateId = (userPayload?.id || hintUserId || '').trim();
+    const candidateEmail = (userPayload?.email || hintEmail || '').trim().toLowerCase();
+    const candidateUsername = (userPayload?.username || '').trim();
+
+    // 1. Check if token or user already exists in memory
+    if (cleanToken) {
+      const existingByToken = this.getSessionUser(cleanToken, candidateId || undefined, candidateEmail || undefined);
+      if (existingByToken) {
+        return { user: existingByToken, token: cleanToken, restored: true };
+      }
+    }
+
+    let resolvedUser: UserRecord | undefined =
+      (candidateId ? this.findUserById(candidateId) : undefined) ||
+      (candidateEmail ? this.findUserByEmailOrUsername(candidateEmail) : undefined) ||
+      (candidateUsername ? this.findUserByEmailOrUsername(candidateUsername) : undefined);
+
+    // 2. If user is not yet in server memory, force an immediate pull from Cloud Firestore
+    if (!resolvedUser) {
+      try {
+        const updated = await pullAndMergeCloudState(this.data, true);
+        if (updated) {
+          this.ensureUniversalRoom();
+          this.saveDiskOnly();
+          this.detectAndEmitExternalDiff();
+        }
+      } catch {
+        // ignore cloud pull error and fallback to payload enrollment
+      }
+
+      resolvedUser =
+        (candidateId ? this.findUserById(candidateId) : undefined) ||
+        (candidateEmail ? this.findUserByEmailOrUsername(candidateEmail) : undefined) ||
+        (candidateUsername ? this.findUserByEmailOrUsername(candidateUsername) : undefined);
+    }
+
+    // 3. If user was created on Android APK / offline Web session and is being synced via silent re-auth
+    if (!resolvedUser && candidateId && (candidateEmail || candidateUsername)) {
+      const { hash, salt } = this.hashPassword(crypto.randomBytes(16).toString('hex'));
+      const now = new Date().toISOString();
+      const fallbackName = (userPayload?.fullName || candidateUsername || candidateEmail.split('@')[0] || 'Beacon User').trim();
+      resolvedUser = {
+        id: candidateId,
+        email: candidateEmail || `${candidateId}@beacon.local`,
+        username: candidateUsername || candidateEmail.split('@')[0] || candidateId,
+        fullName: fallbackName,
+        avatarUrl:
+          userPayload?.avatarUrl ||
+          `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(fallbackName)}`,
+        about: userPayload?.about || 'Member of Beacon Community',
+        phoneNumber: userPayload?.phoneNumber || '',
+        createdAt: userPayload?.createdAt || now,
+        isOnline: true,
+        lastSeen: now,
+        privacy: userPayload?.privacy || {
+          locationVisibility: 'room_members',
+          phoneVisibility: 'room_members',
+          profileVisibility: 'public',
+          showOnlineStatus: true,
+          locationSharingEnabled: true,
+          temporarySharingExpiry: null,
+          blockedUserIds: [],
+        },
+        isAdmin: Boolean(userPayload?.isAdmin),
+        passwordHash: hash,
+        salt,
+      };
+      this.data.users.push(resolvedUser);
+    }
+
+    if (!resolvedUser) {
+      return null;
+    }
+
+    resolvedUser.isOnline = true;
+    resolvedUser.lastSeen = new Date().toISOString();
+    this.ensureUniversalRoom(resolvedUser.id);
+
+    const finalToken = cleanToken.length >= 8 ? cleanToken : this.generateToken();
+    const existingSession = this.data.sessions.find((s) => s.token === finalToken);
+    const expiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
+    if (existingSession) {
+      existingSession.userId = resolvedUser.id;
+      existingSession.expiresAt = expiresAt;
+    } else {
+      this.data.sessions.push({
+        token: finalToken,
+        userId: resolvedUser.id,
+        createdAt: new Date().toISOString(),
+        expiresAt,
+        userAgent,
+        ip,
+      });
+    }
+
+    this.save();
+    return {
+      user: this.sanitizeUser(resolvedUser),
+      token: finalToken,
+      restored: true,
+    };
+  }
+
   public deleteSession(token: string) {
     this.data.sessions = this.data.sessions.filter((s) => s.token !== token);
     this.save();
@@ -615,6 +744,25 @@ class Database {
       user.lastSeen = new Date().toISOString();
       this.save();
     }
+  }
+
+  public deleteUserAccount(userId: string): boolean {
+    const user = this.findUserById(userId);
+    if (!user) return false;
+    this.data.users = this.data.users.filter((u) => u.id !== userId);
+    this.data.sessions = this.data.sessions.filter((s) => s.userId !== userId);
+    this.data.roomMembers = this.data.roomMembers.filter((m) => m.userId !== userId);
+    delete this.data.locations[userId];
+    this.data.locationHistory = (this.data.locationHistory || []).filter((h) => h.userId !== userId);
+    this.data.locationShareRequests = (this.data.locationShareRequests || []).filter(
+      (r) => r.fromUserId !== userId && r.toUserId !== userId
+    );
+    if (!Array.isArray(this.data.deletedIds)) this.data.deletedIds = [];
+    if (!this.data.deletedIds.includes(userId)) {
+      this.data.deletedIds.push(userId);
+    }
+    this.save();
+    return true;
   }
 
   // Location tracking with server-side privacy enforcement
@@ -828,13 +976,18 @@ class Database {
       }
     }
 
-    // Find explicit active location share approvals
+    // Find explicit active location share / friend approvals (bidirectional)
     const activeShareUserIds = new Set<string>();
     const now = new Date();
     for (const req of this.data.locationShareRequests) {
-      if (req.toUserId === requestingUserId && (req.status === 'accepted' || req.status === 'temporary')) {
+      if (req.status === 'accepted' || req.status === 'temporary') {
         if (!req.expiresAt || new Date(req.expiresAt) > now) {
-          activeShareUserIds.add(req.fromUserId);
+          if (req.toUserId === requestingUserId) {
+            activeShareUserIds.add(req.fromUserId);
+          }
+          if (req.fromUserId === requestingUserId) {
+            activeShareUserIds.add(req.toUserId);
+          }
         }
       }
     }
@@ -1677,19 +1830,80 @@ class Database {
     return true;
   }
 
-  // Location Share Requests
-  public requestLocationShare(fromUserId: string, toUserId: string): LocationShareRequest {
+  // Friends & Location Share Requests
+  public searchDirectoryUsers(requestingUserId: string, query?: string): UserProfile[] {
+    const requester = this.findUserById(requestingUserId);
+    const blockedSet = new Set(requester?.privacy?.blockedUserIds || []);
+    const q = (query || '').trim().toLowerCase();
+
+    return this.data.users
+      .filter((u) => {
+        if (!u || u.id === requestingUserId) return false;
+        if (blockedSet.has(u.id)) return false;
+        if ((u.privacy?.blockedUserIds || []).includes(requestingUserId)) return false;
+        if (!q) return true;
+        return (
+          u.username.toLowerCase().includes(q) ||
+          u.fullName.toLowerCase().includes(q) ||
+          u.email.toLowerCase().includes(q)
+        );
+      })
+      .map((u) => this.sanitizeUser(u));
+  }
+
+  public requestLocationShare(fromUserId: string, toUserIdOrIdentifier: string): LocationShareRequest {
     const fromUser = this.findUserById(fromUserId);
     if (!fromUser) throw new Error('User not found');
+
+    const cleanTarget = String(toUserIdOrIdentifier || '').trim();
+    if (!cleanTarget) throw new Error('Target user ID, username, or email is required');
+
+    const toUser =
+      this.findUserById(cleanTarget) || this.findUserByEmailOrUsername(cleanTarget);
+    if (!toUser) {
+      throw new Error(`No user found matching "${cleanTarget}"`);
+    }
+    if (toUser.id === fromUserId) {
+      throw new Error('You cannot send a friend or location request to yourself');
+    }
+
+    const nowIso = new Date().toISOString();
+    const existing = this.data.locationShareRequests.find(
+      (r) =>
+        (r.fromUserId === fromUserId && r.toUserId === toUser.id) ||
+        (r.fromUserId === toUser.id && r.toUserId === fromUserId)
+    );
+
+    if (existing) {
+      existing.fromUserId = fromUserId;
+      existing.fromUserName = fromUser.fullName;
+      existing.fromUsername = fromUser.username;
+      existing.fromUserAvatar = fromUser.avatarUrl;
+      existing.toUserId = toUser.id;
+      existing.toUserName = toUser.fullName;
+      existing.toUsername = toUser.username;
+      existing.toUserAvatar = toUser.avatarUrl;
+      if (existing.status === 'denied') {
+        existing.status = 'pending';
+      }
+      existing.updatedAt = nowIso;
+      this.save();
+      return existing;
+    }
 
     const req: LocationShareRequest = {
       id: 'req-' + crypto.randomUUID(),
       fromUserId,
       fromUserName: fromUser.fullName,
+      fromUsername: fromUser.username,
       fromUserAvatar: fromUser.avatarUrl,
-      toUserId,
+      toUserId: toUser.id,
+      toUserName: toUser.fullName,
+      toUsername: toUser.username,
+      toUserAvatar: toUser.avatarUrl,
       status: 'pending',
-      createdAt: new Date().toISOString(),
+      createdAt: nowIso,
+      updatedAt: nowIso,
     };
     this.data.locationShareRequests.unshift(req);
     this.save();
@@ -1697,19 +1911,54 @@ class Database {
   }
 
   public respondLocationShare(toUserId: string, requestId: string, response: 'accepted' | 'temporary' | 'denied'): LocationShareRequest {
-    const req = this.data.locationShareRequests.find((r) => r.id === requestId && r.toUserId === toUserId);
+    const req = this.data.locationShareRequests.find(
+      (r) => r.id === requestId && (r.toUserId === toUserId || r.fromUserId === toUserId)
+    );
     if (!req) throw new Error('Request not found');
 
     req.status = response;
+    req.updatedAt = new Date().toISOString();
     if (response === 'temporary') {
       req.expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString(); // 1 hour
+    } else {
+      delete req.expiresAt;
     }
     this.save();
     return req;
   }
 
+  public removeLocationShareRequest(userId: string, requestId: string): boolean {
+    const idx = this.data.locationShareRequests.findIndex(
+      (r) => r.id === requestId && (r.toUserId === userId || r.fromUserId === userId)
+    );
+    if (idx < 0) return false;
+    this.data.locationShareRequests.splice(idx, 1);
+    if (!Array.isArray(this.data.deletedIds)) {
+      this.data.deletedIds = [];
+    }
+    if (!this.data.deletedIds.includes(requestId)) {
+      this.data.deletedIds.push(requestId);
+    }
+    this.save();
+    return true;
+  }
+
   public getLocationShareRequests(userId: string): LocationShareRequest[] {
-    return this.data.locationShareRequests.filter((r) => r.toUserId === userId || r.fromUserId === userId);
+    return this.data.locationShareRequests
+      .filter((r) => r.toUserId === userId || r.fromUserId === userId)
+      .map((r) => {
+        const fromU = this.findUserById(r.fromUserId);
+        const toU = this.findUserById(r.toUserId);
+        return {
+          ...r,
+          fromUserName: fromU?.fullName || r.fromUserName,
+          fromUsername: fromU?.username || r.fromUsername,
+          fromUserAvatar: fromU?.avatarUrl || r.fromUserAvatar,
+          toUserName: toU?.fullName || r.toUserName || 'Member',
+          toUsername: toU?.username || r.toUsername,
+          toUserAvatar: toU?.avatarUrl || r.toUserAvatar,
+        };
+      });
   }
 
   // Community Chat & Reports

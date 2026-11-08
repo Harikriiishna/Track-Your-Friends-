@@ -1,0 +1,48 @@
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath 'com.android.tools.build:gradle:9.1.1'
+        classpath 'com.google.gms:google-services:4.4.4'
+    }
+}
+
+apply from: file("android/variables.gradle")
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+subprojects {
+    afterEvaluate { project ->
+        if (project.hasProperty('android')) {
+            project.android {
+                compileOptions {
+                    sourceCompatibility JavaVersion.VERSION_17
+                    targetCompatibility JavaVersion.VERSION_17
+                }
+            }
+        }
+        if (project.name == 'app') {
+            project.tasks.matching { it.name == 'assembleDebug' }.configureEach {
+                doLast {
+                    def srcApk = new File(project.projectDir, 'build/outputs/apk/debug/app-debug.apk')
+                    def dstApk = new File(rootProject.projectDir, 'app/build/outputs/apk/debug/app-debug.apk')
+                    if (srcApk.exists() && srcApk.canonicalPath != dstApk.canonicalPath) {
+                        dstApk.parentFile.mkdirs()
+                        java.nio.file.Files.copy(
+                            srcApk.toPath(),
+                            dstApk.toPath(),
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING
+                        )
+                    }
+                }
+            }
+        }
+    }
+}

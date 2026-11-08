@@ -9,6 +9,19 @@ class SoundSystem {
   private alarmOsc2: OscillatorNode | null = null;
   private alarmGain: GainNode | null = null;
   private alarmInterval: any = null;
+  private muted: boolean = false;
+
+  public isMuted(): boolean {
+    return this.muted;
+  }
+
+  public toggleMute(): boolean {
+    this.muted = !this.muted;
+    if (this.muted) {
+      this.stopEmergencySiren();
+    }
+    return this.muted;
+  }
 
   private getContext(): AudioContext {
     if (!this.ctx) {
@@ -23,6 +36,7 @@ class SoundSystem {
 
   // Play pleasant notification chime
   public playChime() {
+    if (this.muted) return;
     try {
       const ctx = this.getContext();
       const now = ctx.currentTime;
@@ -48,6 +62,7 @@ class SoundSystem {
 
   // Soft micro-interaction tap sound for navigation and button clicks
   public playTap() {
+    if (this.muted) return;
     try {
       const ctx = this.getContext();
       const now = ctx.currentTime;
@@ -67,6 +82,10 @@ class SoundSystem {
       osc.start(now);
       osc.stop(now + 0.04);
     } catch {}
+  }
+
+  public playTabSwitch() {
+    this.playTap();
   }
 
   // Crisp success indicator tone

@@ -21,8 +21,11 @@ import {
   INITIAL_SEED_USERS,
   INITIAL_SEED_ROOMS,
   INITIAL_SEED_ROOM_MEMBERS,
+  hashPasswordUniversal,
+  isExampleOrTestUser,
   mergeDatabaseStates,
   pullAndMergeCloudState,
+  purgeExampleMembersFromState,
   schedulePushCloudState,
   verifyPasswordUniversal,
 } from './cloudSync.ts';
@@ -119,11 +122,13 @@ class LocalBackendEngine {
 
   constructor() {
     this.data = this.load();
+    purgeExampleMembersFromState(this.data);
     this.ensureUniversalRoom();
     this.syncCachedAuthFromStorage();
     // Immediately pull latest cloud state and set up real-time background sync every 2.5 seconds
     void pullAndMergeCloudState(this.data, true).then((updated) => {
-      if (updated) {
+      const purged = purgeExampleMembersFromState(this.data);
+      if (updated || purged) {
         this.ensureUniversalRoom();
         this.saveLocalOnly();
       }
@@ -138,7 +143,7 @@ class LocalBackendEngine {
             this.saveLocalOnly();
           }
         });
-      }, 60000);
+      }, 4000);
     }
   }
 
@@ -425,6 +430,7 @@ class LocalBackendEngine {
       if (raw) {
         const parsed = JSON.parse(raw);
         mergeDatabaseStates(base, parsed, true);
+        purgeExampleMembersFromState(base);
         return base;
       }
     } catch (e) {
@@ -502,7 +508,6 @@ class LocalBackendEngine {
     } else {
       this.data.users.push({
         ...user,
-        password: 'password123',
       });
       mutated = true;
     }
@@ -587,40 +592,23 @@ class LocalBackendEngine {
 
   private getRoomMembers(roomId: string): RoomMember[] {
     const members = this.data.roomMembers.filter((m) => m.roomId === roomId);
-    return members.map((m) => {
+    const out: RoomMember[] = [];
+    for (const m of members) {
       const u = this.data.users.find((usr) => usr.id === m.userId);
-      const safeUser: UserProfile = u
-        ? this.sanitizeUser(u)
-        : {
-            id: m.userId,
-            email: '',
-            username: 'Member',
-            fullName: 'Community Member',
-            avatarUrl: `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(m.userId)}`,
-            about: 'Member of Beacon Community',
-            phoneNumber: '',
-            createdAt: new Date().toISOString(),
-            isOnline: true,
-            lastSeen: new Date().toISOString(),
-            privacy: {
-              locationVisibility: 'room_members',
-              phoneVisibility: 'room_members',
-              profileVisibility: 'public',
-              showOnlineStatus: true,
-            },
-          };
-      return {
+      if (!u || isExampleOrTestUser(u)) continue;
+      out.push({
         userId: m.userId,
         roomId: m.roomId,
         role: m.role,
         joinedAt: m.joinedAt,
-        user: safeUser,
-      };
-    });
+        user: this.sanitizeUser(u),
+      });
+    }
+    return out;
   }
 
   private sanitizeRoom(r: LocalRoomRecord): Room {
-    const { password, ...safe } = r;
+    const { password, passwordHash, salt, ...safe } = r;
     const members = this.getRoomMembers(r.id);
     return {
       ...safe,
@@ -727,12 +715,15 @@ class LocalBackendEngine {
       const cleanEmail = String(email).trim().toLowerCase();
       const cleanUsername = String(username).trim();
 
+      const { passwordHash, salt } = await hashPasswordUniversal(String(password));
       const existingEmail = this.data.users.find((u) => u.email.toLowerCase() === cleanEmail);
       if (existingEmail) {
         // If user submits the same credentials or registers again on device, update & sign them in seamlessly
         existingEmail.fullName = String(fullName).trim() || existingEmail.fullName;
         existingEmail.username = cleanUsername || existingEmail.username;
-        existingEmail.password = String(password);
+        existingEmail.passwordHash = passwordHash;
+        existingEmail.salt = salt;
+        delete existingEmail.password;
         if (phoneNumber) existingEmail.phoneNumber = String(phoneNumber).trim();
         existingEmail.isOnline = true;
         existingEmail.lastSeen = new Date().toISOString();
@@ -778,7 +769,8 @@ class LocalBackendEngine {
           blockedUserIds: [],
         },
         isAdmin: isFirstUser,
-        password: String(password),
+        passwordHash,
+        salt,
       };
 
       this.data.users.push(newUser);
@@ -796,9 +788,16 @@ class LocalBackendEngine {
       }
       const cleanId = String(identifier).trim();
       const lower = cleanId.toLowerCase();
-      const userRec = this.data.users.find(
+      let userRec = this.data.users.find(
         (u) => u.email.toLowerCase() === lower || u.username.toLowerCase() === lower
       );
+
+      if (!userRec) {
+        await pullAndMergeCloudState(this.data, true);
+        userRec = this.data.users.find(
+          (u) => u.email.toLowerCase() === lower || u.username.toLowerCase() === lower
+        );
+      }
 
       if (!userRec) {
         throw this.createError(
@@ -812,7 +811,16 @@ class LocalBackendEngine {
         );
       }
 
-      const isValidPass = await verifyPasswordUniversal(String(password), userRec);
+      let isValidPass = await verifyPasswordUniversal(String(password), userRec);
+      if (!isValidPass) {
+        await pullAndMergeCloudState(this.data, true);
+        userRec =
+          this.data.users.find(
+            (u) => u.email.toLowerCase() === lower || u.username.toLowerCase() === lower
+          ) || userRec;
+        isValidPass = await verifyPasswordUniversal(String(password), userRec);
+      }
+
       if (!isValidPass) {
         throw this.createError(
           `Incorrect password for ${userRec.email}. Tap "Reset Password" to set a new password.`,
@@ -826,7 +834,12 @@ class LocalBackendEngine {
         );
       }
 
-      userRec.password = String(password);
+      if (!userRec.passwordHash || !userRec.salt) {
+        const hashed = await hashPasswordUniversal(String(password));
+        userRec.passwordHash = hashed.passwordHash;
+        userRec.salt = hashed.salt;
+      }
+      delete userRec.password;
       userRec.isOnline = true;
       userRec.lastSeen = new Date().toISOString();
       this.ensureUniversalRoom(userRec.id);
@@ -846,6 +859,7 @@ class LocalBackendEngine {
       }
       const cleanId = String(identifier).trim();
       const lower = cleanId.toLowerCase();
+      const { passwordHash, salt } = await hashPasswordUniversal(String(newPassword));
       let userRec = this.data.users.find(
         (u) => u.email.toLowerCase() === lower || u.username.toLowerCase() === lower
       );
@@ -876,16 +890,19 @@ class LocalBackendEngine {
             blockedUserIds: [],
           },
           isAdmin: this.data.users.length === 0,
-          password: String(newPassword),
+          passwordHash,
+          salt,
         };
         this.data.users.push(userRec);
       } else {
-        userRec.password = String(newPassword);
+        userRec.passwordHash = passwordHash;
+        userRec.salt = salt;
+        delete userRec.password;
       }
 
       this.ensureUniversalRoom(userRec.id);
       const sessionToken = this.createSession(userRec.id);
-      this.save();
+      this.save(true);
 
       return {
         success: true,
@@ -896,32 +913,9 @@ class LocalBackendEngine {
     }
 
     if (method === 'POST' && pathname === '/api/auth/demo-login') {
-      let targetUser = this.data.users[0];
+      const targetUser = this.data.users.find((u) => !isExampleOrTestUser(u));
       if (!targetUser) {
-        targetUser = {
-          id: generateId('usr'),
-          email: 'demo@beacon.network',
-          username: 'alex_beacon',
-          fullName: 'Alex Morgan',
-          avatarUrl: 'https://api.dicebear.com/7.x/initials/svg?seed=Alex%20Morgan',
-          about: 'Beacon Explorer & Mesh Coordinator',
-          phoneNumber: '+1 555-0199',
-          createdAt: new Date().toISOString(),
-          isOnline: true,
-          lastSeen: new Date().toISOString(),
-          privacy: {
-            locationVisibility: 'room_members',
-            phoneVisibility: 'room_members',
-            profileVisibility: 'public',
-            showOnlineStatus: true,
-            locationSharingEnabled: true,
-            temporarySharingExpiry: null,
-            blockedUserIds: [],
-          },
-          isAdmin: true,
-          password: 'password123',
-        };
-        this.data.users.push(targetUser);
+        throw this.createError('No existing users found. Please create an account.', 404);
       }
       this.ensureUniversalRoom(targetUser.id);
       const sessionToken = this.createSession(targetUser.id);
@@ -935,6 +929,40 @@ class LocalBackendEngine {
         throw this.createError('Invalid or expired session', 401);
       }
       return { user: this.sanitizeUser(user) } as unknown as T;
+    }
+
+    if (method === 'POST' && pathname === '/api/auth/session-restore') {
+      const candidateToken = (body?.token as string | undefined) || token || null;
+      const userPayload = (body?.user as Partial<UserProfile> | undefined) || null;
+      await pullAndMergeCloudState(this.data, true);
+
+      let user = this.getAuthenticatedUser(candidateToken);
+      if (!user && userPayload?.id) {
+        user =
+          this.data.users.find(
+            (u) =>
+              u.id === userPayload.id ||
+              (u.email && userPayload.email && u.email.toLowerCase() === userPayload.email.toLowerCase()) ||
+              (u.username && userPayload.username && u.username.toLowerCase() === userPayload.username.toLowerCase())
+          ) || null;
+      }
+
+      if (!user && userPayload?.id && (userPayload.email || userPayload.username)) {
+        this.syncUserSession(userPayload as UserProfile, candidateToken, true);
+        user = this.data.users.find((u) => u.id === userPayload.id) || null;
+      }
+
+      if (!user) {
+        throw this.createError('Unable to restore session: user identity could not be verified', 401);
+      }
+
+      const finalToken = candidateToken && candidateToken.trim().length >= 8 ? candidateToken.trim() : this.createSession(user.id);
+      this.syncUserSession(this.sanitizeUser(user), finalToken, true);
+      return {
+        user: this.sanitizeUser(user),
+        token: finalToken,
+        restored: true,
+      } as unknown as T;
     }
 
     if (method === 'POST' && pathname === '/api/auth/logout') {
@@ -974,8 +1002,11 @@ class LocalBackendEngine {
       if (!userRec) {
         throw this.createError('User not found', 404);
       }
-      userRec.password = String(newPassword);
-      this.save();
+      const hashed = await hashPasswordUniversal(String(newPassword));
+      userRec.passwordHash = hashed.passwordHash;
+      userRec.salt = hashed.salt;
+      delete userRec.password;
+      this.save(true);
       return { success: true, user: this.sanitizeUser(userRec) } as unknown as T;
     }
 
@@ -1061,6 +1092,21 @@ class LocalBackendEngine {
       return { user: this.sanitizeUser(currentUser) } as unknown as T;
     }
 
+    if (method === 'DELETE' && pathname === '/api/profile/delete') {
+      if (!currentUser) throw this.createError('Unauthorized', 401);
+      const uid = currentUser.id;
+      this.data.users = this.data.users.filter((u) => u.id !== uid);
+      this.data.sessions = this.data.sessions.filter((s) => s.userId !== uid);
+      this.data.roomMembers = this.data.roomMembers.filter((m) => m.userId !== uid);
+      delete this.data.locations[uid];
+      if (!Array.isArray(this.data.deletedIds)) this.data.deletedIds = [];
+      if (!this.data.deletedIds.includes(uid)) {
+        this.data.deletedIds.push(uid);
+      }
+      this.save(true);
+      return { success: true, message: 'Account permanently deleted' } as unknown as T;
+    }
+
     // 3. UPLOAD
     if (method === 'POST' && pathname === '/api/upload') {
       const { dataUrl, filename } = body;
@@ -1123,14 +1169,23 @@ class LocalBackendEngine {
         counter++;
       }
 
+      let roomPasswordHash: string | undefined;
+      let roomSalt: string | undefined;
+      if (password && String(password).trim()) {
+        const hashed = await hashPasswordUniversal(String(password).trim());
+        roomPasswordHash = hashed.passwordHash;
+        roomSalt = hashed.salt;
+      }
+
       const newRoom: LocalRoomRecord = {
         id: roomId,
         name: cleanName,
         description: String(description || '').trim(),
         iconUrl,
         ownerId: currentUser.id,
-        hasPassword: Boolean(password && String(password).trim()),
-        password: password ? String(password).trim() : undefined,
+        hasPassword: Boolean(roomPasswordHash),
+        passwordHash: roomPasswordHash,
+        salt: roomSalt,
         createdAt: new Date().toISOString(),
         memberCount: 1,
         isPrivate: isPrivate ?? true,
@@ -1155,11 +1210,32 @@ class LocalBackendEngine {
       );
 
       if (!room) {
+        await pullAndMergeCloudState(this.data, true);
+        room = this.data.rooms.find(
+          (r) =>
+            r.id === roomId ||
+            r.id.toLowerCase() === cleanTarget ||
+            r.name.toLowerCase() === cleanTarget
+        );
+      }
+
+      if (!room) {
         throw this.createError('Room not found. Check the Room ID or Name.', 400);
       }
 
-      if (room.hasPassword && room.password && room.password !== String(password || '').trim()) {
-        throw this.createError('Incorrect room password', 400);
+      const alreadyMember = this.data.roomMembers.some(
+        (m) => m.roomId === room!.id && m.userId === currentUser.id
+      );
+
+      if (!alreadyMember && room.hasPassword) {
+        const inputPass = String(password || '').trim();
+        if (!inputPass) {
+          throw this.createError('This room requires a password', 400);
+        }
+        const passOk = await verifyPasswordUniversal(inputPass, room);
+        if (!passOk) {
+          throw this.createError('Incorrect room password', 400);
+        }
       }
 
       this.recordJoinedRoom(
@@ -1386,7 +1462,26 @@ class LocalBackendEngine {
       }
     }
 
-    // 6. BLOCKED USERS
+    // 6. USER DIRECTORY & BLOCKED USERS
+    if (method === 'GET' && pathname === '/api/users/directory') {
+      const uid = currentUser?.id || '';
+      const blockedSet = new Set(currentUser?.privacy?.blockedUserIds || []);
+      const q = (query.get('q') || '').trim().toLowerCase();
+      const users = this.data.users
+        .filter((u) => {
+          if (!u || u.id === uid) return false;
+          if (blockedSet.has(u.id)) return false;
+          if (!q) return true;
+          return (
+            u.username.toLowerCase().includes(q) ||
+            u.fullName.toLowerCase().includes(q) ||
+            u.email.toLowerCase().includes(q)
+          );
+        })
+        .map((u) => this.sanitizeUser(u));
+      return { users } as unknown as T;
+    }
+
     if (method === 'GET' && pathname === '/api/users/blocked') {
       if (!currentUser || !currentUser.privacy.blockedUserIds) {
         return { blockedUsers: [] } as unknown as T;
@@ -1867,28 +1962,95 @@ class LocalBackendEngine {
       } as unknown as T;
     }
 
-    // 12. LOCATION SHARE REQUESTS
+    // 12. LOCATION SHARE & FRIEND REQUESTS
     if (method === 'GET' && pathname === '/api/locations/requests') {
       const uid = currentUser?.id || '';
-      const requests = this.data.locationShareRequests.filter(
-        (r) => r.toUserId === uid || r.fromUserId === uid
-      );
+      const requests = this.data.locationShareRequests
+        .filter((r) => r.toUserId === uid || r.fromUserId === uid)
+        .map((r) => {
+          const fromU = this.data.users.find((u) => u.id === r.fromUserId);
+          const toU = this.data.users.find((u) => u.id === r.toUserId);
+          return {
+            ...r,
+            fromUserName: fromU?.fullName || r.fromUserName,
+            fromUsername: fromU?.username || r.fromUsername,
+            fromUserAvatar: fromU?.avatarUrl || r.fromUserAvatar,
+            toUserName: toU?.fullName || r.toUserName || 'Member',
+            toUsername: toU?.username || r.toUsername,
+            toUserAvatar: toU?.avatarUrl || r.toUserAvatar,
+          };
+        });
       return { requests } as unknown as T;
     }
 
     if (method === 'POST' && pathname === '/api/locations/request') {
       if (!currentUser) throw this.createError('Unauthorized', 401);
+      const rawTarget = String(
+        body.toUserId || body.identifier || body.username || body.email || ''
+      ).trim();
+      if (!rawTarget) {
+        throw this.createError('Target user ID, username, or email is required', 400);
+      }
+      const lower = rawTarget.toLowerCase();
+      let toUser = this.data.users.find(
+        (u) =>
+          u.id === rawTarget ||
+          u.username.toLowerCase() === lower ||
+          u.email.toLowerCase() === lower
+      );
+      if (!toUser) {
+        await pullAndMergeCloudState(this.data, true);
+        toUser = this.data.users.find(
+          (u) =>
+            u.id === rawTarget ||
+            u.username.toLowerCase() === lower ||
+            u.email.toLowerCase() === lower
+        );
+      }
+      if (!toUser) {
+        throw this.createError(`No user found matching "${rawTarget}"`, 404);
+      }
+      if (toUser.id === currentUser.id) {
+        throw this.createError('You cannot send a friend request to yourself', 400);
+      }
+
+      const nowIso = new Date().toISOString();
+      const existing = this.data.locationShareRequests.find(
+        (r) =>
+          (r.fromUserId === currentUser.id && r.toUserId === toUser!.id) ||
+          (r.fromUserId === toUser!.id && r.toUserId === currentUser.id)
+      );
+      if (existing) {
+        existing.fromUserId = currentUser.id;
+        existing.fromUserName = currentUser.fullName;
+        existing.fromUsername = currentUser.username;
+        existing.fromUserAvatar = currentUser.avatarUrl;
+        existing.toUserId = toUser.id;
+        existing.toUserName = toUser.fullName;
+        existing.toUsername = toUser.username;
+        existing.toUserAvatar = toUser.avatarUrl;
+        if (existing.status === 'denied') existing.status = 'pending';
+        existing.updatedAt = nowIso;
+        this.save(true);
+        return { request: existing } as unknown as T;
+      }
+
       const request: LocationShareRequest = {
         id: generateId('req'),
         fromUserId: currentUser.id,
         fromUserName: currentUser.fullName,
+        fromUsername: currentUser.username,
         fromUserAvatar: currentUser.avatarUrl,
-        toUserId: body.toUserId,
+        toUserId: toUser.id,
+        toUserName: toUser.fullName,
+        toUsername: toUser.username,
+        toUserAvatar: toUser.avatarUrl,
         status: 'pending',
-        createdAt: new Date().toISOString(),
+        createdAt: nowIso,
+        updatedAt: nowIso,
       };
       this.data.locationShareRequests.unshift(request);
-      this.save();
+      this.save(true);
       return { request } as unknown as T;
     }
 
@@ -1896,11 +2058,28 @@ class LocalBackendEngine {
       const req = this.data.locationShareRequests.find((r) => r.id === body.requestId);
       if (!req) throw this.createError('Request not found', 404);
       req.status = body.response;
+      req.updatedAt = new Date().toISOString();
       if (body.response === 'temporary') {
         req.expiresAt = new Date(Date.now() + 3600000).toISOString();
+      } else {
+        delete req.expiresAt;
       }
-      this.save();
+      this.save(true);
       return { request: req } as unknown as T;
+    }
+
+    const deleteLocReqMatch = pathname.match(/^\/api\/locations\/requests\/([^/]+)$/);
+    if (method === 'DELETE' && deleteLocReqMatch) {
+      const reqId = decodeURIComponent(deleteLocReqMatch[1]);
+      this.data.locationShareRequests = this.data.locationShareRequests.filter(
+        (r) => r.id !== reqId
+      );
+      if (!this.data.deletedIds) this.data.deletedIds = [];
+      if (!this.data.deletedIds.includes(reqId)) {
+        this.data.deletedIds.push(reqId);
+      }
+      this.save(true);
+      return { success: true } as unknown as T;
     }
 
     // 13. COMMUNITY REPORTS & ADMIN

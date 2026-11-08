@@ -772,6 +772,37 @@ app.get('/api/auth/me', authMiddleware, (req, res) => {
   res.json({ user });
 });
 
+app.post('/api/auth/session-restore', authRateLimiter, async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    const headerToken = authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    const token = (req.body?.token as string | undefined) || headerToken || null;
+    const userPayload = (req.body?.user as Partial<UserProfile> | undefined) || null;
+    const hintUserId = (req.headers['x-beacon-user-id'] as string | undefined) || userPayload?.id || undefined;
+    const hintEmail = (req.headers['x-beacon-user-email'] as string | undefined) || userPayload?.email || undefined;
+    const userAgent = req.headers['user-agent'] || 'Silent Re-Auth Client';
+    const ip = req.ip || req.socket.remoteAddress || 'Local';
+
+    const restored = await db.restoreOrBindUserSession(
+      token,
+      userPayload,
+      hintUserId,
+      hintEmail,
+      userAgent,
+      ip
+    );
+
+    if (!restored) {
+      res.status(401).json({ error: 'Unable to restore session: user identity could not be verified' });
+      return;
+    }
+
+    res.json(restored);
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Session restoration failed' });
+  }
+});
+
 app.post('/api/auth/logout', authMiddleware, (req, res) => {
   const token = (req as any).token as string;
   const user = (req as any).user as UserProfile;
@@ -868,6 +899,16 @@ app.put('/api/privacy/update', authMiddleware, (req, res) => {
     res.json({ user: updated });
   } catch (err: any) {
     res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete('/api/profile/delete', authMiddleware, (req, res) => {
+  try {
+    const user = (req as any).user as UserProfile;
+    db.deleteUserAccount(user.id);
+    res.json({ success: true, message: 'Account permanently deleted' });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to delete account' });
   }
 });
 
@@ -1022,7 +1063,14 @@ app.post('/api/rooms/:id/kick', authMiddleware, (req, res) => {
   }
 });
 
-// User Blocking & Moderation (Spec Section 6 & 16)
+// User Directory, Blocking & Moderation (Spec Section 6 & 16)
+app.get('/api/users/directory', authMiddleware, (req, res) => {
+  const user = (req as any).user as UserProfile;
+  const q = typeof req.query.q === 'string' ? req.query.q : '';
+  const users = db.searchDirectoryUsers(user.id, q);
+  res.json({ users });
+});
+
 app.get('/api/users/blocked', authMiddleware, (req, res) => {
   const user = (req as any).user as UserProfile;
   const blockedUsers = db.getBlockedUsers(user.id);
@@ -1590,15 +1638,16 @@ app.get('/api/alerts/track/:token', (req, res) => {
   }
 });
 
-// Location Sharing Requests
+// Location Sharing & Friend Requests
 app.post('/api/locations/request', authMiddleware, (req, res) => {
   try {
     const user = (req as any).user as UserProfile;
-    const request = db.requestLocationShare(user.id, req.body.toUserId);
-    broadcastToUser(req.body.toUserId, {
+    const target = req.body.toUserId || req.body.identifier || req.body.username || req.body.email;
+    const request = db.requestLocationShare(user.id, target);
+    broadcastToUser(request.toUserId, {
       type: 'notification',
-      title: 'Location Request',
-      body: `${user.fullName} requested to view your live location`,
+      title: 'Friend & Location Request',
+      body: `${user.fullName} (@${user.username}) requested to connect & share live location`,
       notificationType: 'location_request',
       data: request,
     });
@@ -1621,6 +1670,16 @@ app.post('/api/locations/respond', authMiddleware, (req, res) => {
       data: updated,
     });
     res.json({ request: updated });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete('/api/locations/requests/:id', authMiddleware, (req, res) => {
+  try {
+    const user = (req as any).user as UserProfile;
+    const removed = db.removeLocationShareRequest(user.id, req.params.id);
+    res.json({ success: removed });
   } catch (err: any) {
     res.status(400).json({ error: err.message });
   }

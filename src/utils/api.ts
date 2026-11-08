@@ -43,6 +43,11 @@ class ApiClient {
   private remoteCooldownUntil = 0;
   private lastDiagnosticReport: BackendDiagnosticReport | null = null;
   private diagnosticListeners = new Set<(report: BackendDiagnosticReport) => void>();
+  private unauthorizedListeners = new Set<
+    (detail: { endpoint: string; token: string | null; user: UserProfile | null }) => Promise<boolean>
+  >();
+  private inFlightSilentReauth: Promise<{ user: UserProfile; token: string; restored: boolean } | null> | null =
+    null;
 
   constructor() {
     this.token = localStorage.getItem('beacon_token');
@@ -90,6 +95,146 @@ class ApiClient {
     return () => {
       this.diagnosticListeners.delete(listener);
     };
+  }
+
+  public onUnauthorized(
+    listener: (detail: { endpoint: string; token: string | null; user: UserProfile | null }) => Promise<boolean>
+  ): () => void {
+    this.unauthorizedListeners.add(listener);
+    return () => {
+      this.unauthorizedListeners.delete(listener);
+    };
+  }
+
+  /**
+   * Forces a silent re-authentication & session binding check against the shared backend
+   * and Cloud Firestore to ensure Web session and Android APK stay synchronized on 401.
+   */
+  public async silentReauthenticate(
+    cachedUser?: UserProfile | null,
+    currentToken?: string | null
+  ): Promise<{ user: UserProfile; token: string; restored: boolean } | null> {
+    if (this.inFlightSilentReauth) {
+      return this.inFlightSilentReauth;
+    }
+
+    this.inFlightSilentReauth = (async () => {
+      try {
+        let userToRestore = cachedUser || null;
+        if (!userToRestore) {
+          try {
+            const raw = localStorage.getItem('beacon_user_profile');
+            if (raw) {
+              userToRestore = JSON.parse(raw) as UserProfile;
+            }
+          } catch {
+            // ignore
+          }
+        }
+        const tokenToRestore = currentToken || this.getToken();
+
+        if (!userToRestore && !tokenToRestore) {
+          return null;
+        }
+
+        // Step 1: Pull and merge Cloud Firestore state so any Android APK / Web changes are synced
+        try {
+          await localBackend.forceSyncNow();
+        } catch {
+          // ignore cloud sync error
+        }
+
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          'Cache-Control': 'no-cache',
+        };
+        if (tokenToRestore) {
+          headers['Authorization'] = `Bearer ${tokenToRestore}`;
+        }
+        if (userToRestore?.id) {
+          headers['X-Beacon-User-Id'] = userToRestore.id;
+        }
+        if (userToRestore?.email) {
+          headers['X-Beacon-User-Email'] = userToRestore.email;
+        }
+
+        // Step 2: Call authoritative /api/auth/session-restore endpoint
+        try {
+          const res = await nativeAwareFetch(
+            resolveApiUrl('/api/auth/session-restore'),
+            {
+              method: 'POST',
+              headers,
+              body: JSON.stringify({
+                token: tokenToRestore,
+                user: userToRestore,
+                platform: isAndroidNativeApp() ? 'android_apk' : 'web',
+              }),
+              credentials: 'include',
+              cache: 'no-store',
+            },
+            3500
+          );
+
+          const ct = (res.headers.get('content-type') || '').toLowerCase();
+          if (res.ok && ct.includes('application/json')) {
+            const parsed = (await res.json()) as { user: UserProfile; token: string; restored?: boolean };
+            if (parsed?.user && parsed?.token) {
+              this.lastDirectApiConnected = true;
+              this.remoteCooldownUntil = 0;
+              this.setToken(parsed.token);
+              localBackend.syncUserSession(parsed.user, parsed.token, true);
+              syncLogger.log('auth', 'info', 'silent_reauth_restored_remote', {
+                userId: parsed.user.id,
+                platform: isAndroidNativeApp() ? 'android_apk' : 'web',
+              });
+              return { user: parsed.user, token: parsed.token, restored: true };
+            }
+          }
+        } catch {
+          // Fall through to localBackend + Cloud Firestore bridge restoration
+        }
+
+        // Step 3: Restore via LocalBackend + Cloud Firestore bridge (e.g. Android APK or offline Web)
+        const localRestored = await localBackend.handleRequest<{
+          user: UserProfile;
+          token: string;
+          restored: boolean;
+        }>(
+          '/api/auth/session-restore',
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              token: tokenToRestore,
+              user: userToRestore,
+            }),
+          },
+          tokenToRestore
+        );
+
+        if (localRestored?.user && localRestored?.token) {
+          this.setToken(localRestored.token);
+          localBackend.syncUserSession(localRestored.user, localRestored.token, true);
+          syncLogger.log('auth', 'info', 'silent_reauth_restored_bridge', {
+            userId: localRestored.user.id,
+            platform: isAndroidNativeApp() ? 'android_apk' : 'web',
+          });
+          return localRestored;
+        }
+
+        return null;
+      } catch (err: any) {
+        syncLogger.log('auth', 'warn', 'silent_reauth_failed', {
+          error: err?.message || 'Silent re-auth failed',
+        });
+        return null;
+      } finally {
+        this.inFlightSilentReauth = null;
+      }
+    })();
+
+    return this.inFlightSilentReauth;
   }
 
   private emitDiagnostics(report: BackendDiagnosticReport) {
@@ -223,7 +368,7 @@ class ApiClient {
         diagnosticReason = `Health check failed with HTTP ${res.status}.`;
       }
     } catch (err: any) {
-      if (backendHealth !== 'OK') {
+      if ((backendHealth as string) !== 'OK') {
         this.lastDirectApiConnected = false;
         if (!nativeResult) {
           dns = 'FAILED';
@@ -532,6 +677,47 @@ class ApiClient {
     this.lastDirectApiConnected = true;
 
     if (!response.ok) {
+      const isAuthCredentialEndpoint =
+        endpoint.startsWith('/api/auth/login') ||
+        endpoint.startsWith('/api/auth/register') ||
+        endpoint === '/api/auth/session-restore';
+
+      // Token persistence validation layer hook:
+      // If user is authenticated locally (has cachedUser or token) and backend returns 401,
+      // trigger silent re-authentication check and retry once against the authoritative backend!
+      if (response.status === 401 && !isAuthCredentialEndpoint && (cachedUser || token) && !_isRetry) {
+        if (typeof window !== 'undefined') {
+          try {
+            window.dispatchEvent(
+              new CustomEvent('beacon:auth-401', {
+                detail: { endpoint, token, user: cachedUser },
+              })
+            );
+          } catch {
+            // ignore
+          }
+        }
+
+        let reauthRecovered = false;
+        if (this.unauthorizedListeners.size > 0) {
+          for (const listener of this.unauthorizedListeners) {
+            try {
+              const ok = await listener({ endpoint, token, user: cachedUser });
+              if (ok) reauthRecovered = true;
+            } catch {
+              // ignore listener error
+            }
+          }
+        } else {
+          const restored = await this.silentReauthenticate(cachedUser, token);
+          reauthRecovered = Boolean(restored?.user && restored?.token);
+        }
+
+        if (reauthRecovered) {
+          return this.request<T>(endpoint, options, true);
+        }
+      }
+
       if (
         response.status === 401 ||
         response.status === 403 ||
@@ -540,7 +726,7 @@ class ApiClient {
         endpoint.startsWith('/api/auth/')
       ) {
         try {
-          return await this.fallbackToLocal<T>(endpoint, options, token);
+          return await this.fallbackToLocal<T>(endpoint, options, this.getToken());
         } catch (localErr: any) {
           if (localErr && localErr.message) {
             throw localErr;
@@ -615,11 +801,29 @@ class ApiClient {
   public async clearLocationHistory(): Promise<{
     success: boolean;
     removedCount: number;
+    deletedCount?: number;
     message: string;
   }> {
-    return this.delete<{ success: boolean; removedCount: number; message: string }>(
+    return this.delete<{ success: boolean; removedCount: number; deletedCount?: number; message: string }>(
       '/api/locations/history'
     );
+  }
+
+  public async purgeLocationHistory(): Promise<{
+    success: boolean;
+    removedCount: number;
+    deletedCount?: number;
+    message: string;
+  }> {
+    const res = await this.clearLocationHistory();
+    return {
+      ...res,
+      deletedCount: res.deletedCount ?? res.removedCount ?? 0,
+    };
+  }
+
+  public async deleteAccount(): Promise<{ success: boolean; message?: string }> {
+    return this.delete<{ success: boolean; message?: string }>('/api/users/me');
   }
 
   // User Blocking & Moderation (Spec Section 6 & 16)

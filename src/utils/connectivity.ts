@@ -1,8 +1,10 @@
 import {
   getMaskedBackendUrl,
   getProductionApiBaseUrl,
+  isAndroidNativeApp,
   isInvalidOrLocalEndpoint,
   nativeAwareFetch,
+  resolveApiUrl,
   syncLogger,
 } from '../config/env.ts';
 
@@ -19,9 +21,9 @@ export interface ConnectivityHealthResult {
 }
 
 /**
- * Resolves the target base URL from `VITE_API_BASE_URL` (or falls back to the
- * centralized production API base URL if `VITE_API_BASE_URL` is unset or a placeholder)
- * and returns a sanitized health endpoint URL alongside a safe display URL.
+ * Resolves the target health endpoint URL using `resolveApiUrl('/api/health')`
+ * (relative `/api/health` on Web to preserve same-origin session cookies, or
+ * the production base URL on native Android APK) alongside a safe display URL.
  */
 export function resolveHealthCheckEndpoint(): { requestUrl: string; safeDisplayUrl: string } {
   let rawEnvBaseUrl = '';
@@ -34,11 +36,23 @@ export function resolveHealthCheckEndpoint(): { requestUrl: string; safeDisplayU
     // ignore in non-Vite environments
   }
 
-  const baseUrl =
-    rawEnvBaseUrl && !isInvalidOrLocalEndpoint(rawEnvBaseUrl)
-      ? rawEnvBaseUrl.replace(/\/+$/, '')
-      : getProductionApiBaseUrl();
+  if (rawEnvBaseUrl && !isInvalidOrLocalEndpoint(rawEnvBaseUrl)) {
+    const baseUrl = rawEnvBaseUrl.replace(/\/+$/, '');
+    return {
+      requestUrl: `${baseUrl}/api/health`,
+      safeDisplayUrl: `${getMaskedBackendUrl(baseUrl)}/api/health`,
+    };
+  }
 
+  if (typeof window !== 'undefined' && !isAndroidNativeApp()) {
+    const origin = window.location.origin;
+    return {
+      requestUrl: resolveApiUrl('/api/health'),
+      safeDisplayUrl: `${getMaskedBackendUrl(origin)}/api/health`,
+    };
+  }
+
+  const baseUrl = getProductionApiBaseUrl();
   const requestUrl = `${baseUrl}/api/health`;
   const safeDisplayUrl = `${getMaskedBackendUrl(baseUrl)}/api/health`;
 
@@ -57,9 +71,9 @@ function sanitizeErrorMessage(rawMessage: string): string {
 }
 
 /**
- * Performs a health check against the `VITE_API_BASE_URL` health endpoint (`/api/health`)
+ * Performs a health check against the `/api/health` endpoint
  * using `fetch` with a strict 5-second (`5000ms`) timeout.
- * Explicitly logs connectivity status to the console without revealing secrets.
+ * Logs connectivity status without revealing secrets or triggering fatal console error overlays.
  */
 export async function checkBackendConnectivity(
   timeoutMs: number = HEALTH_CHECK_TIMEOUT_MS
@@ -82,6 +96,7 @@ export async function checkBackendConnectivity(
         headers: {
           Accept: 'application/json',
         },
+        credentials: 'include',
         cache: 'no-store',
         signal: controller.signal,
       },
@@ -92,9 +107,6 @@ export async function checkBackendConnectivity(
     const timestamp = new Date().toISOString();
 
     if (response.ok) {
-      console.info(
-        `[Connectivity] Backend health check OK (${response.status}) at ${safeDisplayUrl} in ${latencyMs}ms`
-      );
       syncLogger.log('api', 'info', 'HEALTH_CHECK_OK', {
         endpoint: safeDisplayUrl,
         status: response.status,
@@ -117,9 +129,6 @@ export async function checkBackendConnectivity(
         ? `Backend health endpoint rejected request with HTTP ${response.status}`
         : `Backend health endpoint returned HTTP ${response.status}`;
 
-    console.warn(
-      `[Connectivity] Backend health check FAILED (${response.status}) at ${safeDisplayUrl} in ${latencyMs}ms: ${errorMessage}`
-    );
     syncLogger.log('api', 'warn', 'HEALTH_CHECK_FAILED', {
       endpoint: safeDisplayUrl,
       status: response.status,
@@ -151,8 +160,7 @@ export async function checkBackendConnectivity(
           err?.message || 'Network request failed'
         )}`;
 
-    console.error(`[Connectivity] Backend UNREACHABLE at ${safeDisplayUrl} after ${latencyMs}ms: ${errorMessage}`);
-    syncLogger.log('api', 'error', 'HEALTH_CHECK_UNREACHABLE', {
+    syncLogger.log('api', 'warn', 'HEALTH_CHECK_UNREACHABLE', {
       endpoint: safeDisplayUrl,
       latencyMs,
       timedOut: isAbort,

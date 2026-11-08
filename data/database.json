@@ -10,7 +10,7 @@
       "phoneNumber": "",
       "createdAt": "2026-10-26T08:46:03.025Z",
       "isOnline": true,
-      "lastSeen": "2026-10-29T13:35:05.113Z",
+      "lastSeen": "2026-11-06T09:36:26.310Z",
       "privacy": {
         "locationVisibility": "room_members",
         "phoneVisibility": "room_members",
@@ -24,6 +24,126 @@
       "passwordHash": "83a49e4c0efe805cc488e1ae5235f9d3f1df27b555e676d2fdc9af69bd38f33639135cc6f0c61244d78469d85cb33e3aed0ec8279dfb9dd76ccf015cd53367de",
       "salt": "43a57f595d789793b7e5c0e22b17a618",
       "password": "password123"
+    },
+    {
+      "id": "19590e24-e27c-41cd-9ba6-52c4f8f40cb6",
+      "email": "alice_mw4q1gfa@beacon.test",
+      "username": "alice_mw4q1gfa",
+      "fullName": "Alice Beacon",
+      "avatarUrl": "https://api.dicebear.com/7.x/initials/svg?seed=Alice%20Beacon",
+      "about": "Member of Beacon Community",
+      "phoneNumber": "",
+      "createdAt": "2026-11-06T08:37:27.657Z",
+      "isOnline": true,
+      "lastSeen": "2026-11-06T08:37:27.657Z",
+      "privacy": {
+        "locationVisibility": "room_members",
+        "phoneVisibility": "room_members",
+        "profileVisibility": "public",
+        "showOnlineStatus": true,
+        "locationSharingEnabled": true,
+        "temporarySharingExpiry": null,
+        "blockedUserIds": []
+      },
+      "isAdmin": false,
+      "passwordHash": "7f62a8c62b13974e94a909d633d0cac20b95c8852646f7e615fa26a1b75c8fa32bd10fdbacced977318bcf22f0945fc65859baccf68c3e800f013c5de8e5c585",
+      "salt": "b61f6a57d07a64418a32d25b8debea18"
+    },
+    {
+      "id": "22d88e5f-7221-4ae3-8059-c3845a7f0c69",
+      "email": "bob_mw4q1gfa@beacon.test",
+      "username": "bob_mw4q1gfa",
+      "fullName": "Bob Android",
+      "avatarUrl": "https://api.dicebear.com/7.x/initials/svg?seed=Bob%20Android",
+      "about": "Member of Beacon Community",
+      "phoneNumber": "",
+      "createdAt": "2026-11-06T08:37:27.876Z",
+      "isOnline": true,
+      "lastSeen": "2026-11-06T08:37:27.876Z",
+      "privacy": {
+        "locationVisibility": "selected",
+        "phoneVisibility": "room_members",
+        "profileVisibility": "public",
+        "showOnlineStatus": true,
+        "locationSharingEnabled": true,
+        "temporarySharingExpiry": null,
+        "blockedUserIds": []
+      },
+      "isAdmin": false,
+      "passwordHash": "ee7e20b7d39ec5fe82e8d8ef8f761bfac541e2927f29c42dc5c93ad9d0df858399f2d150eecf78d23ef8ae5324e217a65ec25d1bf483bd15466b36af0082683b",
+      "salt": "b144b94275a2ef48179b33a1a5582d8b"
+    },
+    {
+      "id": "68c01a02-7df6-45fd-8181-3ee9877ab98d",
+      "email": "alice_mw4q5nu4@beacon.test",
+      "username": "alice_mw4q5nu4",
+      "fullName": "Alice Beacon",
+      "avatarUrl": "https://api.dicebear.com/7.x/initials/svg?seed=Alice%20Beacon",
+      "about": "Member of Beacon Community",
+      "phoneNumber": "",
+      "createdAt": "2026-11-06T08:40:43.868Z",
+      "isOnline": true,
+      "lastSeen": "2026-11-06T08:40:43.868Z",
+      "privacy": {
+        "locationVisibility": "room_members",
+        "phoneVisibility": "room_members",
+        "profileVisibility": "public",
+        "showOnlineStatus": true,
+        "locationSharingEnabled": true,
+        "temporarySharingExpiry": null,
+        "blockedUserIds": []
+      },
+      "isAdmin": false,
+      "passwordHash": "2476b229ba921a40c9a79287e04f32271f9e2c258f5d4da08b709813768caeaddf5e2b13e326dd48aaf37f62facc2c37398cd998e3a7d6566831184bafdaec6c",
+      "salt": "20f734cdc43517abccfded008937188c"
+    },
+    {
+      "id": "041097da-cc53-43ec-a845-bd2340516535",
+      "email": "bob_mw4q5nu4@beacon.test",
+      "username": "bob_mw4q5nu4",
+      "fullName": "Bob Android",
+      "avatarUrl": "https://api.dicebear.com/7.x/initials/svg?seed=Bob%20Android",
+      "about": "Member of Beacon Community",
+      "phoneNumber": "",
+      "createdAt": "2026-11-06T08:40:43.981Z",
+      "isOnline": true,
+      "lastSeen": "2026-11-06T08:40:43.981Z",
+      "privacy": {
+        "locationVisibility": "selected",
+        "phoneVisibility": "room_members",
+        "profileVisibility": "public",
+        "showOnlineStatus": true,
+        "locationSharingEnabled": true,
+        "temporarySharingExpiry": null,
+        "blockedUserIds": []
+      },
+      "isAdmin": false,
+      "passwordHash": "ccb7d4f767cad9cd9d56dbbb221681a978c864108b498e207f744591922cf7cf033c8ccb8e659255d279f1ca487e996121e5b43fc28e85f4ca26dbd1a2e35011",
+      "salt": "ea377abbb50ba315aac3bea1ef8b6d7b"
+    },
+    {
+      "id": "usr-apk-1793958142235",
+      "email": "apk_sync_1793958142235@beacon.network",
+      "username": "apk_sync_1793958142235",
+      "fullName": "Android APK Sync User",
+      "avatarUrl": "https://api.dicebear.com/7.x/initials/svg?seed=Android%20APK%20Sync%20User",
+      "about": "Synced from Android APK",
+      "phoneNumber": "+15550101",
+      "createdAt": "2026-11-06T09:42:22.235Z",
+      "isOnline": true,
+      "lastSeen": "2026-11-06T09:42:22.529Z",
+      "privacy": {
+        "locationVisibility": "room_members",
+        "phoneVisibility": "room_members",
+        "profileVisibility": "public",
+        "showOnlineStatus": true,
+        "locationSharingEnabled": true,
+        "temporarySharingExpiry": null,
+        "blockedUserIds": []
+      },
+      "isAdmin": false,
+      "passwordHash": "95c80b4627607b0e04c2f6f2a7d56cab830a5f81cb98905eb3478561ddd1d9ca459336d0361ff0798584ff0cb86ea0402a59ed85da455943ef08b76503858f97",
+      "salt": "959835ada46e37d1ea709f0f960e4f01"
     }
   ],
   "sessions": [
@@ -42,6 +162,62 @@
       "expiresAt": "2027-10-28T07:28:29.443Z",
       "userAgent": "Mozilla/5.0 (Linux; Android 16; A001 Build/BP2A.250605.031.A3; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/155.0.8059.43 Mobile Safari/537.36",
       "ip": "Local Device"
+    },
+    {
+      "token": "tok-e2f09ea6-92ef-4a9e-bd1f-77bff1e9ca7be135049d-706b-4c88-8e75-44dfdf4004a7",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "createdAt": "2026-10-28T08:28:41.900Z",
+      "expiresAt": "2027-10-28T08:28:41.900Z",
+      "userAgent": "Mozilla/5.0 (Linux; Android 16; A001 Build/BP2A.250605.031.A3; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/155.0.8059.43 Mobile Safari/537.36",
+      "ip": "Local Device"
+    },
+    {
+      "token": "cea8c3c9796eb7906930440d20f2c7e80d5b780f5492c941b9139f0458aff532",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "createdAt": "2026-10-29T12:10:09.163Z",
+      "expiresAt": "2027-10-29T12:10:09.163Z",
+      "userAgent": "node",
+      "ip": "127.0.0.1"
+    },
+    {
+      "token": "625539d68fa61d980ff16d2f1c1976f52a7553bf21f9627cec21edbbac3c9e7a",
+      "userId": "19590e24-e27c-41cd-9ba6-52c4f8f40cb6",
+      "createdAt": "2026-11-06T08:37:27.666Z",
+      "expiresAt": "2027-11-06T08:37:27.666Z",
+      "userAgent": "node",
+      "ip": "127.0.0.1"
+    },
+    {
+      "token": "3f56240957ad689586e30c762480b8758d887589e348383ef9a39552a6d5f068",
+      "userId": "22d88e5f-7221-4ae3-8059-c3845a7f0c69",
+      "createdAt": "2026-11-06T08:37:27.887Z",
+      "expiresAt": "2027-11-06T08:37:27.887Z",
+      "userAgent": "node",
+      "ip": "127.0.0.1"
+    },
+    {
+      "token": "c057c6959a41acbc933a9c2006dc2018258e207fd01a7d3e9fd2a40f7b34e753",
+      "userId": "68c01a02-7df6-45fd-8181-3ee9877ab98d",
+      "createdAt": "2026-11-06T08:40:43.871Z",
+      "expiresAt": "2027-11-06T08:40:43.871Z",
+      "userAgent": "node",
+      "ip": "127.0.0.1"
+    },
+    {
+      "token": "401b209473463db3ecabd8027acfcaa6bdd539bdeec8ea6927754ca1359bdca2",
+      "userId": "041097da-cc53-43ec-a845-bd2340516535",
+      "createdAt": "2026-11-06T08:40:43.984Z",
+      "expiresAt": "2027-11-06T08:40:43.984Z",
+      "userAgent": "node",
+      "ip": "127.0.0.1"
+    },
+    {
+      "token": "tok-apk-sync-1793958142235",
+      "userId": "usr-apk-1793958142235",
+      "createdAt": "2026-11-06T09:42:22.532Z",
+      "expiresAt": "2027-11-06T09:42:22.532Z",
+      "userAgent": "node",
+      "ip": "127.0.0.1"
     }
   ],
   "rooms": [
@@ -53,7 +229,7 @@
       "ownerId": "system",
       "hasPassword": false,
       "createdAt": "2026-01-01T00:00:00.000Z",
-      "memberCount": 1,
+      "memberCount": 6,
       "isPrivate": false,
       "isUniversal": true,
       "members": [
@@ -126,6 +302,146 @@
           }
         }
       ]
+    },
+    {
+      "id": "ops-room-mw4q1gfa",
+      "name": "Ops Room mw4q1gfa",
+      "description": "Encrypted team coordination room",
+      "ownerId": "19590e24-e27c-41cd-9ba6-52c4f8f40cb6",
+      "hasPassword": true,
+      "createdAt": "2026-11-06T08:37:28.075Z",
+      "memberCount": 2,
+      "isPrivate": true,
+      "members": [
+        {
+          "userId": "19590e24-e27c-41cd-9ba6-52c4f8f40cb6",
+          "roomId": "ops-room-mw4q1gfa",
+          "role": "OWNER",
+          "joinedAt": "2026-11-06T08:37:28.075Z",
+          "user": {
+            "id": "19590e24-e27c-41cd-9ba6-52c4f8f40cb6",
+            "email": "alice_mw4q1gfa@beacon.test",
+            "username": "alice_mw4q1gfa",
+            "fullName": "Alice Beacon",
+            "avatarUrl": "https://api.dicebear.com/7.x/initials/svg?seed=Alice%20Beacon",
+            "about": "Member of Beacon Community",
+            "phoneNumber": "",
+            "createdAt": "2026-11-06T08:37:27.657Z",
+            "isOnline": true,
+            "lastSeen": "2026-11-06T08:37:27.657Z",
+            "privacy": {
+              "locationVisibility": "room_members",
+              "phoneVisibility": "room_members",
+              "profileVisibility": "public",
+              "showOnlineStatus": true,
+              "locationSharingEnabled": true,
+              "temporarySharingExpiry": null,
+              "blockedUserIds": []
+            },
+            "isAdmin": false
+          }
+        },
+        {
+          "userId": "22d88e5f-7221-4ae3-8059-c3845a7f0c69",
+          "roomId": "ops-room-mw4q1gfa",
+          "role": "MEMBER",
+          "joinedAt": "2026-11-06T08:37:28.418Z",
+          "user": {
+            "id": "22d88e5f-7221-4ae3-8059-c3845a7f0c69",
+            "email": "bob_mw4q1gfa@beacon.test",
+            "username": "bob_mw4q1gfa",
+            "fullName": "Bob Android",
+            "avatarUrl": "https://api.dicebear.com/7.x/initials/svg?seed=Bob%20Android",
+            "about": "Member of Beacon Community",
+            "phoneNumber": "",
+            "createdAt": "2026-11-06T08:37:27.876Z",
+            "isOnline": true,
+            "lastSeen": "2026-11-06T08:37:27.876Z",
+            "privacy": {
+              "locationVisibility": "selected",
+              "phoneVisibility": "room_members",
+              "profileVisibility": "public",
+              "showOnlineStatus": true,
+              "locationSharingEnabled": true,
+              "temporarySharingExpiry": null,
+              "blockedUserIds": []
+            },
+            "isAdmin": false
+          }
+        }
+      ],
+      "passwordHash": "a5037a2dca3466f26119e06c33b5a93275a5bd5d981027f33269934d802ba02d7634c85b942152d5bd2948bbde02f1815518372d077fd2fb1f39f678c639c9aa",
+      "salt": "3768f28f8edf39477bbabfeed32c2d14"
+    },
+    {
+      "id": "ops-room-mw4q5nu4",
+      "name": "Ops Room mw4q5nu4",
+      "description": "Encrypted team coordination room",
+      "ownerId": "68c01a02-7df6-45fd-8181-3ee9877ab98d",
+      "hasPassword": true,
+      "createdAt": "2026-11-06T08:40:44.075Z",
+      "memberCount": 2,
+      "isPrivate": true,
+      "members": [
+        {
+          "userId": "68c01a02-7df6-45fd-8181-3ee9877ab98d",
+          "roomId": "ops-room-mw4q5nu4",
+          "role": "OWNER",
+          "joinedAt": "2026-11-06T08:40:44.075Z",
+          "user": {
+            "id": "68c01a02-7df6-45fd-8181-3ee9877ab98d",
+            "email": "alice_mw4q5nu4@beacon.test",
+            "username": "alice_mw4q5nu4",
+            "fullName": "Alice Beacon",
+            "avatarUrl": "https://api.dicebear.com/7.x/initials/svg?seed=Alice%20Beacon",
+            "about": "Member of Beacon Community",
+            "phoneNumber": "",
+            "createdAt": "2026-11-06T08:40:43.868Z",
+            "isOnline": true,
+            "lastSeen": "2026-11-06T08:40:43.868Z",
+            "privacy": {
+              "locationVisibility": "room_members",
+              "phoneVisibility": "room_members",
+              "profileVisibility": "public",
+              "showOnlineStatus": true,
+              "locationSharingEnabled": true,
+              "temporarySharingExpiry": null,
+              "blockedUserIds": []
+            },
+            "isAdmin": false
+          }
+        },
+        {
+          "userId": "041097da-cc53-43ec-a845-bd2340516535",
+          "roomId": "ops-room-mw4q5nu4",
+          "role": "MEMBER",
+          "joinedAt": "2026-11-06T08:40:44.247Z",
+          "user": {
+            "id": "041097da-cc53-43ec-a845-bd2340516535",
+            "email": "bob_mw4q5nu4@beacon.test",
+            "username": "bob_mw4q5nu4",
+            "fullName": "Bob Android",
+            "avatarUrl": "https://api.dicebear.com/7.x/initials/svg?seed=Bob%20Android",
+            "about": "Member of Beacon Community",
+            "phoneNumber": "",
+            "createdAt": "2026-11-06T08:40:43.981Z",
+            "isOnline": true,
+            "lastSeen": "2026-11-06T08:40:43.981Z",
+            "privacy": {
+              "locationVisibility": "selected",
+              "phoneVisibility": "room_members",
+              "profileVisibility": "public",
+              "showOnlineStatus": true,
+              "locationSharingEnabled": true,
+              "temporarySharingExpiry": null,
+              "blockedUserIds": []
+            },
+            "isAdmin": false
+          }
+        }
+      ],
+      "passwordHash": "1d6ef1be604ee52be98dcf2a2413a77852c14ecd40257e0f9041f0476aabaa6e1109d98f83435429855f021c237624326dc8ae14d85f450a9d1e75bc57d9000d",
+      "salt": "defbb5d0254e0aa5afc5ca7c56bbb731"
     }
   ],
   "roomMembers": [
@@ -140,6 +456,60 @@
       "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
       "role": "OWNER",
       "joinedAt": "2026-10-26T08:56:20.039Z"
+    },
+    {
+      "roomId": "room-universal",
+      "userId": "19590e24-e27c-41cd-9ba6-52c4f8f40cb6",
+      "role": "MEMBER",
+      "joinedAt": "2026-11-06T08:37:27.657Z"
+    },
+    {
+      "roomId": "room-universal",
+      "userId": "22d88e5f-7221-4ae3-8059-c3845a7f0c69",
+      "role": "MEMBER",
+      "joinedAt": "2026-11-06T08:37:27.876Z"
+    },
+    {
+      "roomId": "ops-room-mw4q1gfa",
+      "userId": "19590e24-e27c-41cd-9ba6-52c4f8f40cb6",
+      "role": "OWNER",
+      "joinedAt": "2026-11-06T08:37:28.075Z"
+    },
+    {
+      "roomId": "ops-room-mw4q1gfa",
+      "userId": "22d88e5f-7221-4ae3-8059-c3845a7f0c69",
+      "role": "MEMBER",
+      "joinedAt": "2026-11-06T08:37:28.418Z"
+    },
+    {
+      "roomId": "room-universal",
+      "userId": "68c01a02-7df6-45fd-8181-3ee9877ab98d",
+      "role": "MEMBER",
+      "joinedAt": "2026-11-06T08:40:43.868Z"
+    },
+    {
+      "roomId": "room-universal",
+      "userId": "041097da-cc53-43ec-a845-bd2340516535",
+      "role": "MEMBER",
+      "joinedAt": "2026-11-06T08:40:43.981Z"
+    },
+    {
+      "roomId": "ops-room-mw4q5nu4",
+      "userId": "68c01a02-7df6-45fd-8181-3ee9877ab98d",
+      "role": "OWNER",
+      "joinedAt": "2026-11-06T08:40:44.075Z"
+    },
+    {
+      "roomId": "ops-room-mw4q5nu4",
+      "userId": "041097da-cc53-43ec-a845-bd2340516535",
+      "role": "MEMBER",
+      "joinedAt": "2026-11-06T08:40:44.247Z"
+    },
+    {
+      "roomId": "room-universal",
+      "userId": "usr-apk-1793958142235",
+      "role": "MEMBER",
+      "joinedAt": "2026-11-06T09:42:22.235Z"
     }
   ],
   "locations": {
@@ -148,30 +518,206 @@
       "username": "Reddy",
       "fullName": "Reddy",
       "avatarUrl": "https://api.dicebear.com/7.x/initials/svg?seed=Reddy",
-      "latitude": 13.0551973,
-      "longitude": 77.717538,
-      "accuracy": 100,
-      "lat": 13.0551973,
-      "lng": 77.717538,
-      "accuracy_m": 100,
-      "geog": "SRID=4326;POINT(77.717538 13.0551973)",
-      "updated_at": "2026-10-29T13:34:16.018Z",
-      "altitude": 814,
+      "latitude": 13.04983843585965,
+      "longitude": 77.71469950675966,
+      "accuracy": 5,
+      "lat": 13.04983843585965,
+      "lng": 77.71469950675966,
+      "accuracy_m": 5,
+      "geog": "SRID=4326;POINT(77.71469950675966 13.04983843585965)",
+      "updated_at": "2026-11-06T09:36:26.310Z",
+      "altitude": null,
       "heading": null,
       "speed": null,
       "batteryLevel": null,
-      "timestamp": "2026-10-29T13:34:16.018Z",
+      "timestamp": "2026-11-06T09:36:26.310Z",
+      "isStale": false
+    },
+    "22d88e5f-7221-4ae3-8059-c3845a7f0c69": {
+      "userId": "22d88e5f-7221-4ae3-8059-c3845a7f0c69",
+      "username": "bob_mw4q1gfa",
+      "fullName": "Bob Android",
+      "avatarUrl": "https://api.dicebear.com/7.x/initials/svg?seed=Bob%20Android",
+      "latitude": 37.7749,
+      "longitude": -122.4194,
+      "accuracy": 12.5,
+      "lat": 37.7749,
+      "lng": -122.4194,
+      "accuracy_m": 12.5,
+      "geog": "SRID=4326;POINT(-122.4194 37.7749)",
+      "updated_at": "2026-11-06T08:37:28.486Z",
+      "altitude": null,
+      "heading": null,
+      "speed": 1.4,
+      "batteryLevel": null,
+      "timestamp": "2026-11-06T08:37:28.486Z",
+      "isStale": false
+    },
+    "041097da-cc53-43ec-a845-bd2340516535": {
+      "userId": "041097da-cc53-43ec-a845-bd2340516535",
+      "username": "bob_mw4q5nu4",
+      "fullName": "Bob Android",
+      "avatarUrl": "https://api.dicebear.com/7.x/initials/svg?seed=Bob%20Android",
+      "latitude": 37.7749,
+      "longitude": -122.4194,
+      "accuracy": 12.5,
+      "lat": 37.7749,
+      "lng": -122.4194,
+      "accuracy_m": 12.5,
+      "geog": "SRID=4326;POINT(-122.4194 37.7749)",
+      "updated_at": "2026-11-06T08:40:44.298Z",
+      "altitude": null,
+      "heading": null,
+      "speed": 1.4,
+      "batteryLevel": null,
+      "timestamp": "2026-11-06T08:40:44.298Z",
       "isStale": false
     }
   },
   "savedPlaces": [],
-  "messages": [],
+  "messages": [
+    {
+      "id": "msg-25912ca3-71ed-471b-891f-9a743f560771",
+      "roomId": "ops-room-mw4q1gfa",
+      "senderId": "19590e24-e27c-41cd-9ba6-52c4f8f40cb6",
+      "senderName": "Alice Beacon",
+      "senderAvatar": "https://api.dicebear.com/7.x/initials/svg?seed=Alice%20Beacon",
+      "text": "Hello Bob on Android from Web!",
+      "attachments": [],
+      "reactions": {},
+      "createdAt": "2026-11-06T08:37:28.529Z",
+      "isEdited": false,
+      "isDeleted": false
+    },
+    {
+      "id": "msg-ebf5f3c7-f654-4b7d-a547-0bba859a7564",
+      "roomId": "ops-room-mw4q5nu4",
+      "senderId": "68c01a02-7df6-45fd-8181-3ee9877ab98d",
+      "senderName": "Alice Beacon",
+      "senderAvatar": "https://api.dicebear.com/7.x/initials/svg?seed=Alice%20Beacon",
+      "text": "Hello Bob on Android from Web!",
+      "attachments": [],
+      "reactions": {},
+      "createdAt": "2026-11-06T08:40:44.324Z",
+      "isEdited": false,
+      "isDeleted": false
+    },
+    {
+      "id": "msg-apk-mw4q5nu4",
+      "roomId": "ops-room-mw4q5nu4",
+      "senderId": "041097da-cc53-43ec-a845-bd2340516535",
+      "senderName": "Bob Android",
+      "senderAvatar": "https://api.dicebear.com/7.x/initials/svg?seed=Bob%20Android",
+      "text": "Reply from Android APK!",
+      "reactions": {},
+      "createdAt": "2026-11-06T08:40:45.927Z",
+      "isDeleted": false,
+      "isEdited": false
+    }
+  ],
   "reminders": [],
   "meetings": [],
   "emergencyAlerts": [],
-  "locationShareRequests": [],
+  "locationShareRequests": [
+    {
+      "id": "req-88ca456b-1f9c-438e-a03d-2ada55e3096e",
+      "fromUserId": "68c01a02-7df6-45fd-8181-3ee9877ab98d",
+      "fromUserName": "Alice Beacon",
+      "fromUsername": "alice_mw4q5nu4",
+      "fromUserAvatar": "https://api.dicebear.com/7.x/initials/svg?seed=Alice%20Beacon",
+      "toUserId": "041097da-cc53-43ec-a845-bd2340516535",
+      "toUserName": "Bob Android",
+      "toUsername": "bob_mw4q5nu4",
+      "toUserAvatar": "https://api.dicebear.com/7.x/initials/svg?seed=Bob%20Android",
+      "status": "accepted",
+      "createdAt": "2026-11-06T08:40:44.270Z",
+      "updatedAt": "2026-11-06T08:40:44.282Z"
+    },
+    {
+      "id": "req-ed05d6dc-6122-4ad8-896e-485a9c7b20f6",
+      "fromUserId": "19590e24-e27c-41cd-9ba6-52c4f8f40cb6",
+      "fromUserName": "Alice Beacon",
+      "fromUsername": "alice_mw4q1gfa",
+      "fromUserAvatar": "https://api.dicebear.com/7.x/initials/svg?seed=Alice%20Beacon",
+      "toUserId": "22d88e5f-7221-4ae3-8059-c3845a7f0c69",
+      "toUserName": "Bob Android",
+      "toUsername": "bob_mw4q1gfa",
+      "toUserAvatar": "https://api.dicebear.com/7.x/initials/svg?seed=Bob%20Android",
+      "status": "accepted",
+      "createdAt": "2026-11-06T08:37:28.455Z",
+      "updatedAt": "2026-11-06T08:37:28.470Z"
+    }
+  ],
   "reports": [],
   "auditLogs": [
+    {
+      "id": "log-00294bc2-f9ec-419f-8352-8067e86631c8",
+      "timestamp": "2026-11-06T08:40:44.249Z",
+      "userId": "041097da-cc53-43ec-a845-bd2340516535",
+      "userName": "Bob Android",
+      "action": "ROOM_JOINED",
+      "details": "Joined room \"Ops Room mw4q5nu4\" (ops-room-mw4q5nu4)"
+    },
+    {
+      "id": "log-3c8be7c2-3cc7-4da2-8170-ad955e13534b",
+      "timestamp": "2026-11-06T08:40:44.076Z",
+      "userId": "68c01a02-7df6-45fd-8181-3ee9877ab98d",
+      "userName": "Alice Beacon",
+      "action": "ROOM_CREATED",
+      "details": "Created room \"Ops Room mw4q5nu4\" (ops-room-mw4q5nu4)"
+    },
+    {
+      "id": "log-c0045229-0594-4a9e-b95d-a4e6fb85e836",
+      "timestamp": "2026-11-06T08:40:43.988Z",
+      "userId": "041097da-cc53-43ec-a845-bd2340516535",
+      "userName": "Bob Android",
+      "action": "USER_REGISTERED",
+      "details": "Account created with username bob_mw4q5nu4",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "log-6d1899b4-6f73-4d20-a173-3270768b8859",
+      "timestamp": "2026-11-06T08:40:43.872Z",
+      "userId": "68c01a02-7df6-45fd-8181-3ee9877ab98d",
+      "userName": "Alice Beacon",
+      "action": "USER_REGISTERED",
+      "details": "Account created with username alice_mw4q5nu4",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "log-f4c6eab2-9c4a-4dfd-aa0b-f000c64a9bd5",
+      "timestamp": "2026-11-06T08:37:28.420Z",
+      "userId": "22d88e5f-7221-4ae3-8059-c3845a7f0c69",
+      "userName": "Bob Android",
+      "action": "ROOM_JOINED",
+      "details": "Joined room \"Ops Room mw4q1gfa\" (ops-room-mw4q1gfa)"
+    },
+    {
+      "id": "log-db27416b-aa1e-43c5-a0eb-8b2a649c6fde",
+      "timestamp": "2026-11-06T08:37:28.080Z",
+      "userId": "19590e24-e27c-41cd-9ba6-52c4f8f40cb6",
+      "userName": "Alice Beacon",
+      "action": "ROOM_CREATED",
+      "details": "Created room \"Ops Room mw4q1gfa\" (ops-room-mw4q1gfa)"
+    },
+    {
+      "id": "log-1e2feeca-d37b-4d9b-82ca-1b270e47226b",
+      "timestamp": "2026-11-06T08:37:27.895Z",
+      "userId": "22d88e5f-7221-4ae3-8059-c3845a7f0c69",
+      "userName": "Bob Android",
+      "action": "USER_REGISTERED",
+      "details": "Account created with username bob_mw4q1gfa",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "log-900c279e-84df-46db-8d3c-b24650b7a16b",
+      "timestamp": "2026-11-06T08:37:27.671Z",
+      "userId": "19590e24-e27c-41cd-9ba6-52c4f8f40cb6",
+      "userName": "Alice Beacon",
+      "action": "USER_REGISTERED",
+      "details": "Account created with username alice_mw4q1gfa",
+      "ip": "127.0.0.1"
+    },
     {
       "id": "log-385180cd-367b-42f3-9d29-dba233ae6fea",
       "timestamp": "2026-10-26T08:46:03.025Z",
@@ -184,523 +730,6 @@
   ],
   "passwordResets": [],
   "locationHistory": [
-    {
-      "id": "loc-52e78207-03c3-4407-b86c-be5eb58867f9",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.0498252,
-      "longitude": 77.7148653,
-      "accuracy": 3,
-      "altitude": 811,
-      "heading": null,
-      "speed": 0.09576446563005447,
-      "timestamp": "2026-10-28T07:29:14.581Z"
-    },
-    {
-      "id": "loc-72428d4f-080c-4262-9476-ba98f8199c09",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.049803333333333,
-      "longitude": 77.71485333333334,
-      "accuracy": 2.5,
-      "altitude": 797.4,
-      "heading": 180.32,
-      "speed": 0,
-      "timestamp": "2026-10-28T07:29:15.542Z"
-    },
-    {
-      "id": "loc-0fbdad9f-a09d-4265-823c-7e047dea488b",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.0498243,
-      "longitude": 77.7148647,
-      "accuracy": 3,
-      "altitude": 811,
-      "heading": null,
-      "speed": 0.08394554257392883,
-      "timestamp": "2026-10-28T07:29:15.577Z"
-    },
-    {
-      "id": "loc-c07d6b2e-0f43-40cd-a3fc-d8058cc4ab63",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.049803333333333,
-      "longitude": 77.71485333333334,
-      "accuracy": 2.5,
-      "altitude": 797.4,
-      "heading": 180.32,
-      "speed": 0,
-      "timestamp": "2026-10-28T07:29:16.538Z"
-    },
-    {
-      "id": "loc-6b77d325-6f5f-4af7-b3b7-29ce01f7ef58",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.0498242,
-      "longitude": 77.7148642,
-      "accuracy": 3,
-      "altitude": 811,
-      "heading": null,
-      "speed": 0.085143685,
-      "timestamp": "2026-10-28T07:29:16.563Z"
-    },
-    {
-      "id": "loc-e8823f71-2332-477b-8fdd-f79857d66593",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.049751666666669,
-      "longitude": 77.71483166666667,
-      "accuracy": 2.5999999046325684,
-      "altitude": 799.6999999999999,
-      "heading": 194,
-      "speed": 0,
-      "timestamp": "2026-10-28T07:29:17.536Z"
-    },
-    {
-      "id": "loc-07c40348-f948-4ec1-bfa0-844e9b48213f",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.0498218,
-      "longitude": 77.714863,
-      "accuracy": 3,
-      "altitude": 811,
-      "heading": null,
-      "speed": 0.060157690197229385,
-      "timestamp": "2026-10-28T07:29:17.556Z"
-    },
-    {
-      "id": "97678716-5c59-4190-960f-4cb89a1b10ce",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.0505331,
-      "longitude": 77.7149827,
-      "accuracy": 100,
-      "altitude": null,
-      "heading": null,
-      "speed": null,
-      "timestamp": "2026-10-28T07:33:42.817Z"
-    },
-    {
-      "id": "74edcc04-2920-467a-9368-033d817fa237",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.0505331,
-      "longitude": 77.7149827,
-      "accuracy": 100,
-      "altitude": null,
-      "heading": null,
-      "speed": null,
-      "timestamp": "2026-10-28T07:33:42.856Z"
-    },
-    {
-      "id": "c0e24ff5-a786-46fe-9d9e-f0d47966d55d",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.0498149,
-      "longitude": 77.7148595,
-      "accuracy": 100,
-      "altitude": 811,
-      "heading": null,
-      "speed": null,
-      "timestamp": "2026-10-28T07:33:42.859Z"
-    },
-    {
-      "id": "f5368cf3-fb21-4626-ae17-06e5817c140c",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.0498149,
-      "longitude": 77.7148595,
-      "accuracy": 100,
-      "altitude": 811,
-      "heading": null,
-      "speed": null,
-      "timestamp": "2026-10-28T07:33:42.920Z"
-    },
-    {
-      "id": "af35b93b-3ed3-446d-be3c-59f03a52dc40",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.0498149,
-      "longitude": 77.7148595,
-      "accuracy": 100,
-      "altitude": 811,
-      "heading": null,
-      "speed": null,
-      "timestamp": "2026-10-28T07:35:49.090Z"
-    },
-    {
-      "id": "loc-9448edb0-e349-45dc-a8c9-7150166e8a64",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.0498149,
-      "longitude": 77.7148595,
-      "accuracy": 100,
-      "altitude": 811,
-      "heading": null,
-      "speed": null,
-      "timestamp": "2026-10-28T07:36:21.141Z"
-    },
-    {
-      "id": "loc-f0ba19fc-03b4-4d8d-9871-1587f07a630e",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.0500724,
-      "longitude": 77.7149197,
-      "accuracy": 12.006999969482422,
-      "altitude": 811,
-      "heading": null,
-      "speed": null,
-      "timestamp": "2026-10-28T08:16:38.647Z"
-    },
-    {
-      "id": "loc-4dd7c4b7-44d8-4384-a1d0-1605f7db90ba",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.0503584,
-      "longitude": 77.7144644,
-      "accuracy": 39.48400115966797,
-      "altitude": 811.7000122070312,
-      "heading": 305.48260498046875,
-      "speed": 7.711869716644287,
-      "timestamp": "2026-10-28T08:17:05.329Z"
-    },
-    {
-      "id": "loc-f6f9dda3-529e-4de0-a432-2ff9296d95bd",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.0500712,
-      "longitude": 77.7149255,
-      "accuracy": 19.7450008392334,
-      "altitude": 811,
-      "heading": 122.35677337646484,
-      "speed": 7.559728622436523,
-      "timestamp": "2026-10-28T08:17:11.966Z"
-    },
-    {
-      "id": "loc-36e6c85f-d7d0-4aca-812d-eb8d8c8d1e28",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.0500492,
-      "longitude": 77.7148731,
-      "accuracy": 24.899999618530273,
-      "altitude": 813.7999877929688,
-      "heading": 230.23895263671875,
-      "speed": 0.7741272449493408,
-      "timestamp": "2026-10-28T08:17:18.613Z"
-    },
-    {
-      "id": "loc-c47b0d5c-5562-4710-b08b-a39424219660",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.0500684,
-      "longitude": 77.7149093,
-      "accuracy": 12.817999839782715,
-      "altitude": 811,
-      "heading": 62.17324447631836,
-      "speed": 0.6122211813926697,
-      "timestamp": "2026-10-28T08:17:25.191Z"
-    },
-    {
-      "id": "loc-95aaefba-6e3a-4886-a699-44fe0a90f79e",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.0500357,
-      "longitude": 77.7148865,
-      "accuracy": 14.564000129699707,
-      "altitude": 811,
-      "heading": 213.46688842773438,
-      "speed": 0.6322106719017029,
-      "timestamp": "2026-10-28T08:17:31.808Z"
-    },
-    {
-      "id": "loc-3a6f7b3f-e409-401e-8a3e-e85c81a03c23",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.0500361,
-      "longitude": 77.7148683,
-      "accuracy": 19.243000030517578,
-      "altitude": 820.7000122070312,
-      "heading": 268.4210205078125,
-      "speed": 0.29812073707580566,
-      "timestamp": "2026-10-28T08:17:38.484Z"
-    },
-    {
-      "id": "loc-8f219ff2-c7b7-4952-810e-029fd99ec1a6",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.049948333333335,
-      "longitude": 77.714925,
-      "accuracy": 2.700000047683716,
-      "altitude": 796.1,
-      "heading": 235.07,
-      "speed": 0.21669805,
-      "timestamp": "2026-10-28T08:36:52.531Z"
-    },
-    {
-      "id": "loc-14652644-daca-4612-b14f-b37435605b23",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.0499597,
-      "longitude": 77.7149407,
-      "accuracy": 3,
-      "altitude": 810.7999877929688,
-      "heading": null,
-      "speed": 0.02653716877102852,
-      "timestamp": "2026-10-28T08:36:52.551Z"
-    },
-    {
-      "id": "loc-6aa2ba80-07ea-4bbf-accf-f6218622f9bf",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.049941666666665,
-      "longitude": 77.71491666666667,
-      "accuracy": 2.700000047683716,
-      "altitude": 796.1,
-      "heading": 239.07,
-      "speed": 0.20434472,
-      "timestamp": "2026-10-28T08:36:53.540Z"
-    },
-    {
-      "id": "loc-ad5e74db-936f-4a15-8d05-f539ff85b52a",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.0499539,
-      "longitude": 77.7149351,
-      "accuracy": 3,
-      "altitude": 810.7999877929688,
-      "heading": null,
-      "speed": 0.013785701,
-      "timestamp": "2026-10-28T08:36:53.578Z"
-    },
-    {
-      "id": "loc-336f533e-45d1-480d-928b-fa9354a2c448",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.049936666666667,
-      "longitude": 77.71490833333334,
-      "accuracy": 2.5999999046325684,
-      "altitude": 796.1999999999999,
-      "heading": 240.96,
-      "speed": 0,
-      "timestamp": "2026-10-28T08:36:54.548Z"
-    },
-    {
-      "id": "loc-4baa2709-d14f-4d7f-8da9-6c54a49cb946",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.0499475,
-      "longitude": 77.7149289,
-      "accuracy": 3,
-      "altitude": 810.7999877929688,
-      "heading": null,
-      "speed": 0.01211477443575859,
-      "timestamp": "2026-10-28T08:36:54.558Z"
-    },
-    {
-      "id": "loc-1ee76134-6bb9-46c8-b0a5-282427505307",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.049931666666664,
-      "longitude": 77.71490333333333,
-      "accuracy": 2.5999999046325684,
-      "altitude": 796.1,
-      "heading": 246.11,
-      "speed": 0,
-      "timestamp": "2026-10-28T08:36:55.553Z"
-    },
-    {
-      "id": "loc-6d72dacc-31b7-4e0b-8c0e-73f27e98a766",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.0499422,
-      "longitude": 77.7149228,
-      "accuracy": 3,
-      "altitude": 810.7999877929688,
-      "heading": null,
-      "speed": 0.02969064749777317,
-      "timestamp": "2026-10-28T08:36:55.564Z"
-    },
-    {
-      "id": "loc-e518bb89-8866-4e5c-a869-a0e19d4e9b99",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.049931666666664,
-      "longitude": 77.71489833333334,
-      "accuracy": 2.5999999046325684,
-      "altitude": 796,
-      "heading": 246.11,
-      "speed": 0,
-      "timestamp": "2026-10-28T08:36:56.562Z"
-    },
-    {
-      "id": "loc-df9dcce8-37c4-4cb5-a7fd-476ff4f656ec",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.0499411,
-      "longitude": 77.7149215,
-      "accuracy": 3,
-      "altitude": 810.7999877929688,
-      "heading": null,
-      "speed": 0.071093716,
-      "timestamp": "2026-10-28T08:36:56.584Z"
-    },
-    {
-      "id": "loc-0c63b56d-a9f6-4d6e-9026-df08ae024e02",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.049931666666664,
-      "longitude": 77.71489833333334,
-      "accuracy": 2.5999999046325684,
-      "altitude": 796,
-      "heading": 246.11,
-      "speed": 0,
-      "timestamp": "2026-10-28T08:36:57.561Z"
-    },
-    {
-      "id": "loc-89f27802-d250-46d8-b687-215993134446",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.0499399,
-      "longitude": 77.7149084,
-      "accuracy": 3,
-      "altitude": 810.7999877929688,
-      "heading": null,
-      "speed": 0.019356491044163704,
-      "timestamp": "2026-10-28T08:36:57.578Z"
-    },
-    {
-      "id": "loc-16892d8b-865e-4668-8953-b33396573301",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.049931666666664,
-      "longitude": 77.71489833333334,
-      "accuracy": 2.5999999046325684,
-      "altitude": 796,
-      "heading": 275.48,
-      "speed": 0,
-      "timestamp": "2026-10-28T08:36:58.546Z"
-    },
-    {
-      "id": "loc-81916283-b9a8-42d4-a075-226b741d214a",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.0499387,
-      "longitude": 77.7149031,
-      "accuracy": 3,
-      "altitude": 810.7999877929688,
-      "heading": null,
-      "speed": 0.018277592957019806,
-      "timestamp": "2026-10-28T08:36:58.559Z"
-    },
-    {
-      "id": "loc-d33d7fff-0f98-4d04-92ac-4cbbadda2c82",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.049931666666664,
-      "longitude": 77.71489833333334,
-      "accuracy": 2.5999999046325684,
-      "altitude": 796,
-      "heading": 275.48,
-      "speed": 0,
-      "timestamp": "2026-10-28T08:36:59.551Z"
-    },
-    {
-      "id": "loc-7461bd68-214a-49bd-a5a0-3bd13f77474a",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.049939,
-      "longitude": 77.7149021,
-      "accuracy": 3,
-      "altitude": 810.7999877929688,
-      "heading": null,
-      "speed": 0.029889388,
-      "timestamp": "2026-10-28T08:36:59.561Z"
-    },
-    {
-      "id": "loc-6d482fe0-16bd-4a2e-ac01-14a01b1abbb8",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.049931666666664,
-      "longitude": 77.71489833333334,
-      "accuracy": 2.5999999046325684,
-      "altitude": 796,
-      "heading": 275.48,
-      "speed": 0,
-      "timestamp": "2026-10-28T08:37:00.542Z"
-    },
-    {
-      "id": "loc-64fd7518-ce03-44a2-a8de-0aff20ab3186",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.0499367,
-      "longitude": 77.7149003,
-      "accuracy": 3,
-      "altitude": 810.7999877929688,
-      "heading": null,
-      "speed": 0.01400153711438179,
-      "timestamp": "2026-10-28T08:37:00.566Z"
-    },
-    {
-      "id": "loc-d411a0b7-9513-4185-8134-487bbb1868a6",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.049931666666664,
-      "longitude": 77.71489833333334,
-      "accuracy": 2.5999999046325684,
-      "altitude": 796,
-      "heading": 275.48,
-      "speed": 0,
-      "timestamp": "2026-10-28T08:37:01.563Z"
-    },
-    {
-      "id": "loc-e5867cd8-a3e7-49bc-8529-9df3b42964ea",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.0499348,
-      "longitude": 77.7148988,
-      "accuracy": 3,
-      "altitude": 810.7999877929688,
-      "heading": null,
-      "speed": 0.023439879,
-      "timestamp": "2026-10-28T08:37:07.937Z"
-    },
-    {
-      "id": "loc-06c55774-e104-476a-b508-73091f48a191",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.049923333333334,
-      "longitude": 77.71488500000001,
-      "accuracy": 3,
-      "altitude": 794.8,
-      "heading": 0,
-      "speed": 0,
-      "timestamp": "2026-10-28T08:37:08.273Z"
-    },
-    {
-      "id": "loc-89f9362b-3a0c-45e6-a221-7bc6963015ee",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.0500919,
-      "longitude": 77.714916,
-      "accuracy": 25.42799949645996,
-      "altitude": 811,
-      "heading": null,
-      "speed": null,
-      "timestamp": "2026-10-28T08:37:09.258Z"
-    },
-    {
-      "id": "loc-c324b039-6cff-4a80-801b-78a40cc3449d",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.0499223,
-      "longitude": 77.7148853,
-      "accuracy": 5.326000213623047,
-      "altitude": 811,
-      "heading": null,
-      "speed": 0.00036961364,
-      "timestamp": "2026-10-28T08:37:09.273Z"
-    },
-    {
-      "id": "loc-41368eec-2bf5-4e19-bbbd-5976129ec0ae",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.049936666666667,
-      "longitude": 77.71488333333333,
-      "accuracy": 3.0999999046325684,
-      "altitude": 794.6999999999999,
-      "heading": 0,
-      "speed": 0,
-      "timestamp": "2026-10-28T08:37:10.540Z"
-    },
-    {
-      "id": "loc-2307d153-5c7d-4d34-8b2a-bee736d100e5",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.0454538,
-      "longitude": 77.7216542,
-      "accuracy": 30.518001556396484,
-      "altitude": 812,
-      "heading": null,
-      "speed": null,
-      "timestamp": "2026-10-28T12:05:03.096Z"
-    },
-    {
-      "id": "loc-29cabf30-214f-4dee-970d-069fd303a64f",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.045551666666665,
-      "longitude": 77.72166666666666,
-      "accuracy": 4.300000190734863,
-      "altitude": 765,
-      "heading": 1.59,
-      "speed": 1.059813,
-      "timestamp": "2026-10-28T12:05:06.424Z"
-    },
-    {
-      "id": "loc-aef65419-8d30-44a0-9f06-f4ce08d812bf",
-      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
-      "latitude": 13.0455476,
-      "longitude": 77.7216702,
-      "accuracy": 6.598999977111816,
-      "altitude": 812,
-      "heading": 164.5232391357422,
-      "speed": 1.091753363609314,
-      "timestamp": "2026-10-28T12:05:08.305Z"
-    },
     {
       "id": "loc-73163b97-cf24-445e-91de-ab2a0629d0fe",
       "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
@@ -2383,7 +2412,526 @@
       "heading": null,
       "speed": null,
       "timestamp": "2026-10-29T13:34:16.018Z"
+    },
+    {
+      "id": "6d1887be-5218-45e3-b6d0-63813bf53d4b",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.0502843,
+      "longitude": 77.7145728,
+      "accuracy": 57.97100067138672,
+      "altitude": 812,
+      "heading": null,
+      "speed": null,
+      "timestamp": "2026-10-30T03:21:04.073Z"
+    },
+    {
+      "id": "1c4769d5-727b-4894-a98c-307c45fa316e",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.0502843,
+      "longitude": 77.7145728,
+      "accuracy": 57.97100067138672,
+      "altitude": 812,
+      "heading": null,
+      "speed": null,
+      "timestamp": "2026-10-30T03:21:04.159Z"
+    },
+    {
+      "id": "44a95d9c-630c-436b-8661-49e43fb770ff",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.0502735,
+      "longitude": 77.715046,
+      "accuracy": 48.29899978637695,
+      "altitude": 818,
+      "heading": null,
+      "speed": null,
+      "timestamp": "2026-10-30T03:22:23.870Z"
+    },
+    {
+      "id": "fc23da99-820b-4461-9a89-891ce33b2e63",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.0502735,
+      "longitude": 77.715046,
+      "accuracy": 48.29899978637695,
+      "altitude": 818,
+      "heading": null,
+      "speed": null,
+      "timestamp": "2026-10-30T03:22:23.887Z"
+    },
+    {
+      "id": "9686ea47-770a-4dbf-a4e1-d9fe78d81e86",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.0501854,
+      "longitude": 77.7146612,
+      "accuracy": 77.86900329589844,
+      "altitude": 812,
+      "heading": null,
+      "speed": null,
+      "timestamp": "2026-10-30T03:22:25.116Z"
+    },
+    {
+      "id": "717cba6d-c6ed-407b-a7d5-a38fdb2e280f",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.0501854,
+      "longitude": 77.7146612,
+      "accuracy": 77.86900329589844,
+      "altitude": 812,
+      "heading": null,
+      "speed": null,
+      "timestamp": "2026-10-30T03:22:25.200Z"
+    },
+    {
+      "id": "716e8c61-8d10-4279-a287-dd29962725f1",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.0501815,
+      "longitude": 77.7147731,
+      "accuracy": 20.513999938964844,
+      "altitude": 814,
+      "heading": null,
+      "speed": null,
+      "timestamp": "2026-10-30T03:22:31.830Z"
+    },
+    {
+      "id": "cd30f0c3-80b7-4048-b55e-8e5737e68a7d",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.0501815,
+      "longitude": 77.7147731,
+      "accuracy": 20.513999938964844,
+      "altitude": 814,
+      "heading": null,
+      "speed": null,
+      "timestamp": "2026-10-30T03:22:31.836Z"
+    },
+    {
+      "id": "ae5cb738-f5a2-4637-a1f0-da90c50a3869",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.0501815,
+      "longitude": 77.7147731,
+      "accuracy": 20.513999938964844,
+      "altitude": 814,
+      "heading": null,
+      "speed": null,
+      "timestamp": "2026-10-30T03:22:46.551Z"
+    },
+    {
+      "id": "7f3c0128-7609-4a50-9759-80f763e17ac7",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.0501815,
+      "longitude": 77.7147731,
+      "accuracy": 20.513999938964844,
+      "altitude": 814,
+      "heading": null,
+      "speed": null,
+      "timestamp": "2026-10-30T03:22:46.635Z"
+    },
+    {
+      "id": "2a97918f-41ab-46d4-b15d-b1d63297576a",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.0474416,
+      "longitude": 77.7209153,
+      "accuracy": 14.32699966430664,
+      "altitude": 814,
+      "heading": null,
+      "speed": null,
+      "timestamp": "2026-10-30T12:17:23.379Z"
+    },
+    {
+      "id": "c5770085-899a-431b-9c7b-346a760114bd",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.0474416,
+      "longitude": 77.7209153,
+      "accuracy": 14.32699966430664,
+      "altitude": 814,
+      "heading": null,
+      "speed": null,
+      "timestamp": "2026-10-30T12:17:23.401Z"
+    },
+    {
+      "id": "586bcaa5-b36e-45aa-aeb9-2a931c5e6bda",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.0474416,
+      "longitude": 77.7209153,
+      "accuracy": 14.32699966430664,
+      "altitude": 814,
+      "heading": null,
+      "speed": null,
+      "timestamp": "2026-10-30T12:17:48.584Z"
+    },
+    {
+      "id": "66a781c1-e477-438f-8147-581c0bfabc65",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.0474416,
+      "longitude": 77.7209153,
+      "accuracy": 14.32699966430664,
+      "altitude": 814,
+      "heading": null,
+      "speed": null,
+      "timestamp": "2026-10-30T12:17:48.661Z"
+    },
+    {
+      "id": "423d510a-0938-42e3-83eb-611219ef37ae",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.045819999999999,
+      "longitude": 77.72272833333334,
+      "accuracy": 1.600000023841858,
+      "altitude": 778,
+      "heading": 263,
+      "speed": 0.1,
+      "timestamp": "2026-10-31T10:03:07.433Z"
+    },
+    {
+      "id": "49f32f04-069b-4bc2-82cc-86e40a1747ed",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.0458234,
+      "longitude": 77.7227302,
+      "accuracy": 100,
+      "altitude": 812,
+      "heading": null,
+      "speed": null,
+      "timestamp": "2026-10-31T10:03:16.546Z"
+    },
+    {
+      "id": "54402f9c-d171-4263-823b-abf5b807a74d",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.0458234,
+      "longitude": 77.7227302,
+      "accuracy": 100,
+      "altitude": 812,
+      "heading": null,
+      "speed": null,
+      "timestamp": "2026-10-31T10:03:16.550Z"
+    },
+    {
+      "id": "loc-2fb08557-d5f2-4965-8e0c-961960e0d534",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.0458234,
+      "longitude": 77.7227302,
+      "accuracy": 100,
+      "altitude": 811.8999633789062,
+      "heading": null,
+      "speed": null,
+      "timestamp": "2026-10-31T10:04:50.890Z"
+    },
+    {
+      "id": "bd8cada3-537a-47df-9b52-591c44de1088",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 12.999926666666665,
+      "longitude": 77.75590166666666,
+      "accuracy": 3,
+      "altitude": 802,
+      "heading": null,
+      "speed": 0,
+      "timestamp": "2026-10-31T12:22:51.697Z"
+    },
+    {
+      "id": "536c86db-1793-43d4-b545-82e664a47f0a",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 12.9999793,
+      "longitude": 77.7558912,
+      "accuracy": 90.90599822998047,
+      "altitude": 823,
+      "heading": null,
+      "speed": null,
+      "timestamp": "2026-10-31T12:22:52.347Z"
+    },
+    {
+      "id": "35935297-ffed-44a2-a24e-a46dc164b02d",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 12.9999793,
+      "longitude": 77.7558912,
+      "accuracy": 90.90599822998047,
+      "altitude": 823,
+      "heading": null,
+      "speed": null,
+      "timestamp": "2026-10-31T12:22:54.901Z"
+    },
+    {
+      "id": "37db90df-d31b-4ea3-b1ae-74212814eb14",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.0501149,
+      "longitude": 77.7155368,
+      "accuracy": 78.36799621582031,
+      "altitude": 811,
+      "heading": null,
+      "speed": null,
+      "timestamp": "2026-11-06T07:49:49.747Z"
+    },
+    {
+      "id": "a850d249-ad0c-43e5-940a-0eabb4d74053",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.0504774,
+      "longitude": 77.7157589,
+      "accuracy": 60,
+      "altitude": 810,
+      "heading": null,
+      "speed": null,
+      "timestamp": "2026-11-06T07:49:51.534Z"
+    },
+    {
+      "id": "a8c47905-def1-4656-a16b-39e3a9810a60",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.0505346,
+      "longitude": 77.7157195,
+      "accuracy": 48.75899887084961,
+      "altitude": 811,
+      "heading": 326,
+      "speed": 0.2,
+      "timestamp": "2026-11-06T07:49:57.695Z"
+    },
+    {
+      "id": "7ed6f6c3-86c1-4c88-8b05-30386dfd32d3",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.050107,
+      "longitude": 77.7156421,
+      "accuracy": 44.22700119018555,
+      "altitude": 811,
+      "heading": 191,
+      "speed": 3.6,
+      "timestamp": "2026-11-06T07:50:04.269Z"
+    },
+    {
+      "id": "d9a92f86-b2b3-4bd4-aab6-0f0d2f2822d3",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.0498813,
+      "longitude": 77.7157959,
+      "accuracy": 61.49700164794922,
+      "altitude": 811,
+      "heading": 166,
+      "speed": 3.8,
+      "timestamp": "2026-11-06T07:50:10.820Z"
+    },
+    {
+      "id": "f092e2b7-54b0-4821-8925-637b92b0eef8",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.0502423,
+      "longitude": 77.7155558,
+      "accuracy": 85.40599822998047,
+      "altitude": 810,
+      "heading": 289,
+      "speed": 1.2,
+      "timestamp": "2026-11-06T07:50:17.362Z"
+    },
+    {
+      "id": "baacf606-3e3b-4f9b-a68e-91315f60c1f0",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.0502423,
+      "longitude": 77.7155558,
+      "accuracy": 85.40599822998047,
+      "altitude": 810,
+      "heading": 289,
+      "speed": 1.2,
+      "timestamp": "2026-11-06T07:50:17.374Z"
+    },
+    {
+      "id": "71dfd773-293f-4bc2-9a0a-5d1d87f3f2fc",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.0501957,
+      "longitude": 77.7153413,
+      "accuracy": 80.8270034790039,
+      "altitude": 813,
+      "heading": 269,
+      "speed": 2,
+      "timestamp": "2026-11-06T07:50:23.929Z"
+    },
+    {
+      "id": "eae39ba1-4ac7-4236-8052-d846ef53b34d",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.0501957,
+      "longitude": 77.7153413,
+      "accuracy": 80.8270034790039,
+      "altitude": 813,
+      "heading": 269,
+      "speed": 2,
+      "timestamp": "2026-11-06T07:50:23.933Z"
+    },
+    {
+      "id": "a4f69bed-0caf-4d63-89f7-2a13307c0758",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.0503716,
+      "longitude": 77.7152442,
+      "accuracy": 82.33599853515625,
+      "altitude": 810,
+      "heading": 297,
+      "speed": 2.2,
+      "timestamp": "2026-11-06T07:50:30.570Z"
+    },
+    {
+      "id": "2a7449a6-2d70-45d1-b76d-2d22657a018c",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.0503716,
+      "longitude": 77.7152442,
+      "accuracy": 82.33599853515625,
+      "altitude": 810,
+      "heading": 297,
+      "speed": 2.2,
+      "timestamp": "2026-11-06T07:50:30.574Z"
+    },
+    {
+      "id": "e4041aec-dba7-4616-9692-2de61c1ae6e2",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.0501805,
+      "longitude": 77.7153246,
+      "accuracy": 79.78299713134766,
+      "altitude": 810,
+      "heading": 243,
+      "speed": 0.9,
+      "timestamp": "2026-11-06T07:50:37.099Z"
+    },
+    {
+      "id": "f4182901-ff2b-471b-81d1-3aee54ec34bb",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.0501805,
+      "longitude": 77.7153246,
+      "accuracy": 79.78299713134766,
+      "altitude": 810,
+      "heading": 243,
+      "speed": 0.9,
+      "timestamp": "2026-11-06T07:50:37.136Z"
+    },
+    {
+      "id": "85059bc7-c4a6-46c5-b31f-5541e5192c75",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.0499055,
+      "longitude": 77.7153399,
+      "accuracy": 49.9630012512207,
+      "altitude": 810,
+      "heading": 195,
+      "speed": 1.8,
+      "timestamp": "2026-11-06T07:50:43.689Z"
+    },
+    {
+      "id": "59fa1aa9-2419-46cd-89a6-8cc30a0a57dc",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.0499055,
+      "longitude": 77.7153399,
+      "accuracy": 49.9630012512207,
+      "altitude": 810,
+      "heading": 195,
+      "speed": 1.8,
+      "timestamp": "2026-11-06T07:50:43.760Z"
+    },
+    {
+      "id": "b30ae013-dc0c-4824-a17a-cbb9dd110af5",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.0502823,
+      "longitude": 77.7171291,
+      "accuracy": 100,
+      "altitude": 811,
+      "heading": null,
+      "speed": null,
+      "timestamp": "2026-11-06T07:51:18.032Z"
+    },
+    {
+      "id": "cc8c99d0-6a25-495a-94f2-50d0f68fe373",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.048951175021422,
+      "longitude": 77.71695256233217,
+      "accuracy": 5,
+      "altitude": null,
+      "heading": null,
+      "speed": null,
+      "timestamp": "2026-11-06T07:52:11.759Z"
+    },
+    {
+      "id": "1d188e17-8048-4858-adbc-1916a8f478aa",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.048951175021422,
+      "longitude": 77.71695256233217,
+      "accuracy": 5,
+      "altitude": null,
+      "heading": null,
+      "speed": null,
+      "timestamp": "2026-11-06T07:52:11.805Z"
+    },
+    {
+      "id": "b2a1c48f-0c82-4112-87c5-e654a8de567d",
+      "userId": "22d88e5f-7221-4ae3-8059-c3845a7f0c69",
+      "latitude": 37.7749,
+      "longitude": -122.4194,
+      "accuracy": 12.5,
+      "altitude": null,
+      "heading": null,
+      "speed": 1.4,
+      "timestamp": "2026-11-06T08:37:28.486Z"
+    },
+    {
+      "id": "d9cda130-fdc2-4659-abe1-745b1a208dcc",
+      "userId": "041097da-cc53-43ec-a845-bd2340516535",
+      "latitude": 37.7749,
+      "longitude": -122.4194,
+      "accuracy": 12.5,
+      "altitude": null,
+      "heading": null,
+      "speed": 1.4,
+      "timestamp": "2026-11-06T08:40:44.298Z"
+    },
+    {
+      "id": "loc-653570ee-eeee-4e97-bacf-96d9c8305269",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.0500059,
+      "longitude": 77.7148671,
+      "accuracy": 15.041000366210938,
+      "altitude": 810.5,
+      "heading": null,
+      "speed": null,
+      "timestamp": "2026-11-06T09:35:36.812Z"
+    },
+    {
+      "id": "1f852b5c-57de-4df0-80f7-b0008ffb7d93",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.0500059,
+      "longitude": 77.7148671,
+      "accuracy": 38.00379943847656,
+      "altitude": 811,
+      "heading": null,
+      "speed": null,
+      "timestamp": "2026-11-06T09:36:03.724Z"
+    },
+    {
+      "id": "loc-2f14f5a3-2d69-4844-a3b4-dc83bf3b9f73",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.049640490531596,
+      "longitude": 77.71432399749757,
+      "accuracy": 5,
+      "altitude": null,
+      "heading": null,
+      "speed": null,
+      "timestamp": "2026-11-06T09:36:18.321Z"
+    },
+    {
+      "id": "loc-601304ec-f190-414c-8e9d-797aa0986c82",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.047937545554044,
+      "longitude": 77.71451711654665,
+      "accuracy": 5,
+      "altitude": null,
+      "heading": null,
+      "speed": null,
+      "timestamp": "2026-11-06T09:36:21.189Z"
+    },
+    {
+      "id": "loc-25498154-2076-4fa1-bd2f-18474b81839d",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.0489812924314,
+      "longitude": 77.71385192871095,
+      "accuracy": 5,
+      "altitude": null,
+      "heading": null,
+      "speed": null,
+      "timestamp": "2026-11-06T09:36:24.733Z"
+    },
+    {
+      "id": "loc-66a71fd5-7106-4989-96fe-8e93bec1237b",
+      "userId": "1acba9f0-df49-4e70-9f0d-b51fd2f61ea0",
+      "latitude": 13.04983843585965,
+      "longitude": 77.71469950675966,
+      "accuracy": 5,
+      "altitude": null,
+      "heading": null,
+      "speed": null,
+      "timestamp": "2026-11-06T09:36:26.310Z"
     }
   ],
-  "deletedIds": []
+  "deletedIds": [
+    "sos-e9e1fc04-1289-44c4-b9ca-e2cbfdcef699"
+  ]
 }
