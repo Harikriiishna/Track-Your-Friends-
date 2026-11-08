@@ -911,6 +911,8 @@ function MainApp() {
             >
               <Suspense fallback={<TabFallback />}>
                 <EmergencyManager
+                  rooms={userRooms}
+                  activeRoomId={selectedRoomId}
                   onViewLocationOnMap={(lat, lng) => {
                     setPendingCoords({ lat, lng });
                     handleSelectTab('map');
@@ -919,6 +921,7 @@ function MainApp() {
                     setSelectedChatUser({ id: userId, name: 'User', avatar: '' });
                     handleSelectTab('chat');
                   }}
+                  onNavigateToRooms={() => handleSelectTab('rooms')}
                 />
               </Suspense>
             </div>

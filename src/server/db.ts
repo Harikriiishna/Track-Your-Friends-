@@ -375,14 +375,17 @@ class Database {
     }
 
     const { hash, salt } = this.hashPassword(userData.password);
-    const userId = crypto.randomUUID();
+    const trimmedName = userData.fullName.trim() || cleanUsername;
+    const baseNameId = trimmedName;
+    const isIdTaken = this.data.users.some((u) => u.id.toLowerCase() === baseNameId.toLowerCase());
+    const userId = isIdTaken ? cleanUsername : baseNameId;
     const isFirstUser = this.data.users.length === 0;
 
     const newUser: UserRecord = {
       id: userId,
       email: cleanEmail,
       username: cleanUsername,
-      fullName: userData.fullName.trim(),
+      fullName: trimmedName,
       avatarUrl: userData.avatarUrl || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(userData.fullName)}`,
       about: 'Member of Beacon Community',
       phoneNumber: userData.phoneNumber?.trim() || '',
@@ -432,12 +435,29 @@ class Database {
   }
 
   public findUserById(id: string): UserRecord | undefined {
-    return this.data.users.find((u) => u.id === id);
+    if (!id) return undefined;
+    const clean = id.trim();
+    const lower = clean.toLowerCase();
+    return (
+      this.data.users.find((u) => u.id === clean) ||
+      this.data.users.find(
+        (u) =>
+          u.id.toLowerCase() === lower ||
+          u.fullName.toLowerCase() === lower ||
+          u.username.toLowerCase() === lower.replace(/^@/, '')
+      )
+    );
   }
 
   public findUserByEmailOrUsername(identifier: string): UserRecord | undefined {
-    const lower = identifier.toLowerCase().trim();
-    return this.data.users.find((u) => u.email.toLowerCase() === lower || u.username.toLowerCase() === lower);
+    const lower = identifier.toLowerCase().trim().replace(/^@/, '');
+    return this.data.users.find(
+      (u) =>
+        u.email.toLowerCase() === lower ||
+        u.username.toLowerCase() === lower ||
+        u.fullName.toLowerCase() === lower ||
+        u.id.toLowerCase() === lower
+    );
   }
 
   public createSession(userId: string, userAgent?: string, ip?: string): string {
@@ -1814,8 +1834,14 @@ class Database {
     return alert;
   }
 
-  public getActiveEmergencyAlerts(): EmergencyAlert[] {
-    return this.data.emergencyAlerts.filter((a) => a.status === 'active');
+  public getActiveEmergencyAlerts(userId?: string): EmergencyAlert[] {
+    const active = this.data.emergencyAlerts.filter((a) => a.status === 'active');
+    if (!userId) return active;
+    return active.filter((a) => {
+      if (!a.roomId || a.roomId === 'room-universal') return true;
+      if (a.senderId === userId) return true;
+      return this.data.roomMembers.some((m) => m.roomId === a.roomId && m.userId === userId);
+    });
   }
 
   public deleteEmergencyAlert(userId: string, alertId: string): boolean {

@@ -217,15 +217,17 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
       .slice(0, 6);
   }, [recentBackendMessages, chatMessages]);
 
+  const displayUserId = user?.fullName || user?.username || user?.id || '';
+
   const handleCopyUserId = async () => {
-    if (!user?.id) return;
+    if (!displayUserId) return;
     try {
-      await navigator.clipboard.writeText(user.id);
+      await navigator.clipboard.writeText(displayUserId);
       setCopiedId(true);
-      toast.success(`Copied your Unique ID: ${user.id}`);
+      toast.success(`Copied your User ID: ${displayUserId}`);
       setTimeout(() => setCopiedId(false), 2000);
     } catch {
-      toast.info(`Your Unique ID: ${user.id}`);
+      toast.info(`Your User ID: ${displayUserId}`);
     }
   };
 
@@ -362,9 +364,9 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
                   type="button"
                   onClick={handleCopyUserId}
                   className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-black/25 hover:bg-black/35 border border-white/20 font-mono text-[11px] text-[#FFD166] transition-colors cursor-pointer"
-                  title="Tap to copy your Unique Beacon ID"
+                  title="Tap to copy your User ID"
                 >
-                  <span>ID: {user?.id?.slice(0, 12)}</span>
+                  <span>ID: {displayUserId}</span>
                   {copiedId ? (
                     <Check className="w-3 h-3 text-[#00D6A0]" />
                   ) : (

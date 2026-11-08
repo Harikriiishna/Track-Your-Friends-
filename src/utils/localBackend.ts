@@ -205,8 +205,22 @@ class LocalBackendEngine {
     return out;
   }
 
-  public getActiveAlertsSnapshot(): EmergencyAlert[] {
-    return (this.data.emergencyAlerts || []).filter((a) => a && a.status === 'active');
+  public isUserInRoom(userId: string, roomId: string): boolean {
+    if (!roomId || roomId === UNIVERSAL_ROOM_ID) return true;
+    if (!userId) return false;
+    const room = this.data.rooms.find((r) => r.id === roomId);
+    if (room && room.ownerId === userId) return true;
+    return this.data.roomMembers.some((m) => m.roomId === roomId && m.userId === userId);
+  }
+
+  public getActiveAlertsSnapshot(userId?: string): EmergencyAlert[] {
+    return (this.data.emergencyAlerts || []).filter((a) => {
+      if (!a || a.status !== 'active') return false;
+      if (!a.roomId || a.roomId === UNIVERSAL_ROOM_ID) return true;
+      if (!userId) return true;
+      if (a.senderId === userId) return true;
+      return this.isUserInRoom(userId, a.roomId);
+    });
   }
 
   public getUserRooms(userId: string): Room[] {
@@ -744,13 +758,17 @@ class LocalBackendEngine {
         );
       }
 
-      const userId = generateId('usr');
+      const trimmedFullName = String(fullName).trim() || cleanUsername;
+      const isNameIdTaken = this.data.users.some(
+        (u) => u.id.toLowerCase() === trimmedFullName.toLowerCase()
+      );
+      const userId = isNameIdTaken ? cleanUsername : trimmedFullName;
       const isFirstUser = this.data.users.length === 0;
       const newUser: LocalUserRecord = {
         id: userId,
         email: cleanEmail,
         username: cleanUsername,
-        fullName: String(fullName).trim(),
+        fullName: trimmedFullName,
         avatarUrl:
           avatarUrl ||
           `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(String(fullName).trim())}`,
@@ -1859,7 +1877,14 @@ class LocalBackendEngine {
         pathname === '/api/alerts/emergency/active' ||
         pathname === '/api/alerts/emergency')
     ) {
-      const alerts = this.data.emergencyAlerts.filter((a) => a.status === 'active');
+      const uid = currentUser?.id;
+      const alerts = this.data.emergencyAlerts.filter((a) => {
+        if (a.status !== 'active') return false;
+        if (!a.roomId || a.roomId === 'room-universal') return true;
+        if (!uid) return true;
+        if (a.senderId === uid) return true;
+        return this.data.roomMembers.some((m) => m.roomId === a.roomId && m.userId === uid);
+      });
       return { alerts } as unknown as T;
     }
 
@@ -1868,6 +1893,9 @@ class LocalBackendEngine {
       (pathname === '/api/alerts/emergency' || pathname === '/api/alerts/create')
     ) {
       if (!currentUser) throw this.createError('Unauthorized', 401);
+      const targetRoom = body.roomId
+        ? this.data.rooms.find((r) => r.id === body.roomId)
+        : undefined;
       const alert: EmergencyAlert = {
         id: generateId('sos'),
         senderId: currentUser.id,
@@ -1878,7 +1906,8 @@ class LocalBackendEngine {
         latitude: Number(body.latitude || 0),
         longitude: Number(body.longitude || 0),
         accuracy: Number(body.accuracy || 10),
-        roomId: body.roomId,
+        roomId: body.roomId || undefined,
+        roomName: targetRoom?.name || body.roomName || undefined,
         timestamp: new Date().toISOString(),
         status: 'active',
         acknowledgedBy: [],
@@ -1991,10 +2020,12 @@ class LocalBackendEngine {
       if (!rawTarget) {
         throw this.createError('Target user ID, username, or email is required', 400);
       }
-      const lower = rawTarget.toLowerCase();
+      const lower = rawTarget.toLowerCase().replace(/^@/, '');
       let toUser = this.data.users.find(
         (u) =>
           u.id === rawTarget ||
+          u.id.toLowerCase() === lower ||
+          u.fullName.toLowerCase() === lower ||
           u.username.toLowerCase() === lower ||
           u.email.toLowerCase() === lower
       );
@@ -2003,6 +2034,8 @@ class LocalBackendEngine {
         toUser = this.data.users.find(
           (u) =>
             u.id === rawTarget ||
+            u.id.toLowerCase() === lower ||
+            u.fullName.toLowerCase() === lower ||
             u.username.toLowerCase() === lower ||
             u.email.toLowerCase() === lower
         );

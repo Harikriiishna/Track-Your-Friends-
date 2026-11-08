@@ -1500,20 +1500,26 @@ app.post('/api/alerts/emergency', authMiddleware, sosRateLimiter, (req, res) => 
   try {
     const user = (req as any).user as UserProfile;
     const alert = db.createEmergencyAlert(user.id, req.body);
-    broadcastGlobalEmergency({ type: 'emergency:broadcast', alert });
+    if (alert.roomId && alert.roomId !== 'room-universal') {
+      broadcastToRoom(alert.roomId, { type: 'emergency:broadcast', alert });
+    } else {
+      broadcastGlobalEmergency({ type: 'emergency:broadcast', alert });
+    }
     res.json({ alert });
   } catch (err: any) {
     res.status(400).json({ error: err.message });
   }
 });
 
-app.get('/api/alerts/emergency/active', authMiddleware, (_req, res) => {
-  const alerts = db.getActiveEmergencyAlerts();
+app.get('/api/alerts/emergency/active', authMiddleware, (req, res) => {
+  const user = (req as any).user as UserProfile;
+  const alerts = db.getActiveEmergencyAlerts(user?.id);
   res.json({ alerts });
 });
 
-app.get('/api/alerts/emergency', authMiddleware, (_req, res) => {
-  const alerts = db.getActiveEmergencyAlerts();
+app.get('/api/alerts/emergency', authMiddleware, (req, res) => {
+  const user = (req as any).user as UserProfile;
+  const alerts = db.getActiveEmergencyAlerts(user?.id);
   res.json({ alerts });
 });
 
@@ -1521,7 +1527,11 @@ app.post('/api/alerts/emergency/:id/ack', authMiddleware, (req, res) => {
   try {
     const user = (req as any).user as UserProfile;
     const alert = db.acknowledgeEmergencyAlert(user.id, req.params.id);
-    broadcastGlobalEmergency({ type: 'emergency:ack_update', alert });
+    if (alert.roomId && alert.roomId !== 'room-universal') {
+      broadcastToRoom(alert.roomId, { type: 'emergency:ack_update', alert });
+    } else {
+      broadcastGlobalEmergency({ type: 'emergency:ack_update', alert });
+    }
     res.json({ alert });
   } catch (err: any) {
     res.status(400).json({ error: err.message });
@@ -1532,7 +1542,11 @@ app.post('/api/alerts/emergency/:id/resolve', authMiddleware, (req, res) => {
   try {
     const user = (req as any).user as UserProfile;
     const alert = db.resolveEmergencyAlert(user.id, req.params.id);
-    broadcastGlobalEmergency({ type: 'emergency:ack_update', alert });
+    if (alert.roomId && alert.roomId !== 'room-universal') {
+      broadcastToRoom(alert.roomId, { type: 'emergency:ack_update', alert });
+    } else {
+      broadcastGlobalEmergency({ type: 'emergency:ack_update', alert });
+    }
     res.json({ alert });
   } catch (err: any) {
     res.status(400).json({ error: err.message });

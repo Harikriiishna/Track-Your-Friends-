@@ -7,7 +7,7 @@ import { getNativeNavigationUrl, createEmergencySharePayload, EmergencySharePayl
 import { api } from '../../utils/api.ts';
 import { useToast } from '../../context/ToastContext.tsx';
 import { triggerHaptic } from '../../utils/audio.ts';
-import type { EmergencyAlert } from '../../types.ts';
+import type { EmergencyAlert, Room } from '../../types.ts';
 import {
   AlertTriangle,
   Siren,
@@ -686,13 +686,19 @@ export const EmergencyResponderTrackingView: React.FC<EmergencyResponderTracking
 };
 
 interface EmergencyManagerProps {
+  rooms?: Room[];
+  activeRoomId?: string | null;
   onViewLocationOnMap?: (lat: number, lng: number) => void;
   onSelectUserForChat?: (userId: string) => void;
+  onNavigateToRooms?: () => void;
 }
 
 export const EmergencyManager: React.FC<EmergencyManagerProps> = ({
+  rooms: propRooms = [],
+  activeRoomId = null,
   onViewLocationOnMap,
   onSelectUserForChat,
+  onNavigateToRooms,
 }) => {
   const { user } = useAuth();
   const {
@@ -711,6 +717,55 @@ export const EmergencyManager: React.FC<EmergencyManagerProps> = ({
   const [showConfirmModal, setShowConfirmModal] = useState(false);
   const [isTriggering, setIsTriggering] = useState(false);
   const [openShareAlertId, setOpenShareAlertId] = useState<string | null>(null);
+  const [fetchedRooms, setFetchedRooms] = useState<Room[]>([]);
+  const [sosTargetScope, setSosTargetScope] = useState<'private_room' | 'community'>('private_room');
+  const [selectedPrivateRoomId, setSelectedPrivateRoomId] = useState<string>('');
+
+  // Load user's rooms so private rooms are always selectable
+  useEffect(() => {
+    let active = true;
+    api
+      .get<{ rooms: Room[] }>('/api/rooms')
+      .then((res) => {
+        if (active && Array.isArray(res?.rooms)) {
+          setFetchedRooms(res.rooms);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [showConfirmModal]);
+
+  const privateRooms = useMemo(() => {
+    const map = new Map<string, Room>();
+    [...propRooms, ...fetchedRooms].forEach((r) => {
+      if (r && r.id && r.id !== 'room-universal') {
+        map.set(r.id, r);
+      }
+    });
+    return Array.from(map.values());
+  }, [propRooms, fetchedRooms]);
+
+  // Default selectedPrivateRoomId to activeRoomId (if private) or first private room
+  useEffect(() => {
+    if (
+      activeRoomId &&
+      activeRoomId !== 'room-universal' &&
+      privateRooms.some((r) => r.id === activeRoomId)
+    ) {
+      setSelectedPrivateRoomId((prev) => prev || activeRoomId);
+    } else if (privateRooms.length > 0) {
+      setSelectedPrivateRoomId((prev) =>
+        prev && privateRooms.some((r) => r.id === prev) ? prev : privateRooms[0].id
+      );
+    }
+  }, [activeRoomId, privateRooms]);
+
+  const selectedPrivateRoom = useMemo(
+    () => privateRooms.find((r) => r.id === selectedPrivateRoomId) || null,
+    [privateRooms, selectedPrivateRoomId]
+  );
 
   useEffect(() => {
     const handleOpenSos = () => setShowConfirmModal(true);
@@ -787,12 +842,28 @@ export const EmergencyManager: React.FC<EmergencyManagerProps> = ({
   }, [referenceCoords, userLocations, user]);
 
   const handleSendSos = () => {
+    if (sosTargetScope === 'private_room') {
+      if (!selectedPrivateRoomId || !selectedPrivateRoom) {
+        toast.error('Please select a private room first, or create a private room in the Rooms tab.');
+        return;
+      }
+      setIsTriggering(true);
+      triggerHaptic('sos');
+      triggerEmergencySos(sosMessage, selectedPrivateRoom.id);
+      setShowConfirmModal(false);
+      setIsTriggering(false);
+      toast.success(
+        `Private SOS sent exclusively to members of "${selectedPrivateRoom.name}"`
+      );
+      return;
+    }
+
     setIsTriggering(true);
     triggerHaptic('sos');
     triggerEmergencySos(sosMessage);
     setShowConfirmModal(false);
     setIsTriggering(false);
-    toast.success('Emergency SOS broadcast transmitted with live GPS coordinates');
+    toast.success('Community Emergency SOS broadcast transmitted with live GPS coordinates');
   };
 
   const handleResolve = async (alertId: string) => {
@@ -816,19 +887,25 @@ export const EmergencyManager: React.FC<EmergencyManagerProps> = ({
 
   return (
     <div className="h-full bg-slate-50 overflow-y-auto p-4 md:p-6 pb-28 space-y-5">
-      {/* Top Banner & SOS Trigger */}
-      <div className="shrink-0 bg-gradient-to-r from-rose-950 via-rose-900 to-slate-900 text-white rounded-3xl p-5 md:p-6 shadow-xl relative">
+      {/* Top Banner & Private Room / Community SOS Trigger */}
+      <div className="shrink-0 bg-gradient-to-r from-rose-950 via-rose-900 to-slate-900 text-white rounded-3xl p-5 md:p-6 shadow-xl relative space-y-4">
         <div className="relative z-10 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
           <div>
             <div className="flex items-center gap-2 text-rose-400 font-bold text-xs uppercase tracking-wider mb-1">
               <Siren className="w-4 h-4 animate-pulse shrink-0" />
-              <span>Community Safety Mesh · 5 km Automatic Device Pop-Up Alert Radius</span>
+              <span>
+                {sosTargetScope === 'private_room'
+                  ? `Private Room SOS · Restricted to ${selectedPrivateRoom ? `"${selectedPrivateRoom.name}"` : 'Selected Room'} Members Only`
+                  : 'Community Safety Mesh · 5 km Automatic Device Pop-Up Alert Radius'}
+              </span>
             </div>
             <h2 className="text-xl md:text-2xl font-black tracking-tight">
               Emergency Broadcast Network
             </h2>
             <p className="text-xs text-rose-200 mt-1 max-w-lg leading-relaxed">
-              Instantly transmit high-priority distress alerts with an interactive live map, temporary secure responder tracking link, and automatic device pop-up notifications to everyone within 5 km.
+              {sosTargetScope === 'private_room'
+                ? 'Send a private, high-priority SOS distress alert with your live GPS map exclusively to members of your selected private room—hidden from the general community.'
+                : 'Instantly transmit high-priority distress alerts with an interactive live map and automatic device pop-up notifications to everyone within 5 km.'}
             </p>
           </div>
 
@@ -837,9 +914,88 @@ export const EmergencyManager: React.FC<EmergencyManagerProps> = ({
             onClick={() => setShowConfirmModal(true)}
             className="w-full md:w-auto px-6 py-3.5 bg-rose-600 hover:bg-rose-500 active:scale-95 text-white font-black text-sm rounded-2xl shadow-lg shadow-rose-900/50 flex items-center justify-center gap-2 transition-all cursor-pointer shrink-0"
           >
-            <AlertTriangle className="w-5 h-5 fill-current shrink-0" />
-            <span>BROADCAST EMERGENCY SOS</span>
+            {sosTargetScope === 'private_room' ? (
+              <Lock className="w-4 h-4 shrink-0" />
+            ) : (
+              <AlertTriangle className="w-5 h-5 fill-current shrink-0" />
+            )}
+            <span>
+              {sosTargetScope === 'private_room'
+                ? selectedPrivateRoom
+                  ? `SEND SOS TO "${selectedPrivateRoom.name.toUpperCase()}"`
+                  : 'SEND PRIVATE ROOM SOS'
+                : 'BROADCAST COMMUNITY SOS'}
+            </span>
           </button>
+        </div>
+
+        {/* Inline Target Audience & Private Room Selector Bar */}
+        <div className="relative z-10 pt-3 border-t border-white/15 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-rose-200">
+              SOS Recipient Scope:
+            </span>
+            <div className="inline-flex p-1 rounded-xl bg-black/30 border border-white/15">
+              <button
+                type="button"
+                onClick={() => setSosTargetScope('private_room')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all ${
+                  sosTargetScope === 'private_room'
+                    ? 'bg-rose-600 text-white shadow'
+                    : 'text-rose-200 hover:text-white'
+                }`}
+              >
+                <Lock className="w-3.5 h-3.5" />
+                <span>Specific Private Room Only</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setSosTargetScope('community')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all ${
+                  sosTargetScope === 'community'
+                    ? 'bg-rose-600 text-white shadow'
+                    : 'text-rose-200 hover:text-white'
+                }`}
+              >
+                <Users className="w-3.5 h-3.5" />
+                <span>Entire Community</span>
+              </button>
+            </div>
+          </div>
+
+          {sosTargetScope === 'private_room' && (
+            <div className="flex items-center gap-2 flex-wrap">
+              {privateRooms.length > 0 ? (
+                <>
+                  <label className="text-xs font-bold text-rose-200">Target Room:</label>
+                  <select
+                    value={selectedPrivateRoomId}
+                    onChange={(e) => setSelectedPrivateRoomId(e.target.value)}
+                    className="px-3 py-1.5 rounded-xl bg-slate-900/90 border border-rose-400/40 text-white text-xs font-bold focus:outline-none focus:ring-2 focus:ring-rose-400 cursor-pointer"
+                  >
+                    {privateRooms.map((r) => (
+                      <option key={r.id} value={r.id}>
+                        🔒 {r.name} ({r.members?.length || 1} member{(r.members?.length || 1) === 1 ? '' : 's'})
+                      </option>
+                    ))}
+                  </select>
+                </>
+              ) : (
+                <div className="flex items-center gap-2 text-xs text-amber-200 bg-amber-500/15 border border-amber-400/30 px-3 py-1.5 rounded-xl">
+                  <span>You haven't joined a private room yet.</span>
+                  {onNavigateToRooms && (
+                    <button
+                      type="button"
+                      onClick={onNavigateToRooms}
+                      className="underline font-black text-white cursor-pointer"
+                    >
+                      Create / Join Room →
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -1022,11 +1178,22 @@ export const EmergencyManager: React.FC<EmergencyManagerProps> = ({
                         className="w-12 h-12 rounded-full object-cover border-2 border-rose-500"
                       />
                       <div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <h4 className="font-bold text-slate-900 text-base">{alert.senderName}</h4>
                           <span className="px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 text-[10px] font-bold">
                             SOS ACTIVE
                           </span>
+                          {alert.roomId && alert.roomId !== 'room-universal' ? (
+                            <span className="px-2.5 py-0.5 rounded-full bg-purple-100 text-purple-800 border border-purple-200 text-[10px] font-bold inline-flex items-center gap-1">
+                              <Lock className="w-3 h-3" />
+                              Private Room: {alert.roomName || alert.roomId}
+                            </span>
+                          ) : (
+                            <span className="px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200 text-[10px] font-bold inline-flex items-center gap-1">
+                              <Users className="w-3 h-3" />
+                              Community Broadcast
+                            </span>
+                          )}
                         </div>
                         <p className="text-xs text-slate-500 flex items-center gap-1 mt-0.5">
                           <Clock className="w-3.5 h-3.5" />
@@ -1244,11 +1411,100 @@ export const EmergencyManager: React.FC<EmergencyManagerProps> = ({
                 <Siren className="w-6 h-6 animate-pulse" />
               </div>
               <div>
-                <h3 className="text-lg font-black text-slate-900">Broadcast Emergency SOS?</h3>
+                <h3 className="text-lg font-black text-slate-900">
+                  {sosTargetScope === 'private_room'
+                    ? 'Send Private Room SOS?'
+                    : 'Broadcast Community SOS?'}
+                </h3>
                 <p className="text-xs text-slate-600 font-medium">
-                  Your live location map and exact GPS coordinates will trigger pop-up notifications on devices within 5 km.
+                  {sosTargetScope === 'private_room'
+                    ? selectedPrivateRoom
+                      ? `Only members of "${selectedPrivateRoom.name}" (${selectedPrivateRoom.members?.length || 1} member${(selectedPrivateRoom.members?.length || 1) === 1 ? '' : 's'}) will receive this SOS alert and your live GPS location.`
+                      : 'Select a private room below so only members of that room receive your SOS alert.'
+                    : 'Your live location map and exact GPS coordinates will trigger pop-up notifications on devices within 5 km.'}
                 </p>
               </div>
+            </div>
+
+            {/* Recipient Audience Selector inside Modal */}
+            <div className="mb-4 p-3 rounded-2xl bg-slate-50 border border-slate-200 space-y-2.5">
+              <label className="block text-xs font-extrabold text-slate-800 uppercase tracking-wider">
+                Who Should Receive This SOS Alert?
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setSosTargetScope('private_room')}
+                  className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer flex items-center gap-2 ${
+                    sosTargetScope === 'private_room'
+                      ? 'bg-rose-50 border-rose-500 text-rose-950 ring-1 ring-rose-500'
+                      : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'
+                  }`}
+                >
+                  <Lock className="w-4 h-4 text-rose-600 shrink-0" />
+                  <div className="min-w-0">
+                    <span className="text-xs font-bold block truncate">Private Room Only</span>
+                    <span className="text-[10px] text-slate-500 block truncate">
+                      Selected room members
+                    </span>
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSosTargetScope('community')}
+                  className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer flex items-center gap-2 ${
+                    sosTargetScope === 'community'
+                      ? 'bg-rose-50 border-rose-500 text-rose-950 ring-1 ring-rose-500'
+                      : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'
+                  }`}
+                >
+                  <Users className="w-4 h-4 text-rose-600 shrink-0" />
+                  <div className="min-w-0">
+                    <span className="text-xs font-bold block truncate">Entire Community</span>
+                    <span className="text-[10px] text-slate-500 block truncate">
+                      All users within 5 km
+                    </span>
+                  </div>
+                </button>
+              </div>
+
+              {sosTargetScope === 'private_room' && (
+                <div className="pt-1">
+                  <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                    Select Private Room
+                  </label>
+                  {privateRooms.length > 0 ? (
+                    <select
+                      value={selectedPrivateRoomId}
+                      onChange={(e) => setSelectedPrivateRoomId(e.target.value)}
+                      style={{ color: '#090d16', backgroundColor: '#ffffff' }}
+                      className="w-full px-3 py-2 rounded-xl border-2 border-slate-300 bg-white text-slate-900 font-bold text-xs focus:outline-none focus:ring-2 focus:ring-rose-600"
+                    >
+                      {privateRooms.map((r) => (
+                        <option key={r.id} value={r.id}>
+                          🔒 {r.name} ({r.members?.length || 1} member{(r.members?.length || 1) === 1 ? '' : 's'})
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-center justify-between gap-2">
+                      <span>No private rooms found. Create or join a private room first.</span>
+                      {onNavigateToRooms && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowConfirmModal(false);
+                            onNavigateToRooms();
+                          }}
+                          className="px-2.5 py-1 rounded-lg bg-amber-600 text-white font-bold text-[11px] shrink-0 cursor-pointer"
+                        >
+                          Open Rooms
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Live Location Map Preview inside SOS Confirmation Modal */}
@@ -1290,11 +1546,21 @@ export const EmergencyManager: React.FC<EmergencyManagerProps> = ({
               </button>
               <button
                 onClick={handleSendSos}
-                disabled={isTriggering}
-                className="px-5 py-2.5 bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold rounded-xl shadow-lg shadow-rose-900/30 flex items-center gap-1.5 cursor-pointer"
+                disabled={isTriggering || (sosTargetScope === 'private_room' && !selectedPrivateRoom)}
+                className="px-5 py-2.5 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white text-xs font-bold rounded-xl shadow-lg shadow-rose-900/30 flex items-center gap-1.5 cursor-pointer"
               >
-                <AlertTriangle className="w-4 h-4 fill-current" />
-                Confirm SOS Broadcast
+                {sosTargetScope === 'private_room' ? (
+                  <Lock className="w-4 h-4" />
+                ) : (
+                  <AlertTriangle className="w-4 h-4 fill-current" />
+                )}
+                <span>
+                  {sosTargetScope === 'private_room'
+                    ? selectedPrivateRoom
+                      ? `Send SOS to ${selectedPrivateRoom.name}`
+                      : 'Select Private Room'
+                    : 'Confirm Community SOS'}
+                </span>
               </button>
             </div>
           </div>

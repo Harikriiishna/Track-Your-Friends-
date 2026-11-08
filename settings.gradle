@@ -10,7 +10,7 @@ if (!capAndroidDir.exists() || !webAssetsIndex.exists()) {
         set -e
         if [ ! -d "node_modules/@capacitor/android" ]; then
           if [ -f "package-lock.json" ]; then
-            npm ci --legacy-peer-deps
+            npm ci --legacy-peer-deps || npm install --legacy-peer-deps
           else
             npm install --legacy-peer-deps
           fi
@@ -20,6 +20,7 @@ if (!capAndroidDir.exists() || !webAssetsIndex.exists()) {
         fi
         mkdir -p android/capacitor-cordova-android-plugins/src/main/libs android/app/libs
         npx cap sync android
+        node scripts/prepare-android-apk.mjs || true
         find android node_modules/@capacitor -name "*.gradle" -type f -exec sed -i 's/VERSION_21/VERSION_17/g' {} +
         find android node_modules/@capacitor -name "*.gradle" -type f -exec sed -i 's/com\\.android\\.tools\\.build:gradle:8\\.13\\.0/com.android.tools.build:gradle:9.1.1/g' {} +
         find android node_modules/@capacitor -name "*.gradle" -type f -exec sed -i 's/tasks\\.withType(Javadoc)\\.all/tasks.withType(Javadoc).configureEach/g' {} +

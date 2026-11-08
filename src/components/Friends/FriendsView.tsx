@@ -238,15 +238,17 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
     }
   };
 
+  const myDisplayUserId = user?.fullName || user?.username || user?.id || '';
+
   const handleCopyMyId = async () => {
-    if (!user?.id) return;
+    if (!myDisplayUserId) return;
     try {
-      await navigator.clipboard.writeText(user.id);
+      await navigator.clipboard.writeText(myDisplayUserId);
       setCopiedMyId(true);
-      toast.success(`Copied your Unique ID: ${user.id}`);
+      toast.success(`Copied your User ID: ${myDisplayUserId}`);
       setTimeout(() => setCopiedMyId(false), 2000);
     } catch {
-      toast.info(`Your ID: ${user.id}`);
+      toast.info(`Your ID: ${myDisplayUserId}`);
     }
   };
 
@@ -773,50 +775,50 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
                   >
                     Friend Identifier
                   </label>
-                  <input
-                    type="text"
-                    required
-                    value={targetIdentifier}
-                    onChange={(e) => setTargetIdentifier(e.target.value)}
-                    placeholder="e.g. @alex_walker, user-12345, or alex@domain.com"
-                    className={`w-full px-4 py-3 rounded-2xl border text-sm focus:outline-none transition-colors ${
-                      isDark
-                        ? 'bg-[#0B081B] border-[#8957FF]/40 text-white placeholder-[#A9A2D0]/50 focus:border-[#FF4FA3]'
-                        : 'bg-[#F8F6FF] border-[#8957FF]/30 text-slate-900 placeholder-slate-400 focus:border-[#8957FF]'
-                    }`}
-                  />
-                </div>
+                    <input
+                      type="text"
+                      required
+                      value={targetIdentifier}
+                      onChange={(e) => setTargetIdentifier(e.target.value)}
+                      placeholder="e.g. Alex Morgan, @alex_walker, or alex@domain.com"
+                      className={`w-full px-4 py-3 rounded-2xl border text-sm focus:outline-none transition-colors ${
+                        isDark
+                          ? 'bg-[#0B081B] border-[#8957FF]/40 text-white placeholder-[#A9A2D0]/50 focus:border-[#FF4FA3]'
+                          : 'bg-[#F8F6FF] border-[#8957FF]/30 text-slate-900 placeholder-slate-400 focus:border-[#8957FF]'
+                      }`}
+                    />
+                  </div>
 
-                <button
-                  type="submit"
-                  disabled={isSending || !targetIdentifier.trim()}
-                  className="w-full py-3.5 px-5 rounded-2xl bg-gradient-to-r from-[#8957FF] via-[#FF4FA3] to-[#FF8066] hover:opacity-95 disabled:opacity-50 text-white font-extrabold text-xs uppercase tracking-wider flex items-center justify-center gap-2 shadow-[0_8px_25px_rgba(255,79,163,0.4)] cursor-pointer"
-                >
-                  <Send className="w-4 h-4" />
-                  <span>{isSending ? 'Sending Request...' : 'Send Friend Request'}</span>
-                </button>
-              </form>
-
-              {/* Share Your Own Unique ID Card */}
-              <div
-                className={`p-4 rounded-2xl border flex items-center justify-between gap-3 ${
-                  isDark
-                    ? 'bg-[#1B153A] border-white/10'
-                    : 'bg-[#F3EEFF] border-[#8957FF]/20'
-                }`}
-              >
-                <div className="min-w-0">
-                  <span
-                    className={`text-[10px] font-extrabold uppercase tracking-wider block ${
-                      isDark ? 'text-[#A9A2D0]' : 'text-slate-500'
-                    }`}
+                  <button
+                    type="submit"
+                    disabled={isSending || !targetIdentifier.trim()}
+                    className="w-full py-3.5 px-5 rounded-2xl bg-gradient-to-r from-[#8957FF] via-[#FF4FA3] to-[#FF8066] hover:opacity-95 disabled:opacity-50 text-white font-extrabold text-xs uppercase tracking-wider flex items-center justify-center gap-2 shadow-[0_8px_25px_rgba(255,79,163,0.4)] cursor-pointer"
                   >
-                    Your Shareable Beacon ID
-                  </span>
-                  <span className="text-xs font-mono font-extrabold text-[#FF4FA3] truncate block mt-0.5">
-                    {user?.id}
-                  </span>
-                </div>
+                    <Send className="w-4 h-4" />
+                    <span>{isSending ? 'Sending Request...' : 'Send Friend Request'}</span>
+                  </button>
+                </form>
+
+                {/* Share Your Own Unique ID Card */}
+                <div
+                  className={`p-4 rounded-2xl border flex items-center justify-between gap-3 ${
+                    isDark
+                      ? 'bg-[#1B153A] border-white/10'
+                      : 'bg-[#F3EEFF] border-[#8957FF]/20'
+                  }`}
+                >
+                  <div className="min-w-0">
+                    <span
+                      className={`text-[10px] font-extrabold uppercase tracking-wider block ${
+                        isDark ? 'text-[#A9A2D0]' : 'text-slate-500'
+                      }`}
+                    >
+                      Your Shareable Beacon ID
+                    </span>
+                    <span className="text-xs font-mono font-extrabold text-[#FF4FA3] truncate block mt-0.5">
+                      {myDisplayUserId}
+                    </span>
+                  </div>
                 <button
                   type="button"
                   onClick={handleCopyMyId}
@@ -950,7 +952,7 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
               <div>
                 <h3 className="text-lg font-extrabold">{previewFriend.fullName}</h3>
                 <p className={`text-xs font-medium ${isDark ? 'text-[#A9A2D0]' : 'text-slate-500'}`}>
-                  @{previewFriend.username} · ID: {previewFriend.userId.slice(0, 10)}
+                  @{previewFriend.username} · ID: {previewFriend.fullName || previewFriend.username}
                 </p>
               </div>
 

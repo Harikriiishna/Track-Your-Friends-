@@ -540,7 +540,7 @@ export const AuthScreen: React.FC = () => {
                     </span>
                     <span className="text-[11px] font-mono text-[#00E5FF] flex items-center gap-1 truncate">
                       <Fingerprint className="w-3 h-3 shrink-0" />
-                      ID: @{normalizedHandle}
+                      ID: {fullName.trim() || username.trim() || normalizedHandle}
                     </span>
                   </div>
                 </div>

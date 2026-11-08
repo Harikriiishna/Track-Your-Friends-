@@ -336,21 +336,22 @@ export const ProfilePrivacyView: React.FC = () => {
               </div>
             </div>
 
-            {/* Copy Unique User ID Pill */}
+            {/* Copy Unique User ID Pill (Uses User's Name) */}
             <button
               type="button"
               onClick={async () => {
-                if (!user?.id) return;
+                const nameId = user?.fullName || user?.username || user?.id;
+                if (!nameId) return;
                 try {
-                  await navigator.clipboard.writeText(user.id);
-                  toast.success(`Copied Unique ID: ${user.id}`);
+                  await navigator.clipboard.writeText(nameId);
+                  toast.success(`Copied User ID: ${nameId}`);
                 } catch {
-                  toast.info(`Unique ID: ${user.id}`);
+                  toast.info(`User ID: ${nameId}`);
                 }
               }}
               className="self-start sm:self-end px-3.5 py-2 rounded-2xl bg-gradient-to-r from-[#8957FF]/15 to-[#FF4FA3]/15 border border-[#8957FF]/35 text-xs font-mono font-extrabold text-[#FF4FA3] flex items-center gap-2 cursor-pointer hover:opacity-90"
             >
-              <span>ID: {user?.id?.slice(0, 14)}</span>
+              <span>ID: {user?.fullName || user?.username || user?.id}</span>
               <Copy className="w-3.5 h-3.5" />
             </button>
           </div>

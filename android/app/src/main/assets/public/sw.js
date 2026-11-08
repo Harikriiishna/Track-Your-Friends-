@@ -87,7 +87,7 @@ define(['./workbox-7e5eb42b'], (function (workbox) { 'use strict';
     "revision": "692c420d2bbc264d9bd2d2c0ee96428b"
   }, {
     "url": "index.html",
-    "revision": "e4accbc5783a0fa2619efaab9593fc28"
+    "revision": "fcf7155fc01df817888951432b3a0b06"
   }, {
     "url": "icon.svg",
     "revision": "f8eacca2a095f7fc72e6f403a09b7b2d"
@@ -110,40 +110,40 @@ define(['./workbox-7e5eb42b'], (function (workbox) { 'use strict';
     "url": "assets/rolldown-runtime-WkwZ5CU-.js",
     "revision": null
   }, {
-    "url": "assets/index-DbEiFxoi.js",
+    "url": "assets/index-DPFic28r.css",
     "revision": null
   }, {
-    "url": "assets/index-BQGuQteI.css",
+    "url": "assets/index-BiNy4GYk.js",
     "revision": null
   }, {
-    "url": "assets/ToastContext-CogEJWBT.js",
+    "url": "assets/ToastContext--OQFuSfF.js",
     "revision": null
   }, {
-    "url": "assets/SavedPlacesManager-BzZh4PYP.js",
+    "url": "assets/SavedPlacesManager-DEprkdfp.js",
     "revision": null
   }, {
-    "url": "assets/RoomsManager-OUAyaWDF.js",
+    "url": "assets/RoomsManager-BAE-BLE4.js",
     "revision": null
   }, {
-    "url": "assets/RemindersManager-lgGGR7dn.js",
+    "url": "assets/RemindersManager-8moXFKu7.js",
     "revision": null
   }, {
-    "url": "assets/ProfilePrivacyView-C7kMgD_5.js",
+    "url": "assets/ProfilePrivacyView-CyTjOxem.js",
     "revision": null
   }, {
-    "url": "assets/NotificationsCenter-Dll06ioq.js",
+    "url": "assets/NotificationsCenter-Dc5JKiUQ.js",
     "revision": null
   }, {
-    "url": "assets/MeetingsManager-CcHmZerV.js",
+    "url": "assets/MeetingsManager-Byg20HJi.js",
     "revision": null
   }, {
-    "url": "assets/FriendsView-DUQo39Ub.js",
+    "url": "assets/FriendsView-DfYyFcTA.js",
     "revision": null
   }, {
-    "url": "assets/ChatView-TbQPU0w0.js",
+    "url": "assets/ChatView-BP1fGXZQ.js",
     "revision": null
   }, {
-    "url": "assets/AdminDashboard-COSvjLMP.js",
+    "url": "assets/AdminDashboard-BDYUBo4k.js",
     "revision": null
   }, {
     "url": "apple-touch-icon.png",

@@ -171,9 +171,20 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const seenMessageIdsRef = useRef<Set<string>>(new Set());
   const initializedMsgSyncRef = useRef<boolean>(false);
 
-  // Evaluate incoming emergency alert and trigger device pop-up notification for users within 5 km
+  // Evaluate incoming emergency alert and trigger device pop-up notification for authorized recipients
   const handleIncomingEmergencyAlert = useCallback(
     (alert: EmergencyAlert) => {
+      // If the SOS alert is scoped to a specific private room, only allow members of that room (or the sender)
+      if (
+        alert.roomId &&
+        alert.roomId !== 'room-universal' &&
+        user?.id &&
+        alert.senderId !== user.id &&
+        !localBackend.isUserInRoom(user.id, alert.roomId)
+      ) {
+        return;
+      }
+
       setActiveAlerts((prev) => [alert, ...prev.filter((a) => a.id !== alert.id)]);
       if (alert.status !== 'active') return;
 
@@ -197,13 +208,15 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             )
           : null;
 
-      // Trigger pop-up device notification & siren if user is within 5 km (5000m) of the alert (or is sender / awaiting GPS)
-      const isWithin5km =
+      // Private room members always receive their room's SOS; community alerts use 5 km proximity
+      const isPrivateRoomAlert = Boolean(alert.roomId && alert.roomId !== 'room-universal');
+      const shouldNotifyRecipient =
+        isPrivateRoomAlert ||
         alert.senderId === user?.id ||
         distanceMeters === null ||
         distanceMeters <= 5000;
 
-      if (isWithin5km && !notifiedAlertIdsRef.current.has(alert.id)) {
+      if (shouldNotifyRecipient && !notifiedAlertIdsRef.current.has(alert.id)) {
         notifiedAlertIdsRef.current.add(alert.id);
         setLatestAlert(alert);
         sound.startEmergencySiren();
@@ -308,12 +321,17 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
     const applyAlertsList = (alerts: EmergencyAlert[]) => {
       if (!isMounted || !Array.isArray(alerts)) return;
+      const filteredAlerts = alerts.filter((a) => {
+        if (!a.roomId || a.roomId === 'room-universal') return true;
+        if (a.senderId === currentUserId) return true;
+        return localBackend.isUserInRoom(currentUserId, a.roomId);
+      });
       setActiveAlerts((prev) => {
         const prevSig = prev.map((a) => `${a.id}:${a.status}:${a.acknowledgedBy?.length || 0}`).join('|');
-        const nextSig = alerts.map((a) => `${a.id}:${a.status}:${a.acknowledgedBy?.length || 0}`).join('|');
-        return prevSig === nextSig ? prev : alerts;
+        const nextSig = filteredAlerts.map((a) => `${a.id}:${a.status}:${a.acknowledgedBy?.length || 0}`).join('|');
+        return prevSig === nextSig ? prev : filteredAlerts;
       });
-      alerts.forEach((a) => {
+      filteredAlerts.forEach((a) => {
         if (a.status === 'active' && !notifiedAlertIdsRef.current.has(a.id)) {
           handleIncomingEmergencyAlert(a);
         }
