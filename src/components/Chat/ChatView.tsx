@@ -59,6 +59,8 @@ interface ChatViewProps {
   onRefreshSavedPlaces?: () => void;
   onAddPlaceAtCoords?: (lat: number, lng: number) => void;
   onSetReminderAtCoords?: (lat: number, lng: number, title?: string) => void;
+  unreadChatCount?: number;
+  onClearChatBadge?: () => void;
 
   // Fallback props if passed in isolation
   roomId?: string;
@@ -117,6 +119,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
   onRefreshSavedPlaces,
   onAddPlaceAtCoords,
   onSetReminderAtCoords,
+  unreadChatCount = 0,
+  onClearChatBadge,
   roomId: fallbackRoomId,
   recipientId: fallbackRecipientId,
   recipientName: fallbackRecipientName,
@@ -532,7 +536,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
     const lat = myLocation.latitude.toFixed(5);
     const lng = myLocation.longitude.toFixed(5);
     const acc = myLocation.accuracy ? `±${myLocation.accuracy.toFixed(1)}m` : '±10m';
-    const locText = `📍 Live Location Shared: ${lat}° N, ${lng}° W (Accuracy: ${acc})`;
+    const locText = `📍 Live Location Shared: ${lat}, ${lng} (Accuracy: ${acc})`;
 
     handleSendMessage(locText);
 
@@ -639,20 +643,25 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
             <button
               onClick={() => {
-                // Extract coordinates if present
-                const match = text.match(/([0-9.-]+)°\s*N,\s*([0-9.-]+)°\s*W/);
+                // Extract signed coordinates (supports both 'lat, lng' and legacy 'lat° N, lng° W' formats)
+                const match =
+                  text.match(/([-+]?\d+(?:\.\d+)?)\s*°?\s*[NS]?\s*,\s*([-+]?\d+(?:\.\d+)?)\s*°?\s*[EW]?/i);
                 if (match && onFocusMapLocation) {
                   const lat = parseFloat(match[1]);
-                  const lng = -Math.abs(parseFloat(match[2]));
-                  onFocusMapLocation(lat, lng);
-                } else if (onNavigateTab) {
+                  const lng = parseFloat(match[2]);
+                  if (Number.isFinite(lat) && Number.isFinite(lng)) {
+                    onFocusMapLocation(lat, lng);
+                    return;
+                  }
+                }
+                if (onNavigateTab) {
                   onNavigateTab('map');
                 }
               }}
               className="w-full py-1.5 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-sm transition-all active:scale-98 cursor-pointer"
             >
               <Navigation className="w-3.5 h-3.5 fill-current" />
-              <span>View Coordinates on Live Map</span>
+              <span>Locate on Map</span>
             </button>
           </div>
         )}
@@ -1067,8 +1076,25 @@ export const ChatView: React.FC<ChatViewProps> = ({
           </div>
 
           <div className={`flex items-center gap-1.5 ${themeConfig.textSecondary}`}>
-            {/* Small Room Map Button in Room Header */}
-            {!activeDirectUser && (
+            {/* Locate on Map / Room Map Button in Header */}
+            {activeDirectUser ? (
+              userLocations.some((l) => l.userId === activeDirectUser.id) &&
+              onFocusMapLocation && (
+                <button
+                  onClick={() => {
+                    const peerLoc = userLocations.find((l) => l.userId === activeDirectUser.id);
+                    if (peerLoc) {
+                      onFocusMapLocation(peerLoc.latitude, peerLoc.longitude);
+                    }
+                  }}
+                  className="px-2.5 py-1 rounded-xl bg-emerald-600/25 hover:bg-emerald-600 text-emerald-300 hover:text-white text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm cursor-pointer border border-emerald-500/40 active:scale-95"
+                  title={`Locate ${activeDirectUser.name} on Map`}
+                >
+                  <MapPin className="w-3.5 h-3.5" />
+                  <span>Locate on Map</span>
+                </button>
+              )
+            ) : (
               <button
                 onClick={() => {
                   setRoomMapFocusCoords(null);
@@ -1089,6 +1115,28 @@ export const ChatView: React.FC<ChatViewProps> = ({
             >
               <MapPin className="w-3.5 h-3.5" />
               <span className="hidden md:inline">Share Location</span>
+            </button>
+
+            <button
+              onClick={async () => {
+                triggerHaptic('medium');
+                if (onClearChatBadge) {
+                  onClearChatBadge();
+                }
+                const storageKey = `${conversationKey}:${activeChannelId}`;
+                setChannelMessages((prev) => ({ ...prev, [storageKey]: [] }));
+                try {
+                  await clearChat(effectiveRoomId, effectiveRecipientId);
+                  toast.info('Chat messages & unread badges cleared');
+                } catch {
+                  toast.info('Unread chat badge cleared');
+                }
+              }}
+              className="px-2.5 py-1 rounded-xl bg-rose-500/20 hover:bg-rose-500 text-rose-300 hover:text-white text-xs font-bold flex items-center gap-1 transition-all shadow-sm cursor-pointer border border-rose-500/35 active:scale-95"
+              title="Clear chat messages and unread badges"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              <span>Clear{unreadChatCount > 0 ? ` (${unreadChatCount})` : ''}</span>
             </button>
 
             <button

@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext.tsx';
-import { useRealtime } from '../../context/RealtimeContext.tsx';
 import { useTheme } from '../../context/ThemeContext.tsx';
+import { useRealtime } from '../../context/RealtimeContext.tsx';
 import { api } from '../../utils/api.ts';
 import type { UserPrivacySettings, UserProfile, Room, LocationShareRequest } from '../../types.ts';
 import { useToast } from '../../context/ToastContext.tsx';
@@ -13,31 +13,41 @@ import {
   Radio,
   Check,
   Save,
-  Camera,
   Palette,
   Sparkles,
+  Camera,
   LogOut,
   Trash2,
   UserX,
   AlertTriangle,
-  Copy,
   Smartphone,
-  Download,
-  ExternalLink,
-  Sun,
-  Moon,
+  Copy,
   Users,
   Layers,
   MapPin,
+  Heart,
+  Sun,
+  Moon,
+  BatteryCharging,
+  Zap,
+  Gauge,
 } from 'lucide-react';
 
 export const ProfilePrivacyView: React.FC = () => {
   const { user, updatePrivacy, updateProfile, logout } = useAuth();
+  const {
+    currentTheme,
+    setTheme,
+    allThemes,
+    themeConfig,
+    toggleDarkLight,
+    isLowPowerMode,
+    setLowPowerMode,
+  } = useTheme();
   const { onlineUserIds, userLocations } = useRealtime();
-  const { currentTheme, setTheme, allThemes, themeConfig, toggleDarkLight } = useTheme();
-  const isDark = themeConfig.isDark;
   const toast = useToast();
   const avatarFileInputRef = useRef<HTMLInputElement>(null);
+  const isLight = !themeConfig.isDark;
 
   const [locationVis, setLocationVis] = useState<UserPrivacySettings['locationVisibility']>(
     user?.privacy.locationVisibility || 'room_members'
@@ -118,7 +128,7 @@ export const ProfilePrivacyView: React.FC = () => {
     try {
       const res = await api.purgeLocationHistory();
       toast.success(
-        `Deleted ${res.deletedCount || 0} location history records from server & cloud`
+        `Deleted ${res.deletedCount || 0} location history breadcrumbs from server`
       );
     } catch (err: any) {
       toast.error(err.message || 'Failed to purge location history');
@@ -178,7 +188,7 @@ export const ProfilePrivacyView: React.FC = () => {
           ctx.drawImage(img, 0, 0, width, height);
           const compressedDataUrl = canvas.toDataURL('image/jpeg', 0.85);
           setAvatarUrl(compressedDataUrl);
-          toast.success('Profile photo updated! Click "Save Changes" to sync everywhere.');
+          toast.success('Profile photo updated! Click "Save Profile & Privacy" to sync.');
         }
         setIsUploadingAvatar(false);
       };
@@ -213,31 +223,15 @@ export const ProfilePrivacyView: React.FC = () => {
         profileVisibility: profileVis,
         showOnlineStatus: showOnline,
         locationSharingEnabled: sharingEnabled,
-        temporarySharingExpiry: null,
       });
 
-      setSavedMsg('Profile & privacy settings saved across Web & Android!');
+      setSavedMsg('Profile & privacy settings saved.');
       toast.success('Profile & privacy settings updated!');
       setTimeout(() => setSavedMsg(null), 3000);
-    } catch (err) {
-      console.error('Error saving profile:', err);
-      toast.error('Failed to save profile changes');
     } finally {
       setIsSaving(false);
     }
   };
-
-  const cardClass = isDark
-    ? 'bg-[#130F2B]/90 border-[#8957FF]/25 text-[#F8F7FF] shadow-xl'
-    : 'bg-white border-[#8957FF]/15 text-slate-900 shadow-[0_10px_30px_rgba(137,87,255,0.07)]';
-
-  const subCardClass = isDark
-    ? 'bg-[#1B153A] border-white/10 text-[#F8F7FF]'
-    : 'bg-[#F8F6FF] border-[#8957FF]/15 text-slate-900';
-
-  const inputClass = isDark
-    ? 'bg-[#0B081B] border-[#8957FF]/35 text-white placeholder-[#A9A2D0]/50 focus:border-[#FF4FA3]'
-    : 'bg-white border-[#8957FF]/25 text-slate-900 placeholder-slate-400 focus:border-[#8957FF]';
 
   const totalConnectedFriends = Math.max(
     friendsCount,
@@ -246,30 +240,55 @@ export const ProfilePrivacyView: React.FC = () => {
 
   return (
     <div
-      className={`flex flex-col h-full overflow-y-auto p-4 md:p-6 pb-28 max-w-4xl mx-auto w-full space-y-6 select-none transition-colors duration-300 ${
-        isDark ? 'text-[#F8F7FF]' : 'text-slate-900'
-      }`}
+      className={`flex flex-col h-full overflow-y-auto p-4 md:p-6 pb-28 max-w-4xl mx-auto w-full space-y-6 ${themeConfig.textPrimary}`}
     >
-      {/* 1. GRADIENT PROFILE COVER & LARGE PROFILE PHOTO CARD */}
-      <div className={`rounded-[32px] border overflow-hidden ${cardClass}`}>
-        {/* Vibrant Social Gradient Banner */}
-        <div className="h-36 sm:h-44 bg-gradient-to-r from-[#8957FF] via-[#FF4FA3] to-[#FF8066] relative">
-          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(255,209,102,0.35),transparent_55%)]" />
-          <div className="absolute top-4 right-4 z-10 flex items-center gap-2">
-            {/* Quick Light / Dark Mode Switch */}
+      {/* 1. VIBRANT SOCIAL PROFILE HEADER CARD */}
+      <div
+        className={`rounded-3xl border overflow-hidden shadow-2xl ${
+          isLight
+            ? 'bg-white border-[#8957FF]/20'
+            : 'bg-[#130F2B]/90 border-[#8957FF]/30 backdrop-blur-xl'
+        }`}
+      >
+        {/* Gradient Profile Cover */}
+        <div className="h-32 sm:h-40 bg-gradient-to-r from-[#8957FF] via-[#FF4FA3] to-[#00D9FF] relative">
+          <div className="absolute inset-0 bg-black/15" />
+          <div className="absolute top-3.5 right-4 flex items-center gap-2 flex-wrap justify-end">
+            <button
+              type="button"
+              onClick={() => {
+                const next = !isLowPowerMode;
+                setLowPowerMode(next);
+                toast.success(
+                  next
+                    ? 'Low Power Mode enabled — GPS & map refresh rates reduced for battery longevity'
+                    : 'Standard Performance Mode restored — High-frequency GPS & 60 FPS map active'
+                );
+              }}
+              className={`px-3 py-1.5 rounded-full backdrop-blur-md text-xs font-extrabold flex items-center gap-1.5 border cursor-pointer transition-all ${
+                isLowPowerMode
+                  ? 'bg-[#00D6A0]/90 text-slate-950 border-white/40 shadow-lg'
+                  : 'bg-black/35 hover:bg-black/50 text-white border-white/25'
+              }`}
+              title="Toggle Low Power Mode (Battery Saver)"
+            >
+              <BatteryCharging className="w-3.5 h-3.5" />
+              <span>{isLowPowerMode ? 'Low Power: ON' : 'Low Power Mode'}</span>
+            </button>
+
             <button
               type="button"
               onClick={toggleDarkLight}
-              className="px-3.5 py-2 rounded-2xl bg-black/30 hover:bg-black/45 backdrop-blur-md border border-white/25 text-white text-xs font-extrabold flex items-center gap-1.5 cursor-pointer shadow-lg active:scale-95 transition-all"
+              className="px-3 py-1.5 rounded-full bg-black/35 hover:bg-black/50 backdrop-blur-md text-white text-xs font-extrabold flex items-center gap-1.5 border border-white/25 cursor-pointer"
             >
-              {isDark ? (
+              {themeConfig.isDark ? (
                 <>
-                  <Sun className="w-4 h-4 text-[#FFD166]" />
+                  <Sun className="w-3.5 h-3.5 text-[#FFD166]" />
                   <span>Light Mode</span>
                 </>
               ) : (
                 <>
-                  <Moon className="w-4 h-4 text-[#E9DFFF]" />
+                  <Moon className="w-3.5 h-3.5 text-[#00D9FF]" />
                   <span>Dark Mode</span>
                 </>
               )}
@@ -281,16 +300,16 @@ export const ProfilePrivacyView: React.FC = () => {
                 await logout();
                 toast.info('Signed out of Beacon Network');
               }}
-              className="px-3.5 py-2 rounded-2xl bg-black/30 hover:bg-rose-600/80 backdrop-blur-md border border-white/25 text-white text-xs font-extrabold flex items-center gap-1.5 cursor-pointer shadow-lg active:scale-95 transition-all"
+              className="px-3.5 py-1.5 rounded-full bg-[#FF3B6B] hover:bg-[#e11d48] text-white text-xs font-extrabold flex items-center gap-1.5 border border-white/30 shadow-lg cursor-pointer"
             >
-              <LogOut className="w-4 h-4" />
+              <LogOut className="w-3.5 h-3.5" />
               <span>Sign Out</span>
             </button>
           </div>
         </div>
 
-        {/* Overlapping Profile Avatar + Bio + Social Counters */}
-        <div className="px-5 sm:px-7 pb-6 -mt-14 sm:-mt-16 relative space-y-5">
+        {/* Profile Identity & Social Stats */}
+        <div className="px-5 sm:px-7 pb-6 -mt-14 relative space-y-5">
           <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
             <div className="flex items-end gap-4">
               <div
@@ -298,151 +317,155 @@ export const ProfilePrivacyView: React.FC = () => {
                 className="relative group cursor-pointer shrink-0"
                 title="Tap to upload a new profile picture"
               >
-                <div className="social-story-ring rounded-full p-1 shadow-2xl">
+                <div className="w-24 h-24 sm:w-28 sm:h-28 rounded-full social-story-ring shadow-2xl">
                   <img
                     src={avatarUrl || user?.avatarUrl}
                     alt={user?.fullName}
-                    className={`w-24 h-24 sm:w-28 sm:h-28 rounded-full object-cover border-4 ${
-                      isDark ? 'border-[#130F2B]' : 'border-white'
-                    }`}
+                    className="w-full h-full rounded-full object-cover border-4 border-[#130F2B]"
                   />
                 </div>
-                <div className="absolute inset-1 rounded-full bg-black/45 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
-                  <Camera className="w-6 h-6 text-white" />
-                </div>
-                <span className="absolute bottom-1.5 right-1.5 w-7 h-7 rounded-full bg-gradient-to-r from-[#8957FF] to-[#FF4FA3] text-white flex items-center justify-center border-2 border-[#0B081B] shadow-md">
+                <span className="absolute bottom-1 right-1 w-7 h-7 rounded-full bg-gradient-to-r from-[#8957FF] to-[#FF4FA3] text-white flex items-center justify-center border-2 border-[#130F2B] shadow-md">
                   <Camera className="w-3.5 h-3.5" />
                 </span>
               </div>
 
               <div className="pb-1">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <h2 className="text-xl sm:text-2xl font-extrabold tracking-tight">
+                  <h2 className="text-xl sm:text-2xl font-black tracking-tight">
                     {fullName || user?.fullName}
                   </h2>
-                  <span
-                    className={`px-2.5 py-0.5 rounded-full text-[10px] font-extrabold ${
-                      sharingEnabled
-                        ? 'bg-[#00D6A0]/20 text-[#00D6A0] border border-[#00D6A0]/40'
-                        : 'bg-[#FFD166]/20 text-[#FFD166] border border-[#FFD166]/40'
-                    }`}
-                  >
-                    {sharingEnabled ? '📍 Live GPS Active' : 'GPS Paused'}
+                  <span className="px-2.5 py-0.5 rounded-full bg-[#00D6A0]/15 text-[#00D6A0] border border-[#00D6A0]/30 text-[10px] font-extrabold uppercase tracking-wider">
+                    {sharingEnabled ? 'Live GPS Active' : 'GPS Paused'}
                   </span>
                 </div>
-                <p className={`text-xs font-semibold ${isDark ? 'text-[#A9A2D0]' : 'text-slate-500'}`}>
-                  @{user?.username} · {about || 'Sharing live spots & stories on Beacon'}
+                <p className={`text-xs font-semibold ${themeConfig.textSecondary} mt-0.5`}>
+                  @{user?.username} · {about || 'Exploring & staying connected on Beacon Network'}
                 </p>
               </div>
             </div>
 
-            {/* Copy Unique User ID Pill (Uses User's Name) */}
-            <button
-              type="button"
-              onClick={async () => {
-                const nameId = user?.fullName || user?.username || user?.id;
-                if (!nameId) return;
-                try {
-                  await navigator.clipboard.writeText(nameId);
-                  toast.success(`Copied User ID: ${nameId}`);
-                } catch {
-                  toast.info(`User ID: ${nameId}`);
-                }
-              }}
-              className="self-start sm:self-end px-3.5 py-2 rounded-2xl bg-gradient-to-r from-[#8957FF]/15 to-[#FF4FA3]/15 border border-[#8957FF]/35 text-xs font-mono font-extrabold text-[#FF4FA3] flex items-center gap-2 cursor-pointer hover:opacity-90"
-            >
-              <span>ID: {user?.fullName || user?.username || user?.id}</span>
-              <Copy className="w-3.5 h-3.5" />
-            </button>
+            {/* Handle / ID Copy Pill */}
+            <div className="flex items-center gap-2 self-start sm:self-end flex-wrap">
+              <button
+                type="button"
+                onClick={async () => {
+                  const nameId = user?.fullName || user?.username || user?.id;
+                  if (!nameId) return;
+                  try {
+                    await navigator.clipboard.writeText(nameId);
+                    toast.success(`Copied Beacon ID: ${nameId}`);
+                  } catch {
+                    toast.info(`Beacon ID: ${nameId}`);
+                  }
+                }}
+                className={`px-3.5 py-2 rounded-2xl border text-xs font-mono font-extrabold flex items-center gap-2 cursor-pointer transition-all ${
+                  isLight
+                    ? 'bg-[#F5F3FF] border-[#8957FF]/25 text-[#161032] hover:bg-[#8957FF]/10'
+                    : 'bg-[#1B153A] border-[#8957FF]/35 text-white hover:border-[#00D9FF]/60'
+                }`}
+              >
+                <span className="text-[#FF4FA3]">@{user?.username || user?.id}</span>
+                <Copy className="w-3.5 h-3.5 text-[#00D9FF]" />
+              </button>
+            </div>
           </div>
 
-          {/* Beautiful Profile Information Cards (Friends Count, Active Rooms, Status) */}
+          {/* 4 Social Activity Counters */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1">
-            <div className={`p-3.5 rounded-2xl border ${subCardClass}`}>
-              <div className="flex items-center gap-2 text-[#FF4FA3] mb-1">
+            <div
+              className={`p-3.5 rounded-2xl border ${
+                isLight ? 'bg-[#F5F3FF] border-[#8957FF]/15' : 'bg-[#1B153A]/75 border-[#8957FF]/25'
+              }`}
+            >
+              <div className="flex items-center gap-1.5 text-[#00D6A0] mb-1">
                 <Users className="w-4 h-4" />
-                <span className="text-[10px] font-extrabold uppercase tracking-wider">
-                  Friends
-                </span>
+                <span className="text-[10px] font-black uppercase tracking-wider">Friends</span>
               </div>
-              <span className="text-xl font-extrabold block">{totalConnectedFriends}</span>
-              <span className={`text-[11px] ${isDark ? 'text-[#A9A2D0]' : 'text-slate-500'}`}>
+              <span className="text-lg font-black block">{totalConnectedFriends}</span>
+              <span className={`text-[11px] ${themeConfig.textMuted}`}>
                 {onlineUserIds.length} online now
               </span>
             </div>
 
-            <div className={`p-3.5 rounded-2xl border ${subCardClass}`}>
-              <div className="flex items-center gap-2 text-[#8957FF] mb-1">
+            <div
+              className={`p-3.5 rounded-2xl border ${
+                isLight ? 'bg-[#F5F3FF] border-[#8957FF]/15' : 'bg-[#1B153A]/75 border-[#8957FF]/25'
+              }`}
+            >
+              <div className="flex items-center gap-1.5 text-[#8957FF] mb-1">
                 <Layers className="w-4 h-4" />
-                <span className="text-[10px] font-extrabold uppercase tracking-wider">
-                  Active Rooms
-                </span>
+                <span className="text-[10px] font-black uppercase tracking-wider">Active Rooms</span>
               </div>
-              <span className="text-xl font-extrabold block">{roomsCount}</span>
-              <span className={`text-[11px] ${isDark ? 'text-[#A9A2D0]' : 'text-slate-500'}`}>
-                Joined circles
-              </span>
+              <span className="text-lg font-black block">{roomsCount}</span>
+              <span className={`text-[11px] ${themeConfig.textMuted}`}>Joined groups</span>
             </div>
 
-            <div className={`p-3.5 rounded-2xl border ${subCardClass}`}>
-              <div className="flex items-center gap-2 text-[#00D6A0] mb-1">
+            <div
+              className={`p-3.5 rounded-2xl border ${
+                isLight ? 'bg-[#F5F3FF] border-[#8957FF]/15' : 'bg-[#1B153A]/75 border-[#8957FF]/25'
+              }`}
+            >
+              <div className="flex items-center gap-1.5 text-[#00D9FF] mb-1">
                 <MapPin className="w-4 h-4" />
-                <span className="text-[10px] font-extrabold uppercase tracking-wider">
+                <span className="text-[10px] font-black uppercase tracking-wider">
                   Location Status
                 </span>
               </div>
-              <span className="text-sm font-extrabold block text-[#00D6A0]">
-                {sharingEnabled ? 'Sharing Live' : 'Paused'}
+              <span className="text-lg font-black block">
+                {sharingEnabled ? 'Live' : 'Hidden'}
               </span>
-              <span className={`text-[11px] ${isDark ? 'text-[#A9A2D0]' : 'text-slate-500'}`}>
-                Vis: {locationVis.replace('_', ' ')}
+              <span className={`text-[11px] ${themeConfig.textMuted}`}>
+                {locationVis.replace('_', ' ')}
               </span>
             </div>
 
-            <div className={`p-3.5 rounded-2xl border ${subCardClass}`}>
-              <div className="flex items-center gap-2 text-[#397BFF] mb-1">
-                <Sparkles className="w-4 h-4" />
-                <span className="text-[10px] font-extrabold uppercase tracking-wider">
+            <div
+              className={`p-3.5 rounded-2xl border ${
+                isLight ? 'bg-[#F5F3FF] border-[#8957FF]/15' : 'bg-[#1B153A]/75 border-[#8957FF]/25'
+              }`}
+            >
+              <div className="flex items-center gap-1.5 text-[#FF4FA3] mb-1">
+                <Heart className="w-4 h-4" />
+                <span className="text-[10px] font-black uppercase tracking-wider">
                   Personal Status
                 </span>
               </div>
-              <span className="text-xs font-extrabold block truncate">
-                {about || 'Exploring live'}
+              <span className="text-xs font-extrabold truncate block">
+                {about || 'Connected & Exploring'}
               </span>
-              <span className={`text-[11px] ${isDark ? 'text-[#A9A2D0]' : 'text-slate-500'}`}>
-                {showOnline ? 'Online badge visible' : 'Stealth mode'}
-              </span>
+              <span className={`text-[11px] ${themeConfig.textMuted}`}>Public bio</span>
             </div>
           </div>
         </div>
       </div>
 
-      {/* 2. COLOURFUL SOCIAL THEME & LIGHT/DARK SELECTOR */}
-      <div className={`p-5 sm:p-6 rounded-[32px] border space-y-4 ${cardClass}`}>
-        <div className="flex items-center justify-between flex-wrap gap-3">
+      {/* 2. COLOURFUL SOCIAL THEME SELECTOR */}
+      <div
+        className={`p-5 rounded-3xl border shadow-xl space-y-4 ${
+          isLight ? 'bg-white border-[#8957FF]/15' : 'bg-[#130F2B]/85 border-[#8957FF]/25'
+        }`}
+      >
+        <div className="flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-2xl bg-gradient-to-tr from-[#8957FF] to-[#FF4FA3] flex items-center justify-center text-white shadow-sm">
+            <div className="w-9 h-9 rounded-2xl bg-gradient-to-br from-[#8957FF] to-[#FF4FA3] text-white flex items-center justify-center shadow-md">
               <Palette className="w-4 h-4" />
             </div>
             <div>
-              <h3 className="font-extrabold text-sm">Beacon Network Themes (Light & Dark)</h3>
-              <p className={`text-xs ${isDark ? 'text-[#A9A2D0]' : 'text-slate-500'}`}>
-                Pick your favourite gradient aesthetic or switch between Daylight and Midnight modes
+              <h3 className="font-extrabold text-sm flex items-center gap-1.5">
+                <span>Beacon Network Themes</span>
+                <Sparkles className="w-3.5 h-3.5 text-[#FFD166]" />
+              </h3>
+              <p className={`text-xs ${themeConfig.textSecondary}`}>
+                Switch between vibrant dark social themes or crisp daylight mode
               </p>
             </div>
           </div>
-
-          <button
-            type="button"
-            onClick={toggleDarkLight}
-            className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-[#8957FF] to-[#FF4FA3] text-white text-xs font-extrabold flex items-center gap-1.5 cursor-pointer shadow-sm"
-          >
-            {isDark ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
-            <span>Switch to {isDark ? 'Light' : 'Dark'}</span>
-          </button>
+          <span className="text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full bg-gradient-to-r from-[#8957FF] to-[#FF4FA3] text-white">
+            {themeConfig.name}
+          </span>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {allThemes.map((t) => {
             const isSelected = currentTheme === t.id;
             return (
@@ -451,43 +474,178 @@ export const ProfilePrivacyView: React.FC = () => {
                 type="button"
                 onClick={() => {
                   setTheme(t.id);
-                  toast.success(`Switched to ${t.name} theme`);
+                  toast.success(`Theme switched to ${t.name}`);
                 }}
-                className={`p-3.5 rounded-2xl border text-left transition-all cursor-pointer flex flex-col justify-between gap-2 relative overflow-hidden group ${
+                className={`p-3.5 rounded-2xl border text-left transition-all flex items-start gap-3 cursor-pointer ${
                   isSelected
-                    ? 'border-[#FF4FA3] ring-2 ring-[#FF4FA3]/30 bg-gradient-to-br from-[#8957FF]/15 to-[#FF4FA3]/10'
-                    : `${subCardClass} hover:border-[#8957FF]/50`
+                    ? isLight
+                      ? 'bg-[#8957FF]/10 border-[#8957FF] ring-2 ring-[#8957FF]/30 shadow-md'
+                      : 'bg-[#1B153A] border-[#FF4FA3] ring-2 ring-[#FF4FA3]/30 shadow-lg'
+                    : isLight
+                      ? 'bg-[#F5F3FF]/60 border-[#8957FF]/15 hover:bg-[#F5F3FF]'
+                      : 'bg-[#1B153A]/50 border-white/10 hover:bg-[#1B153A]'
                 }`}
               >
-                <div className="flex items-center justify-between w-full">
-                  <div className="flex items-center gap-2">
-                    <div
-                      className={`w-6 h-6 rounded-xl bg-gradient-to-tr ${t.previewColor} shadow-sm border border-white/30`}
-                    />
-                    <span className="font-extrabold text-xs">{t.name}</span>
-                  </div>
-                  {isSelected && (
-                    <span className="w-5 h-5 rounded-full bg-gradient-to-r from-[#8957FF] to-[#FF4FA3] text-white flex items-center justify-center shadow">
-                      <Check className="w-3 h-3 stroke-[3]" />
-                    </span>
-                  )}
-                </div>
-                <p
-                  className={`text-[11px] leading-snug ${
-                    isDark ? 'text-[#A9A2D0]' : 'text-slate-500'
-                  }`}
+                <div
+                  className={`w-10 h-10 rounded-xl shrink-0 ${t.previewGradient} shadow-md flex items-center justify-center border border-white/30`}
                 >
-                  {t.description}
-                </p>
+                  {isSelected && <Check className="w-5 h-5 text-white drop-shadow" />}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="font-bold text-xs truncate">{t.name}</span>
+                  </div>
+                  <span className="text-[10px] font-semibold text-[#FF4FA3] block truncate">
+                    {t.tagline}
+                  </span>
+                  <p className={`text-[11px] ${themeConfig.textMuted} line-clamp-2 mt-1 leading-snug`}>
+                    {t.description}
+                  </p>
+                </div>
               </button>
             );
           })}
         </div>
       </div>
 
+      {/* 2B. LOW POWER MODE & BATTERY LONGEVITY SETTINGS CARD */}
+      <div
+        data-testid="low-power-mode-settings-card"
+        className={`p-5 sm:p-6 rounded-3xl border shadow-xl space-y-4 transition-all ${
+          isLowPowerMode
+            ? isLight
+              ? 'bg-emerald-50/90 border-emerald-500/40 ring-1 ring-emerald-500/25'
+              : 'bg-gradient-to-br from-[#0B241E]/95 via-[#130F2B]/90 to-[#111C2D]/95 border-[#00D6A0]/45 ring-1 ring-[#00D6A0]/25'
+            : isLight
+              ? 'bg-white border-[#8957FF]/15'
+              : 'bg-[#130F2B]/85 border-[#8957FF]/25'
+        }`}
+      >
+        <div className="flex items-start sm:items-center justify-between gap-4 flex-col sm:flex-row">
+          <div className="flex items-start sm:items-center gap-3.5">
+            <div
+              className={`w-11 h-11 rounded-2xl flex items-center justify-center shrink-0 shadow-md ${
+                isLowPowerMode
+                  ? 'bg-gradient-to-br from-[#00D6A0] to-[#00D9FF] text-slate-950'
+                  : 'bg-gradient-to-br from-[#8957FF] to-[#397BFF] text-white'
+              }`}
+            >
+              <BatteryCharging className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="font-extrabold text-sm sm:text-base">
+                  Low Power Mode (Battery & Performance Saver)
+                </h3>
+                <span
+                  className={`px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider border ${
+                    isLowPowerMode
+                      ? 'bg-[#00D6A0]/20 text-[#00D6A0] border-[#00D6A0]/40'
+                      : 'bg-[#8957FF]/15 text-[#8957FF] border-[#8957FF]/30'
+                  }`}
+                >
+                  {isLowPowerMode ? 'Battery Saver Active' : 'Standard High-Precision'}
+                </span>
+              </div>
+              <p className={`text-xs ${themeConfig.textSecondary} mt-0.5`}>
+                Reduces GPS location update frequency and lowers the live map refresh rate for cooler device performance and extended battery life.
+              </p>
+            </div>
+          </div>
+
+          <label className="relative inline-flex items-center cursor-pointer self-end sm:self-center shrink-0">
+            <input
+              type="checkbox"
+              data-testid="low-power-mode-toggle"
+              checked={isLowPowerMode}
+              onChange={(e) => {
+                const enabled = e.target.checked;
+                setLowPowerMode(enabled);
+                toast.success(
+                  enabled
+                    ? 'Low Power Mode enabled — GPS updates every 20s & Map refresh lowered to 0.2 Hz'
+                    : 'Low Power Mode disabled — Real-time 6s GPS & 60 FPS map animations restored'
+                );
+              }}
+              className="sr-only peer"
+            />
+            <div className="w-13 h-7 bg-slate-600 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-6 peer-checked:after:border-white after:content-[''] after:absolute after:top-[3px] after:left-[3px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5.5 after:w-5.5 after:transition-all peer-checked:bg-[#00D6A0]" />
+          </label>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
+          <div
+            className={`p-3.5 rounded-2xl border ${
+              isLight ? 'bg-[#F5F3FF]/80 border-[#8957FF]/15' : 'bg-[#1B153A]/65 border-white/10'
+            }`}
+          >
+            <div className="flex items-center gap-1.5 text-xs font-extrabold text-[#00D6A0]">
+              <Radio className="w-3.5 h-3.5" />
+              <span>GPS Update Frequency</span>
+            </div>
+            <p className="text-xs font-black mt-1">
+              {isLowPowerMode
+                ? 'Every 20s or ≥ 12m move'
+                : 'Every 6s or ≥ 2.2m move'}
+            </p>
+            <p className={`text-[11px] ${themeConfig.textMuted} mt-0.5`}>
+              {isLowPowerMode
+                ? 'Eco geolocation watch (allows 20s cached fix & 15s hardware throttle)'
+                : 'Continuous high-accuracy GPS lock (0s cache age)'}
+            </p>
+          </div>
+
+          <div
+            className={`p-3.5 rounded-2xl border ${
+              isLight ? 'bg-[#F5F3FF]/80 border-[#8957FF]/15' : 'bg-[#1B153A]/65 border-white/10'
+            }`}
+          >
+            <div className="flex items-center gap-1.5 text-xs font-extrabold text-[#00D9FF]">
+              <Gauge className="w-3.5 h-3.5" />
+              <span>Map Refresh Rate</span>
+            </div>
+            <p className="text-xs font-black mt-1">
+              {isLowPowerMode
+                ? '0.2 Hz (Every 5s Batch)'
+                : '60 FPS Smooth Interpolation'}
+            </p>
+            <p className={`text-[11px] ${themeConfig.textMuted} mt-0.5`}>
+              {isLowPowerMode
+                ? 'Snaps markers directly, pauses zoom animations & throttles compass to 1.5s'
+                : 'Fluid marker glides, animated flyTo transitions & 220ms compass'}
+            </p>
+          </div>
+
+          <div
+            className={`p-3.5 rounded-2xl border ${
+              isLight ? 'bg-[#F5F3FF]/80 border-[#8957FF]/15' : 'bg-[#1B153A]/65 border-white/10'
+            }`}
+          >
+            <div className="flex items-center gap-1.5 text-xs font-extrabold text-[#FF4FA3]">
+              <Zap className="w-3.5 h-3.5" />
+              <span>Background & CPU Load</span>
+            </div>
+            <p className="text-xs font-black mt-1">
+              {isLowPowerMode
+                ? '12s Sync · Minimal RAM'
+                : '4s Sync · Instant Preload'}
+            </p>
+            <p className={`text-[11px] ${themeConfig.textMuted} mt-0.5`}>
+              {isLowPowerMode
+                ? 'Coalesces cloud updates (1.5s) and skips background tab pre-warming'
+                : '150ms real-time cloud coalescing and idle tab chunk preloading'}
+            </p>
+          </div>
+        </div>
+      </div>
+
       {/* 3. EDIT PROFILE & PRIVACY SETTINGS FORM */}
       <form onSubmit={handleSaveAll} className="space-y-6">
-        <div className={`p-5 sm:p-6 rounded-[32px] border space-y-4 ${cardClass}`}>
+        <div
+          className={`p-6 rounded-3xl border shadow-xl space-y-4 ${
+            isLight ? 'bg-white border-[#8957FF]/15' : 'bg-[#130F2B]/85 border-[#8957FF]/25'
+          }`}
+        >
           <h3 className="font-extrabold text-sm flex items-center gap-2">
             <User className="w-4 h-4 text-[#FF4FA3]" />
             <span>Edit Personal Profile</span>
@@ -503,90 +661,93 @@ export const ProfilePrivacyView: React.FC = () => {
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className="block text-xs font-extrabold mb-1">Display Name</label>
+              <label className={`block text-xs font-bold ${themeConfig.textSecondary} mb-1`}>
+                Full Name
+              </label>
               <input
                 type="text"
                 value={fullName}
                 onChange={(e) => setFullName(e.target.value)}
                 required
-                className={`w-full px-3.5 py-2.5 rounded-2xl border text-sm font-semibold focus:outline-none ${inputClass}`}
+                className={`w-full px-3.5 py-2.5 rounded-2xl border text-sm ${themeConfig.glassInput} focus:outline-none focus:ring-2 focus:ring-[#8957FF]`}
               />
             </div>
 
             <div>
-              <label className="block text-xs font-extrabold mb-1">Phone Number</label>
+              <label className={`block text-xs font-bold ${themeConfig.textSecondary} mb-1`}>
+                Phone Number (For Direct Call & SOS)
+              </label>
               <input
                 type="tel"
                 value={phoneNumber}
                 onChange={(e) => setPhoneNumber(e.target.value)}
                 placeholder="+1 (555) 234-5678"
-                className={`w-full px-3.5 py-2.5 rounded-2xl border text-sm font-semibold focus:outline-none ${inputClass}`}
+                className={`w-full px-3.5 py-2.5 rounded-2xl border text-sm ${themeConfig.glassInput} focus:outline-none focus:ring-2 focus:ring-[#8957FF]`}
               />
             </div>
 
             <div className="md:col-span-2">
               <div className="flex items-center justify-between mb-1">
-                <label className="block text-xs font-extrabold">Profile Photo URL or Upload</label>
+                <label className={`block text-xs font-bold ${themeConfig.textSecondary}`}>
+                  Profile Photo (Upload from Gallery or Paste URL)
+                </label>
                 <button
                   type="button"
                   onClick={() => avatarFileInputRef.current?.click()}
-                  className="text-xs font-extrabold text-[#FF4FA3] hover:underline flex items-center gap-1 cursor-pointer"
+                  className="text-xs font-bold text-[#FF4FA3] hover:underline flex items-center gap-1 cursor-pointer"
                 >
                   <Camera className="w-3.5 h-3.5" />
-                  <span>{isUploadingAvatar ? 'Processing...' : 'Upload from Device'}</span>
+                  <span>{isUploadingAvatar ? 'Processing...' : 'Choose Photo'}</span>
                 </button>
               </div>
               <input
                 type="url"
                 value={avatarUrl}
                 onChange={(e) => setAvatarUrl(e.target.value)}
-                placeholder="https://images.unsplash.com/..."
-                className={`w-full px-3.5 py-2.5 rounded-2xl border text-sm font-semibold focus:outline-none ${inputClass}`}
+                placeholder="https://..."
+                className={`w-full px-3.5 py-2.5 rounded-2xl border text-sm ${themeConfig.glassInput} focus:outline-none focus:ring-2 focus:ring-[#8957FF]`}
               />
             </div>
 
             <div className="md:col-span-2">
-              <label className="block text-xs font-extrabold mb-1">
+              <label className={`block text-xs font-bold ${themeConfig.textSecondary} mb-1`}>
                 Personal Status / Bio
               </label>
               <input
                 type="text"
                 value={about}
                 onChange={(e) => setAbout(e.target.value)}
-                placeholder="Coffee lover ☕ · Sharing live location with family 📍"
-                className={`w-full px-3.5 py-2.5 rounded-2xl border text-sm font-semibold focus:outline-none ${inputClass}`}
+                placeholder="Heading to Downtown Coffee · Available on voice lounge"
+                className={`w-full px-3.5 py-2.5 rounded-2xl border text-sm ${themeConfig.glassInput} focus:outline-none focus:ring-2 focus:ring-[#8957FF]`}
               />
             </div>
           </div>
         </div>
 
-        {/* Privacy & Location Permissions Card */}
-        <div className={`p-5 sm:p-6 rounded-[32px] border space-y-5 ${cardClass}`}>
-          <h3 className="font-extrabold text-sm flex items-center gap-2">
-            <Shield className="w-4 h-4 text-[#00D6A0]" />
-            <span>Beacon Network Privacy Controls</span>
-          </h3>
-
-          {/* Master Location Toggle */}
-          <div className={`flex items-center justify-between p-4 rounded-2xl border ${subCardClass}`}>
+        {/* Privacy Controls */}
+        <div
+          className={`p-6 rounded-3xl border shadow-xl space-y-5 ${
+            isLight ? 'bg-white border-[#8957FF]/15' : 'bg-[#130F2B]/85 border-[#8957FF]/25'
+          }`}
+        >
+          <div className="flex items-center justify-between pb-3 border-b border-[#8957FF]/15">
             <div className="flex items-center gap-3">
               <div
-                className={`w-10 h-10 rounded-2xl flex items-center justify-center ${
+                className={`p-2.5 rounded-2xl ${
                   sharingEnabled
-                    ? 'bg-[#00D6A0]/20 text-[#00D6A0]'
-                    : 'bg-slate-500/20 text-slate-400'
+                    ? 'bg-[#00D6A0]/15 text-[#00D6A0]'
+                    : 'bg-white/10 text-slate-400'
                 }`}
               >
                 <Radio className="w-5 h-5" />
               </div>
               <div>
-                <p className="font-extrabold text-sm">Real-Time Location Broadcasting</p>
-                <p className={`text-xs ${isDark ? 'text-[#A9A2D0]' : 'text-slate-500'}`}>
-                  Allow approved friends and rooms to see your live avatar on the map
+                <h3 className="font-extrabold text-sm">Master Live Location Sharing</h3>
+                <p className={`text-xs ${themeConfig.textSecondary}`}>
+                  Instantly enable or pause broadcasting your real-time GPS coordinates
                 </p>
               </div>
             </div>
-
             <label className="relative inline-flex items-center cursor-pointer">
               <input
                 type="checkbox"
@@ -594,72 +755,92 @@ export const ProfilePrivacyView: React.FC = () => {
                 onChange={(e) => setSharingEnabled(e.target.checked)}
                 className="sr-only peer"
               />
-              <div className="w-11 h-6 bg-slate-500/40 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#00D6A0]" />
+              <div className="w-12 h-6 bg-slate-600 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#00D6A0]"></div>
             </label>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-extrabold mb-1.5 flex items-center gap-1.5">
-                <Eye className="w-4 h-4 text-[#8957FF]" />
+                <Eye className="w-4 h-4 text-[#00D9FF]" />
                 Who can see my live location?
               </label>
               <select
                 value={locationVis}
                 onChange={(e) => setLocationVis(e.target.value as any)}
-                className={`w-full px-3.5 py-2.5 rounded-2xl border text-xs font-bold focus:outline-none ${inputClass}`}
+                className={`w-full px-3.5 py-2.5 rounded-2xl border text-xs font-semibold ${themeConfig.glassInput} focus:outline-none focus:ring-2 focus:ring-[#8957FF]`}
               >
-                <option value="everyone">Everyone on Beacon</option>
-                <option value="room_members">Room Members Only (Recommended)</option>
-                <option value="selected">Explicitly Approved Friends Only</option>
-                <option value="nobody">Nobody (Stealth Mode)</option>
+                <option value="room_members" className="bg-[#130F2B] text-white">
+                  Room Members Only (Default)
+                </option>
+                <option value="selected" className="bg-[#130F2B] text-white">
+                  Approved Friends Only
+                </option>
+                <option value="emergency_only" className="bg-[#130F2B] text-white">
+                  Emergency SOS Broadcasts Only
+                </option>
+                <option value="nobody" className="bg-[#130F2B] text-white">
+                  Nobody (Ghost Mode)
+                </option>
               </select>
             </div>
 
             <div>
               <label className="block text-xs font-extrabold mb-1.5 flex items-center gap-1.5">
-                <Phone className="w-4 h-4 text-[#FF4FA3]" />
+                <Phone className="w-4 h-4 text-[#00D6A0]" />
                 Who can see my phone number?
               </label>
               <select
                 value={phoneVis}
                 onChange={(e) => setPhoneVis(e.target.value as any)}
-                className={`w-full px-3.5 py-2.5 rounded-2xl border text-xs font-bold focus:outline-none ${inputClass}`}
+                className={`w-full px-3.5 py-2.5 rounded-2xl border text-xs font-semibold ${themeConfig.glassInput} focus:outline-none focus:ring-2 focus:ring-[#8957FF]`}
               >
-                <option value="everyone">Everyone</option>
-                <option value="room_members">Room Members Only</option>
-                <option value="nobody">Nobody (Keep Private)</option>
+                <option value="everyone" className="bg-[#130F2B] text-white">
+                  Everyone
+                </option>
+                <option value="room_members" className="bg-[#130F2B] text-white">
+                  Room Members Only
+                </option>
+                <option value="nobody" className="bg-[#130F2B] text-white">
+                  Nobody (Private)
+                </option>
               </select>
             </div>
 
             <div>
               <label className="block text-xs font-extrabold mb-1.5 flex items-center gap-1.5">
-                <User className="w-4 h-4 text-[#397BFF]" />
-                Who can view my profile details?
+                <Shield className="w-4 h-4 text-[#8957FF]" />
+                Profile Visibility
               </label>
               <select
                 value={profileVis}
                 onChange={(e) => setProfileVis(e.target.value as any)}
-                className={`w-full px-3.5 py-2.5 rounded-2xl border text-xs font-bold focus:outline-none ${inputClass}`}
+                className={`w-full px-3.5 py-2.5 rounded-2xl border text-xs font-semibold ${themeConfig.glassInput} focus:outline-none focus:ring-2 focus:ring-[#8957FF]`}
               >
-                <option value="everyone">Everyone</option>
-                <option value="room_members">Room Members Only</option>
-                <option value="nobody">Nobody</option>
+                <option value="public" className="bg-[#130F2B] text-white">
+                  Public Directory
+                </option>
+                <option value="room_members" className="bg-[#130F2B] text-white">
+                  Room Members Only
+                </option>
+                <option value="private" className="bg-[#130F2B] text-white">
+                  Private
+                </option>
               </select>
             </div>
 
-            <div className={`flex items-center justify-between p-3.5 rounded-2xl border ${subCardClass}`}>
+            <div className="flex items-center justify-between pt-2">
               <div>
-                <p className="text-xs font-extrabold">Show Online Presence Indicator</p>
-                <p className={`text-[11px] ${isDark ? 'text-[#A9A2D0]' : 'text-slate-500'}`}>
-                  Display the Mint Green dot when you are active
+                <h4 className="font-bold text-xs">Show Online Status</h4>
+                <p className={`text-[11px] ${themeConfig.textSecondary}`}>
+                  Let friends see when you are active
                 </p>
               </div>
               <input
                 type="checkbox"
                 checked={showOnline}
                 onChange={(e) => setShowOnline(e.target.checked)}
-                className="w-4 h-4 accent-[#00D6A0] rounded cursor-pointer"
+                className="w-4 h-4 accent-[#8957FF] rounded cursor-pointer"
               />
             </div>
           </div>
@@ -667,7 +848,7 @@ export const ProfilePrivacyView: React.FC = () => {
 
         <div className="flex items-center justify-between">
           {savedMsg ? (
-            <div className="flex items-center gap-1.5 text-[#00D6A0] text-xs font-extrabold">
+            <div className="flex items-center gap-1.5 text-[#00D6A0] text-xs font-bold">
               <Check className="w-4 h-4" />
               <span>{savedMsg}</span>
             </div>
@@ -678,7 +859,7 @@ export const ProfilePrivacyView: React.FC = () => {
           <button
             type="submit"
             disabled={isSaving}
-            className="px-6 py-3 bg-gradient-to-r from-[#8957FF] via-[#FF4FA3] to-[#FF8066] hover:opacity-95 text-white rounded-2xl text-xs font-extrabold flex items-center gap-2 shadow-[0_8px_24px_rgba(255,79,163,0.4)] transition-all cursor-pointer active:scale-95"
+            className="px-6 py-3 bg-gradient-to-r from-[#8957FF] via-[#FF4FA3] to-[#FF8066] hover:opacity-95 text-white rounded-2xl text-xs font-extrabold flex items-center gap-2 shadow-xl transition-all cursor-pointer active:scale-95"
           >
             <Save className="w-4 h-4" />
             <span>{isSaving ? 'Saving...' : 'Save Profile & Privacy'}</span>
@@ -686,51 +867,51 @@ export const ProfilePrivacyView: React.FC = () => {
         </div>
       </form>
 
-      {/* 4. ANDROID APK & WEB CLOUD SYNCHRONIZATION CARD */}
-      <div className={`p-5 sm:p-6 rounded-[32px] border space-y-4 ${cardClass}`}>
+      {/* 4. NATIVE ANDROID APK & CAPACITOR MOBILE BUILD CARD */}
+      <div
+        className={`p-6 rounded-3xl border shadow-xl space-y-3 ${
+          isLight ? 'bg-white border-[#8957FF]/15' : 'bg-[#130F2B]/85 border-[#8957FF]/25'
+        }`}
+      >
         <div className="flex items-center justify-between flex-wrap gap-3">
-          <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-2xl bg-gradient-to-tr from-[#397BFF] to-[#00D9FF] text-white flex items-center justify-center shadow-sm">
-              <Smartphone className="w-4 h-4" />
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-[#00D6A0] to-[#00D9FF] text-slate-950 flex items-center justify-center shadow-md">
+              <Smartphone className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="font-extrabold text-sm">Android APK & Web Cloud Sync</h3>
-              <p className={`text-xs ${isDark ? 'text-[#A9A2D0]' : 'text-slate-500'}`}>
-                Install the native Android APK to share live locations on the go
+              <h3 className="font-extrabold text-sm">Android Mobile APK & PWA Support</h3>
+              <p className={`text-xs ${themeConfig.textSecondary}`}>
+                Install Beacon Network on your phone home screen or build the native Capacitor APK (`com.beacon.network`)
               </p>
             </div>
           </div>
-
-          <a
-            href="https://github.com/Harikrishna8118/Track-Your-Friends-/releases/latest/download/app-debug.apk"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="px-4 py-2 rounded-xl bg-gradient-to-r from-[#397BFF] to-[#00D9FF] text-white font-extrabold text-xs flex items-center gap-1.5 shadow-md cursor-pointer"
-          >
-            <Download className="w-3.5 h-3.5" />
-            <span>Download Android APK</span>
-            <ExternalLink className="w-3 h-3 opacity-80" />
-          </a>
+          <span className="px-3 py-1 rounded-full bg-[#00D6A0]/15 text-[#00D6A0] border border-[#00D6A0]/30 text-[10px] font-extrabold">
+            Capacitor Ready
+          </span>
         </div>
       </div>
 
-      {/* 5. BLOCKED USERS & ACCOUNT DANGER ZONE */}
-      <div className={`p-5 sm:p-6 rounded-[32px] border space-y-5 ${cardClass}`}>
+      {/* 5. BLOCKED USERS, LOCATION HISTORY PURGE & ACCOUNT DELETION */}
+      <div
+        className={`p-6 rounded-3xl border shadow-xl space-y-5 ${
+          isLight ? 'bg-white border-[#8957FF]/15' : 'bg-[#130F2B]/85 border-[#8957FF]/25'
+        }`}
+      >
         <div>
           <h3 className="font-extrabold text-sm flex items-center gap-2">
-            <UserX className="w-4 h-4 text-[#FF4FA3]" />
+            <UserX className="w-4 h-4 text-[#FF8066]" />
             <span>Blocked Users ({blockedUsers.length})</span>
           </h3>
           {blockedUsers.length === 0 ? (
-            <p className={`text-xs mt-1 ${isDark ? 'text-[#A9A2D0]' : 'text-slate-500'}`}>
-              You haven't blocked any users.
+            <p className={`text-xs ${themeConfig.textMuted} mt-1`}>
+              You have not blocked any users.
             </p>
           ) : (
             <div className="space-y-2 mt-3">
               {blockedUsers.map((bu) => (
                 <div
                   key={bu.id}
-                  className={`flex items-center justify-between p-3 rounded-2xl border ${subCardClass}`}
+                  className="flex items-center justify-between p-3 rounded-2xl border border-[#8957FF]/20 bg-[#1B153A]/50"
                 >
                   <div className="flex items-center gap-2.5">
                     <img
@@ -739,16 +920,14 @@ export const ProfilePrivacyView: React.FC = () => {
                       className="w-8 h-8 rounded-full object-cover"
                     />
                     <div>
-                      <span className="text-xs font-extrabold block">{bu.fullName}</span>
-                      <span className={`text-[10px] ${isDark ? 'text-[#A9A2D0]' : 'text-slate-500'}`}>
-                        @{bu.username}
-                      </span>
+                      <span className="text-xs font-bold block">{bu.fullName}</span>
+                      <span className="text-[10px] text-[#A6A1C8]">@{bu.username}</span>
                     </div>
                   </div>
                   <button
                     type="button"
                     onClick={() => handleUnblockUser(bu.id, bu.fullName)}
-                    className="px-3 py-1 bg-[#00D6A0]/15 text-[#00D6A0] rounded-xl text-xs font-extrabold cursor-pointer"
+                    className="px-3 py-1 bg-[#8957FF]/20 hover:bg-[#8957FF]/30 text-white rounded-xl text-xs font-bold cursor-pointer"
                   >
                     Unblock
                   </button>
@@ -758,39 +937,59 @@ export const ProfilePrivacyView: React.FC = () => {
           )}
         </div>
 
-        <div className={`pt-4 border-t flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${isDark ? 'border-white/10' : 'border-slate-200'}`}>
+        <div className="pt-4 border-t border-[#8957FF]/15 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
-            <h4 className="font-extrabold text-xs">Purge Ephemeral Location History</h4>
-            <p className={`text-[11px] ${isDark ? 'text-[#A9A2D0]' : 'text-slate-500'}`}>
-              Delete all recorded breadcrumb trail coordinates older than your current live fix.
+            <h4 className="font-bold text-xs">Purge Ephemeral Location History</h4>
+            <p className={`text-[11px] ${themeConfig.textSecondary}`}>
+              Delete all recorded 24-hour breadcrumb trail coordinates from the server
             </p>
           </div>
           <button
             type="button"
             onClick={handlePurgeLocationHistory}
             disabled={isPurgingHistory}
-            className="px-4 py-2 bg-[#FFD166]/20 hover:bg-[#FFD166]/30 text-amber-600 dark:text-[#FFD166] border border-[#FFD166]/40 rounded-xl text-xs font-extrabold flex items-center gap-1.5 shrink-0 cursor-pointer"
+            className="px-4 py-2 bg-[#FF8066]/15 hover:bg-[#FF8066]/25 text-[#FF8066] border border-[#FF8066]/30 rounded-2xl text-xs font-extrabold flex items-center gap-1.5 shrink-0 cursor-pointer"
           >
             <Trash2 className="w-3.5 h-3.5" />
-            <span>{isPurgingHistory ? 'Purging...' : 'Purge History'}</span>
+            <span>{isPurgingHistory ? 'Purging...' : 'Purge Location History'}</span>
           </button>
         </div>
 
-        <div className={`pt-4 border-t space-y-3 ${isDark ? 'border-white/10' : 'border-slate-200'}`}>
+        <div className="pt-4 border-t border-[#8957FF]/15 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <h4 className="font-bold text-xs">Account Session</h4>
+            <p className={`text-[11px] ${themeConfig.textSecondary}`}>
+              Sign out of your Beacon Network account on this device
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={async () => {
+              await logout();
+              toast.info('Signed out of Beacon Network');
+            }}
+            className="px-4 py-2 bg-[#FF3B6B]/15 hover:bg-[#FF3B6B]/25 text-[#FF3B6B] border border-[#FF3B6B]/35 rounded-2xl text-xs font-extrabold flex items-center gap-1.5 shrink-0 cursor-pointer"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span>Log Out of Account</span>
+          </button>
+        </div>
+
+        <div className="pt-4 border-t border-[#8957FF]/15 space-y-3">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
-              <h4 className="font-extrabold text-xs text-[#FF4FA3] flex items-center gap-1.5">
+              <h4 className="font-bold text-xs text-[#FF3B6B] flex items-center gap-1.5">
                 <AlertTriangle className="w-3.5 h-3.5" />
                 <span>Permanently Delete Account</span>
               </h4>
-              <p className={`text-[11px] ${isDark ? 'text-[#A9A2D0]' : 'text-slate-500'}`}>
-                Removes your account, messages, saved places, and location history.
+              <p className={`text-[11px] ${themeConfig.textSecondary}`}>
+                Removes your profile, messages, saved places, and location history
               </p>
             </div>
             <button
               type="button"
               onClick={() => setShowDeleteConfirm(!showDeleteConfirm)}
-              className="px-4 py-2 bg-[#FF4FA3]/15 hover:bg-[#FF4FA3]/25 text-[#FF4FA3] border border-[#FF4FA3]/35 rounded-xl text-xs font-extrabold flex items-center gap-1.5 shrink-0 cursor-pointer"
+              className="px-4 py-2 bg-[#FF3B6B]/15 hover:bg-[#FF3B6B]/25 text-[#FF3B6B] border border-[#FF3B6B]/30 rounded-2xl text-xs font-extrabold flex items-center gap-1.5 shrink-0 cursor-pointer"
             >
               <Trash2 className="w-3.5 h-3.5" />
               <span>Delete Account</span>
@@ -798,8 +997,8 @@ export const ProfilePrivacyView: React.FC = () => {
           </div>
 
           {showDeleteConfirm && (
-            <div className="p-4 rounded-2xl bg-[#FF4FA3]/10 border border-[#FF4FA3]/35 space-y-3">
-              <p className="text-xs font-bold">
+            <div className="p-4 rounded-2xl bg-[#FF3B6B]/10 border border-[#FF3B6B]/30 space-y-3">
+              <p className="text-xs font-semibold text-[#FF3B6B]">
                 Type <strong>DELETE</strong> below to permanently erase your account:
               </p>
               <div className="flex items-center gap-2">
@@ -808,13 +1007,15 @@ export const ProfilePrivacyView: React.FC = () => {
                   value={deleteConfirmText}
                   onChange={(e) => setDeleteConfirmText(e.target.value)}
                   placeholder="Type DELETE"
-                  className={`flex-1 px-3 py-2 rounded-xl border text-xs font-mono uppercase ${inputClass}`}
+                  className={`flex-1 px-3 py-2 rounded-xl border text-xs font-mono uppercase ${themeConfig.glassInput}`}
                 />
                 <button
                   type="button"
                   onClick={handleDeleteAccount}
-                  disabled={isDeletingAccount || deleteConfirmText.trim().toUpperCase() !== 'DELETE'}
-                  className="px-4 py-2 bg-[#FF4FA3] text-white rounded-xl text-xs font-extrabold disabled:opacity-50 cursor-pointer"
+                  disabled={
+                    isDeletingAccount || deleteConfirmText.trim().toUpperCase() !== 'DELETE'
+                  }
+                  className="px-4 py-2 bg-[#FF3B6B] text-white rounded-xl text-xs font-extrabold disabled:opacity-50 cursor-pointer"
                 >
                   {isDeletingAccount ? 'Deleting...' : 'Confirm Delete'}
                 </button>

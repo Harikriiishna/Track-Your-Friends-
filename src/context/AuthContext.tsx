@@ -25,6 +25,13 @@ interface AuthContextType {
     showOnlineStatus: boolean;
     locationSharingEnabled?: boolean;
     temporarySharingExpiry?: string | null;
+    sharingDurationMode?: 'off' | '15m' | '1h' | 'until_stopped';
+    approximateSharing?: boolean;
+    notificationPreferences?: {
+      incidents: boolean;
+      community: boolean;
+      mentions: boolean;
+    };
   }) => Promise<UserProfile>;
 }
 

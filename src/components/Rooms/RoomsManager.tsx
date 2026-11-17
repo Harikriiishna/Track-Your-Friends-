@@ -1,15 +1,32 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { useRealtime } from '../../context/RealtimeContext.tsx';
-import type { Room, RoomMember, UserRole, SavedPlace } from '../../types.ts';
+import type { Room, RoomMember, UserRole, SavedPlace, MessageAttachment } from '../../types.ts';
 import { api } from '../../utils/api.ts';
 import { localBackend } from '../../utils/localBackend.ts';
 import { calculateDistanceMeters, formatDistance } from '../../utils/geo.ts';
-import { sound } from '../../utils/audio.ts';
+import { VoiceRecorder, sound, triggerHaptic } from '../../utils/audio.ts';
+import { AudioWaveformVisualizer, VoiceMessagePlayer } from '../Chat/AudioWaveformVisualizer.tsx';
 import { notifications } from '../../utils/notifications.ts';
 import { useToast } from '../../context/ToastContext.tsx';
 import { useTheme } from '../../context/ThemeContext.tsx';
 import { LiveMap } from '../Map/LiveMap.tsx';
+import {
+  LOCATION_TYPES,
+  MARKER_COLORS,
+  getLocationTypeEmoji,
+} from '../../utils/markerStyles.ts';
+import {
+  type RoomSavedPlaceGeofence,
+  type RoomGeofenceAlertEvent,
+  loadRoomGeofences,
+  upsertRoomGeofence,
+  deleteRoomGeofence,
+  loadRoomGeofenceEvents,
+  clearRoomGeofenceEvents,
+  evaluateRoomSavedPlaceGeofences,
+  triggerSimulatedRoomGeofenceAlert,
+} from '../../utils/roomGeofences.ts';
 import {
   Users,
   Plus,
@@ -42,6 +59,14 @@ import {
   BellRing,
   BellOff,
   SlidersHorizontal,
+  Send,
+  Trash2,
+  Square,
+  FileAudio,
+  Hash,
+  Radar,
+  Navigation,
+  Sparkles,
 } from 'lucide-react';
 
 export interface MemberGeofenceAlertConfig {
@@ -75,6 +100,20 @@ interface RoomsManagerProps {
   onSetReminderAtCoords?: (lat: number, lng: number, title?: string) => void;
 }
 
+const ROOM_VOICE_NOTE_CHANNELS = [
+  { id: 'general', label: '#general' },
+  { id: 'live-locations', label: '#live-locations' },
+  { id: 'announcements', label: '#announcements' },
+  { id: 'lounge', label: '#lounge' },
+] as const;
+
+function formatVoiceNoteDuration(seconds: number): string {
+  const safeSecs = Math.max(0, Math.floor(seconds));
+  const mins = Math.floor(safeSecs / 60);
+  const secs = safeSecs % 60;
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
+}
+
 export const RoomsManager: React.FC<RoomsManagerProps> = ({
   isActive = true,
   onSelectRoom,
@@ -101,6 +140,7 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
     joinVoiceChannel,
     leaveVoiceChannel,
     toggleMicMute,
+    chatMessages,
     sendMessage,
   } = useRealtime();
 
@@ -110,11 +150,298 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showJoinModal, setShowJoinModal] = useState(false);
   const [showRoomMap, setShowRoomMap] = useState(false);
+  const [hasMountedRoomMap, setHasMountedRoomMap] = useState(false);
   const [isRoomMapFullscreen, setIsRoomMapFullscreen] = useState(false);
+  const [isRoomFullscreen, setIsRoomFullscreen] = useState(false);
   const [roomMapFocusCoords, setRoomMapFocusCoords] = useState<{ lat: number; lng: number } | null>(null);
   const roomMapPanelRef = React.useRef<HTMLDivElement>(null);
+  const activeRoomSectionRef = React.useRef<HTMLDivElement>(null);
+  const voiceNoteSectionRef = React.useRef<HTMLDivElement>(null);
+  const roomGeofenceSectionRef = React.useRef<HTMLDivElement>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [quickHubMessage, setQuickHubMessage] = useState('');
+
+  // Room Voice Note Recorder State
+  const [isRecordingVoiceNote, setIsRecordingVoiceNote] = useState(false);
+  const [voiceNoteRecordingSeconds, setVoiceNoteRecordingSeconds] = useState(0);
+  const [voiceNotePreview, setVoiceNotePreview] = useState<{
+    dataUrl: string;
+    durationSeconds: number;
+    sizeBytes: number;
+    mimeType: string;
+  } | null>(null);
+  const [voiceNoteCaption, setVoiceNoteCaption] = useState('');
+  const [voiceNoteChannel, setVoiceNoteChannel] = useState<string>('general');
+  const [isSendingVoiceNote, setIsSendingVoiceNote] = useState(false);
+  const [localSentVoiceNotes, setLocalSentVoiceNotes] = useState<
+    Array<{
+      id: string;
+      roomId: string;
+      channelId: string;
+      senderName: string;
+      senderAvatar?: string;
+      text: string;
+      url: string;
+      duration: number;
+      createdAt: string;
+    }>
+  >([]);
+  const voiceRecorderRef = React.useRef<VoiceRecorder | null>(null);
+  const voiceNoteTimerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Clean up any active voice note recording on unmount or when switching rooms
+  useEffect(() => {
+    return () => {
+      if (voiceRecorderRef.current) {
+        voiceRecorderRef.current.cancel();
+        voiceRecorderRef.current = null;
+      }
+      if (voiceNoteTimerRef.current) {
+        clearInterval(voiceNoteTimerRef.current);
+        voiceNoteTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    // Cancel active recording or unsent preview when user switches to a different room
+    if (voiceRecorderRef.current) {
+      voiceRecorderRef.current.cancel();
+      voiceRecorderRef.current = null;
+    }
+    if (voiceNoteTimerRef.current) {
+      clearInterval(voiceNoteTimerRef.current);
+      voiceNoteTimerRef.current = null;
+    }
+    setIsRecordingVoiceNote(false);
+    setVoiceNoteRecordingSeconds(0);
+    setVoiceNotePreview(null);
+  }, [selectedRoomId]);
+
+  const startRoomVoiceNoteRecording = React.useCallback(async () => {
+    if (isRecordingVoiceNote) return;
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      toast.error('Microphone recording is not supported in this browser.');
+      return;
+    }
+    try {
+      const recorder = new VoiceRecorder();
+      await recorder.start();
+      voiceRecorderRef.current = recorder;
+      setVoiceNotePreview(null);
+      setIsRecordingVoiceNote(true);
+      setVoiceNoteRecordingSeconds(0);
+      sound.playTap();
+      triggerHaptic('medium');
+
+      if (voiceNoteTimerRef.current) clearInterval(voiceNoteTimerRef.current);
+      voiceNoteTimerRef.current = setInterval(() => {
+        setVoiceNoteRecordingSeconds((prev) => prev + 1);
+      }, 1000);
+    } catch (err: any) {
+      console.error('Voice note microphone error:', err);
+      toast.error(
+        `Microphone access failed: ${err?.message || 'Please allow microphone permission to record voice notes.'}`
+      );
+    }
+  }, [isRecordingVoiceNote, toast]);
+
+  const cancelRoomVoiceNoteRecording = React.useCallback(() => {
+    if (voiceRecorderRef.current) {
+      voiceRecorderRef.current.cancel();
+      voiceRecorderRef.current = null;
+    }
+    if (voiceNoteTimerRef.current) {
+      clearInterval(voiceNoteTimerRef.current);
+      voiceNoteTimerRef.current = null;
+    }
+    setIsRecordingVoiceNote(false);
+    setVoiceNoteRecordingSeconds(0);
+    setVoiceNotePreview(null);
+    triggerHaptic('light');
+  }, []);
+
+  const stopRoomVoiceNoteForPreview = React.useCallback(async () => {
+    if (!voiceRecorderRef.current) return;
+    if (voiceNoteTimerRef.current) {
+      clearInterval(voiceNoteTimerRef.current);
+      voiceNoteTimerRef.current = null;
+    }
+    try {
+      const result = await voiceRecorderRef.current.stop();
+      voiceRecorderRef.current = null;
+      setIsRecordingVoiceNote(false);
+      setVoiceNotePreview({
+        dataUrl: result.dataUrl,
+        durationSeconds: result.durationSeconds,
+        sizeBytes: result.blob.size,
+        mimeType: result.blob.type || 'audio/webm',
+      });
+      sound.playTap();
+      triggerHaptic('selection');
+    } catch (err: any) {
+      console.error('Error stopping voice recorder:', err);
+      setIsRecordingVoiceNote(false);
+      toast.error('Could not finalize voice note recording.');
+    }
+  }, [toast]);
+
+  const dispatchEncodedVoiceNoteToRoom = React.useCallback(
+    async (payload: {
+      dataUrl: string;
+      durationSeconds: number;
+      sizeBytes: number;
+      mimeType: string;
+    }) => {
+      const targetRoomId = activeRoomDetails?.id || selectedRoomId;
+      if (!targetRoomId) {
+        toast.error('Select an active room first to send a voice note.');
+        return;
+      }
+
+      setIsSendingVoiceNote(true);
+      try {
+        const ext = payload.mimeType.includes('mp4') ? 'm4a' : 'webm';
+        const filename = `voice-note-${Date.now()}.${ext}`;
+        let finalUrl = payload.dataUrl;
+        let finalSize = payload.sizeBytes || Math.round((payload.dataUrl.length * 3) / 4);
+
+        try {
+          const uploaded = await api.uploadFile(payload.dataUrl, filename, payload.mimeType);
+          if (uploaded?.url) {
+            finalUrl = uploaded.url;
+          }
+          if (uploaded?.size) {
+            finalSize = uploaded.size;
+          }
+        } catch {
+          // Fallback to encoded base64 Data URL directly so voice note always delivers
+        }
+
+        const durationFormatted = formatVoiceNoteDuration(payload.durationSeconds);
+        const trimmedCaption = voiceNoteCaption.trim();
+        const messageText = trimmedCaption
+          ? `🎤 ${trimmedCaption}`
+          : `🎤 Voice message (${durationFormatted})`;
+        const clientMsgId = `voice-${Date.now()}`;
+        const targetChannel = voiceNoteChannel || 'general';
+
+        const attachment: MessageAttachment = {
+          id: `att-voice-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          type: 'voice',
+          url: finalUrl,
+          name: `Voice message (${durationFormatted})`,
+          size: finalSize,
+          duration: payload.durationSeconds,
+        };
+
+        sendMessage({
+          roomId: targetRoomId,
+          channelId: targetChannel,
+          text: messageText,
+          attachments: [attachment],
+          clientMsgId,
+        });
+
+        setLocalSentVoiceNotes((prev) => [
+          {
+            id: clientMsgId,
+            roomId: targetRoomId,
+            channelId: targetChannel,
+            senderName: user?.fullName || 'You',
+            senderAvatar: user?.avatarUrl,
+            text: messageText,
+            url: finalUrl,
+            duration: payload.durationSeconds,
+            createdAt: new Date().toISOString(),
+          },
+          ...prev.slice(0, 14),
+        ]);
+
+        sound.playSuccess();
+        triggerHaptic('light');
+        setVoiceNotePreview(null);
+        setVoiceNoteCaption('');
+        setVoiceNoteRecordingSeconds(0);
+        toast.success(
+          `Voice note (${durationFormatted}) sent to ${activeRoomDetails?.name || 'room'} (#${targetChannel})`
+        );
+      } catch (err: any) {
+        console.error('Failed to send voice note:', err);
+        toast.error(err?.message || 'Failed to send voice note to chat room');
+      } finally {
+        setIsSendingVoiceNote(false);
+      }
+    },
+    [activeRoomDetails, selectedRoomId, voiceNoteCaption, voiceNoteChannel, sendMessage, user, toast]
+  );
+
+  const stopAndSendRoomVoiceNote = React.useCallback(async () => {
+    if (!voiceRecorderRef.current) return;
+    if (voiceNoteTimerRef.current) {
+      clearInterval(voiceNoteTimerRef.current);
+      voiceNoteTimerRef.current = null;
+    }
+    try {
+      const result = await voiceRecorderRef.current.stop();
+      voiceRecorderRef.current = null;
+      setIsRecordingVoiceNote(false);
+      await dispatchEncodedVoiceNoteToRoom({
+        dataUrl: result.dataUrl,
+        durationSeconds: result.durationSeconds,
+        sizeBytes: result.blob.size,
+        mimeType: result.blob.type || 'audio/webm',
+      });
+    } catch (err: any) {
+      console.error('Error stopping & sending voice note:', err);
+      setIsRecordingVoiceNote(false);
+      toast.error('Failed to capture audio for voice note.');
+    }
+  }, [dispatchEncodedVoiceNoteToRoom, toast]);
+
+  // Combine recent voice notes from RealtimeContext chatMessages + localSentVoiceNotes for the active room
+  const activeRoomVoiceNotes = React.useMemo(() => {
+    const roomId = activeRoomDetails?.id || selectedRoomId;
+    if (!roomId) return [];
+
+    const remoteMsgs = chatMessages[roomId] || [];
+    const extractedRemote = remoteMsgs
+      .filter((m) => m.attachments && m.attachments.some((a) => a.type === 'voice'))
+      .map((m) => {
+        const voiceAtt = m.attachments!.find((a) => a.type === 'voice')!;
+        return {
+          id: m.id,
+          roomId,
+          channelId: m.channelId || 'general',
+          senderName: m.senderName || 'Member',
+          senderAvatar: m.senderAvatar,
+          text: m.text || '🎤 Voice message',
+          url: voiceAtt.url,
+          duration: voiceAtt.duration || 1,
+          createdAt: m.createdAt || new Date().toISOString(),
+        };
+      });
+
+    const localForRoom = localSentVoiceNotes.filter((n) => n.roomId === roomId);
+    const mergedMap = new Map<string, (typeof localForRoom)[number]>();
+
+    for (const item of [...localForRoom, ...extractedRemote]) {
+      // Deduplicate if remote message has same URL or ID
+      const existingDup = Array.from(mergedMap.values()).some(
+        (existing) =>
+          existing.id === item.id ||
+          (existing.url === item.url &&
+            Math.abs(new Date(existing.createdAt).getTime() - new Date(item.createdAt).getTime()) < 25000)
+      );
+      if (!existingDup) {
+        mergedMap.set(item.id, item);
+      }
+    }
+
+    return Array.from(mergedMap.values())
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .slice(0, 5);
+  }, [activeRoomDetails?.id, selectedRoomId, chatMessages, localSentVoiceNotes]);
 
   // Per-member geofence notification toggle & configuration state
   const storageKey = `beacon_member_geofence_alerts_${user?.id || 'default'}`;
@@ -326,7 +653,13 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
             toast.info(
               `🚶 Geofence Alert: ${memberName} left "${place.name}" (${Math.round(dist)}m)`
             );
-            notifications.notifyMemberGeofence(memberName, 'left', place.name, dist);
+            notifications.notifyMemberGeofence(memberName, 'left', place.name, dist, {
+              roomId: activeRoomDetails?.id,
+              roomName: activeRoomDetails?.name,
+              latitude: place.latitude,
+              longitude: place.longitude,
+              radiusMeters: radius,
+            });
             setGeofenceEvents((prev) => [
               {
                 id: `${Date.now()}-${peerLoc.userId}-${place.id}-leave`,
@@ -345,6 +678,331 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
       });
     });
   }, [userLocations, savedPlaces, memberGeofenceAlerts, activeRoomDetails, user?.id, toast]);
+
+  // ============================================================================
+  // ROOM SAVED-PLACE GEOFENCES & AUTOMATIC PUSH NOTIFICATIONS
+  // ============================================================================
+  const [roomGeofences, setRoomGeofences] = useState<RoomSavedPlaceGeofence[]>(() =>
+    loadRoomGeofences()
+  );
+  const [roomGeofenceEvents, setRoomGeofenceEvents] = useState<RoomGeofenceAlertEvent[]>(() =>
+    loadRoomGeofenceEvents()
+  );
+  const [showDefineGeofenceModal, setShowDefineGeofenceModal] = useState(false);
+  const [editingGeofenceId, setEditingGeofenceId] = useState<string | null>(null);
+  const [geofencePlaceMode, setGeofencePlaceMode] = useState<'existing' | 'new'>('existing');
+  const [selectedGeofencePlaceId, setSelectedGeofencePlaceId] = useState<string>('');
+  const [geofenceRadiusMeters, setGeofenceRadiusMeters] = useState<number>(150);
+  const [geofenceNotifyOnEnter, setGeofenceNotifyOnEnter] = useState<boolean>(true);
+  const [geofenceNotifyOnLeave, setGeofenceNotifyOnLeave] = useState<boolean>(true);
+  const [geofencePostToRoomChat, setGeofencePostToRoomChat] = useState<boolean>(true);
+  const [geofenceWatchedMemberIds, setGeofenceWatchedMemberIds] = useState<string[]>([]);
+  const [syncRadiusToSavedPlace, setSyncRadiusToSavedPlace] = useState<boolean>(true);
+  const [isSavingRoomGeofence, setIsSavingRoomGeofence] = useState<boolean>(false);
+
+  // Inline "Create New Saved Place" form inside the Room Geofence Modal
+  const [newPlaceName, setNewPlaceName] = useState<string>('');
+  const [newPlaceDesc, setNewPlaceDesc] = useState<string>('');
+  const [newPlaceCategory, setNewPlaceCategory] = useState<SavedPlace['category']>('home');
+  const [newPlaceColor, setNewPlaceColor] = useState<string>('#8957FF');
+  const [newPlaceLat, setNewPlaceLat] = useState<string>('');
+  const [newPlaceLng, setNewPlaceLng] = useState<string>('');
+
+  // Keep roomGeofences & roomGeofenceEvents synchronized across components
+  useEffect(() => {
+    const onGeofencesUpdated = () => setRoomGeofences(loadRoomGeofences());
+    const onEventsUpdated = () => setRoomGeofenceEvents(loadRoomGeofenceEvents());
+    window.addEventListener('beacon:room-geofences-updated', onGeofencesUpdated);
+    window.addEventListener('beacon:room-geofence-events-updated', onEventsUpdated);
+    return () => {
+      window.removeEventListener('beacon:room-geofences-updated', onGeofencesUpdated);
+      window.removeEventListener('beacon:room-geofence-events-updated', onEventsUpdated);
+    };
+  }, []);
+
+  // Active Room's Saved-Place Geofences
+  const activeRoomGeofences = React.useMemo(() => {
+    const rid = activeRoomDetails?.id || selectedRoomId;
+    if (!rid) return [];
+    return roomGeofences.filter((g) => g.roomId === rid);
+  }, [roomGeofences, activeRoomDetails?.id, selectedRoomId]);
+
+  const activeRoomGeofenceEvents = React.useMemo(() => {
+    const rid = activeRoomDetails?.id || selectedRoomId;
+    if (!rid) return roomGeofenceEvents.slice(0, 10);
+    return roomGeofenceEvents.filter((e) => e.roomId === rid).slice(0, 12);
+  }, [roomGeofenceEvents, activeRoomDetails?.id, selectedRoomId]);
+
+  // Evaluate Room Saved-Place Geofences in real time whenever locations or geofences update
+  useEffect(() => {
+    if (roomGeofences.length === 0 || userLocations.length === 0) return;
+
+    evaluateRoomSavedPlaceGeofences({
+      currentUserId: user?.id,
+      geofences: roomGeofences,
+      savedPlaces,
+      userLocations,
+      rooms,
+      activeRoomDetails,
+      onAlertTriggered: (ev, gf) => {
+        if (ev.action === 'entered') {
+          toast.success(
+            `📍 [${ev.roomName}] ${ev.memberName} entered "${ev.placeName}" (${ev.distanceMeters}m)`
+          );
+        } else {
+          toast.info(
+            `🚶 [${ev.roomName}] ${ev.memberName} left "${ev.placeName}" (${ev.distanceMeters}m)`
+          );
+        }
+        if (gf.postToRoomChat) {
+          sendMessage({
+            roomId: gf.roomId,
+            channelId: 'live-locations',
+            text: `📍 Geofence Alert: ${ev.memberName} ${ev.action} saved place "${ev.placeName}" (${ev.distanceMeters}m from center · ${gf.radiusMeters}m zone).`,
+          });
+        }
+      },
+    });
+  }, [userLocations, roomGeofences, savedPlaces, rooms, activeRoomDetails, user?.id, toast, sendMessage]);
+
+  const handleOpenDefinePlaceGeofenceModal = React.useCallback(
+    (preselectedPlace?: SavedPlace) => {
+      setEditingGeofenceId(null);
+      if (preselectedPlace) {
+        setGeofencePlaceMode('existing');
+        setSelectedGeofencePlaceId(preselectedPlace.id);
+        setGeofenceRadiusMeters(preselectedPlace.radiusMeters || 150);
+      } else if (savedPlaces.length > 0) {
+        setGeofencePlaceMode('existing');
+        const firstPlace = savedPlaces[0];
+        setSelectedGeofencePlaceId(firstPlace.id);
+        setGeofenceRadiusMeters(firstPlace.radiusMeters || 150);
+      } else {
+        setGeofencePlaceMode('new');
+        setSelectedGeofencePlaceId('');
+        setGeofenceRadiusMeters(150);
+      }
+
+      if (myLocation) {
+        setNewPlaceLat(myLocation.latitude.toFixed(6));
+        setNewPlaceLng(myLocation.longitude.toFixed(6));
+      } else {
+        setNewPlaceLat('13.050100');
+        setNewPlaceLng('77.714750');
+      }
+      setNewPlaceName('');
+      setNewPlaceDesc('');
+      setNewPlaceCategory('home');
+      setNewPlaceColor('#8957FF');
+      setGeofenceNotifyOnEnter(true);
+      setGeofenceNotifyOnLeave(true);
+      setGeofencePostToRoomChat(true);
+      setGeofenceWatchedMemberIds([]);
+      setSyncRadiusToSavedPlace(true);
+      setShowDefineGeofenceModal(true);
+    },
+    [savedPlaces, myLocation]
+  );
+
+  const handleOpenEditRoomGeofence = React.useCallback((gf: RoomSavedPlaceGeofence) => {
+    setEditingGeofenceId(gf.id);
+    setGeofencePlaceMode('existing');
+    setSelectedGeofencePlaceId(gf.placeId);
+    setGeofenceRadiusMeters(gf.radiusMeters || 150);
+    setGeofenceNotifyOnEnter(gf.notifyOnEnter);
+    setGeofenceNotifyOnLeave(gf.notifyOnLeave);
+    setGeofencePostToRoomChat(gf.postToRoomChat);
+    setGeofenceWatchedMemberIds(gf.watchedMemberIds || []);
+    setSyncRadiusToSavedPlace(true);
+    setShowDefineGeofenceModal(true);
+  }, []);
+
+  const handleSaveRoomPlaceGeofence = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const targetRoomId = activeRoomDetails?.id || selectedRoomId;
+    const targetRoomName = activeRoomDetails?.name || 'Room';
+    if (!targetRoomId) {
+      toast.error('Please select a room first.');
+      return;
+    }
+    if (!geofenceNotifyOnEnter && !geofenceNotifyOnLeave) {
+      toast.error('Enable at least one trigger (On Enter or On Leave).');
+      return;
+    }
+
+    setIsSavingRoomGeofence(true);
+    try {
+      // Request push notification permission proactively so alerts can fire
+      if (notifications.isSupported() && notifications.getPermission() === 'default') {
+        await notifications.requestPermission();
+      }
+
+      let targetPlace: SavedPlace | undefined;
+
+      if (geofencePlaceMode === 'new') {
+        const latNum = Number(newPlaceLat);
+        const lngNum = Number(newPlaceLng);
+        if (!newPlaceName.trim()) {
+          toast.error('Please enter a name for the new saved place.');
+          setIsSavingRoomGeofence(false);
+          return;
+        }
+        if (!Number.isFinite(latNum) || !Number.isFinite(lngNum)) {
+          toast.error('Please provide valid GPS coordinates for the saved place.');
+          setIsSavingRoomGeofence(false);
+          return;
+        }
+
+        const createdRes = await api.post<{ place: SavedPlace }>('/api/saved-places', {
+          name: newPlaceName.trim(),
+          description:
+            newPlaceDesc.trim() || `Room geofence location for ${targetRoomName}`,
+          latitude: latNum,
+          longitude: lngNum,
+          radiusMeters: geofenceRadiusMeters,
+          category: newPlaceCategory,
+          visibility: 'room',
+          roomId: targetRoomId,
+          markerColor: newPlaceColor,
+          markerIcon: newPlaceCategory,
+        });
+        targetPlace = createdRes.place;
+        onRefreshSavedPlaces?.();
+      } else {
+        targetPlace = savedPlaces.find((p) => p.id === selectedGeofencePlaceId);
+        if (!targetPlace) {
+          toast.error('Please select a saved place or create a new one.');
+          setIsSavingRoomGeofence(false);
+          return;
+        }
+
+        if (syncRadiusToSavedPlace && targetPlace.radiusMeters !== geofenceRadiusMeters) {
+          try {
+            const updatedRes = await api.put<{ place: SavedPlace }>(
+              `/api/saved-places/${targetPlace.id}`,
+              {
+                radiusMeters: geofenceRadiusMeters,
+                roomId: targetPlace.roomId || targetRoomId,
+              }
+            );
+            if (updatedRes?.place) {
+              targetPlace = updatedRes.place;
+            }
+            onRefreshSavedPlaces?.();
+          } catch {
+            // Non-fatal if place belongs to another user
+          }
+        }
+      }
+
+      const nowIso = new Date().toISOString();
+      const geofenceObj: RoomSavedPlaceGeofence = {
+        id:
+          editingGeofenceId ||
+          `rgf-${targetRoomId}-${targetPlace.id}-${Date.now().toString(36)}`,
+        roomId: targetRoomId,
+        roomName: targetRoomName,
+        placeId: targetPlace.id,
+        placeName: targetPlace.name,
+        placeCategory: targetPlace.category,
+        placeIcon: targetPlace.markerIcon || targetPlace.category,
+        latitude: targetPlace.latitude,
+        longitude: targetPlace.longitude,
+        radiusMeters: geofenceRadiusMeters,
+        color: targetPlace.markerColor || '#8957FF',
+        enabled: true,
+        notifyOnEnter: geofenceNotifyOnEnter,
+        notifyOnLeave: geofenceNotifyOnLeave,
+        postToRoomChat: geofencePostToRoomChat,
+        watchedMemberIds: geofenceWatchedMemberIds,
+        createdByUserId: user?.id || 'member',
+        createdByName: user?.fullName || 'Member',
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      };
+
+      const nextList = upsertRoomGeofence(geofenceObj, userLocations);
+      setRoomGeofences(nextList);
+      setShowDefineGeofenceModal(false);
+      sound.playSuccess();
+      triggerHaptic('light');
+      toast.success(
+        `Geofence (${geofenceRadiusMeters}m) active around "${targetPlace.name}" in ${targetRoomName}`
+      );
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed to save room geofence');
+    } finally {
+      setIsSavingRoomGeofence(false);
+    }
+  };
+
+  const handleToggleRoomGeofenceEnabled = React.useCallback(
+    (gf: RoomSavedPlaceGeofence) => {
+      const updated: RoomSavedPlaceGeofence = {
+        ...gf,
+        enabled: !gf.enabled,
+        updatedAt: new Date().toISOString(),
+      };
+      const next = upsertRoomGeofence(updated, userLocations);
+      setRoomGeofences(next);
+      sound.playTap();
+      toast.info(
+        updated.enabled
+          ? `Resumed push alerts for "${gf.placeName}" (${gf.radiusMeters}m)`
+          : `Paused push alerts for "${gf.placeName}"`
+      );
+    },
+    [userLocations, toast]
+  );
+
+  const handleDeleteRoomGeofence = React.useCallback(
+    (gf: RoomSavedPlaceGeofence) => {
+      const next = deleteRoomGeofence(gf.id);
+      setRoomGeofences(next);
+      toast.info(`Removed room geofence for "${gf.placeName}"`);
+    },
+    [toast]
+  );
+
+  const handleSimulateRoomGeofenceTransition = React.useCallback(
+    (gf: RoomSavedPlaceGeofence, action: 'entered' | 'left') => {
+      // Pick a room peer if available, or fall back to a representative room member
+      const peers = (activeRoomDetails?.members || []).filter((m) => m.userId !== user?.id);
+      const chosenPeer = peers[0];
+      const targetMember = chosenPeer
+        ? {
+            userId: chosenPeer.userId,
+            fullName: chosenPeer.user.fullName || chosenPeer.user.username || 'Room Member',
+            avatarUrl: chosenPeer.user.avatarUrl,
+          }
+        : {
+            userId: user?.id || 'member-demo',
+            fullName: user?.fullName ? `${user.fullName} (Test)` : 'Group Member',
+            avatarUrl: user?.avatarUrl,
+          };
+
+      triggerSimulatedRoomGeofenceAlert(gf, action, targetMember, (ev, rule) => {
+        setRoomGeofenceEvents(loadRoomGeofenceEvents());
+        if (ev.action === 'entered') {
+          toast.success(
+            `📍 Push Notification Sent: ${ev.memberName} entered "${ev.placeName}" (${ev.distanceMeters}m)`
+          );
+        } else {
+          toast.info(
+            `🚶 Push Notification Sent: ${ev.memberName} left "${ev.placeName}" (${ev.distanceMeters}m)`
+          );
+        }
+        if (rule.postToRoomChat) {
+          sendMessage({
+            roomId: rule.roomId,
+            channelId: 'live-locations',
+            text: `📍 Geofence Alert: ${ev.memberName} ${ev.action} saved place "${ev.placeName}" (${ev.distanceMeters}m from center · ${rule.radiusMeters}m zone).`,
+          });
+        }
+      });
+    },
+    [activeRoomDetails?.members, user, toast, sendMessage]
+  );
 
   // Form states
   const [newRoomName, setNewRoomName] = useState('');
@@ -565,11 +1223,15 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
     setErrorMsg(null);
     try {
       const res = await api.post<{ room: Room }>('/api/rooms', {
-        name: newRoomName,
-        description: newRoomDesc,
-        password: newRoomPassword,
+        name: newRoomName.trim(),
+        description: newRoomDesc.trim(),
+        password: newRoomPassword.trim(),
       });
-      setRooms((prev) => (prev.some((r) => r.id === res.room.id) ? prev : [...prev, res.room]));
+      setRooms((prev) =>
+        prev.some((r) => r.id === res.room.id)
+          ? prev.map((r) => (r.id === res.room.id ? res.room : r))
+          : [...prev, res.room]
+      );
       setActiveRoomDetails(res.room);
       onSelectRoom(res.room.id);
       setShowCreateModal(false);
@@ -579,7 +1241,6 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
       toast.success(`Room "${res.room.name}" created — you are now inside`);
     } catch (err: any) {
       setErrorMsg(err.message || 'Failed to create room');
-      toast.error(err.message || 'Failed to create room');
     }
   };
 
@@ -588,8 +1249,8 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
     setErrorMsg(null);
     try {
       const res = await api.post<{ room: Room }>('/api/rooms/join', {
-        roomId: joinRoomId,
-        password: joinPassword,
+        roomId: joinRoomId.trim(),
+        password: joinPassword.trim(),
       });
       setRooms((prev) =>
         prev.some((r) => r.id === res.room.id)
@@ -604,7 +1265,6 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
       toast.success(`Joined "${res.room.name}" — you will stay in this room until you press Leave`);
     } catch (err: any) {
       setErrorMsg(err.message || 'Failed to join room');
-      toast.error(err.message || 'Failed to join room');
     }
   };
 
@@ -694,120 +1354,122 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
   ];
 
   return (
-    <div className={`flex flex-col h-full border-r ${themeConfig.glassBorder} ${themeConfig.appBg} transition-colors duration-200`}>
+    <div className={`flex flex-col h-full overflow-y-auto border-r ${themeConfig.glassBorder} ${themeConfig.appBg} transition-colors duration-200`}>
       {/* Top Social Header */}
-      <div className={`p-4 border-b ${themeConfig.glassBorder} ${themeConfig.glassHeader} space-y-3.5`}>
-        <div className="flex items-center justify-between gap-2 flex-wrap">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-[#8957FF] via-[#FF4FA3] to-[#FF8066] flex items-center justify-center text-white shadow-md shadow-[#8957FF]/25">
-              <Users className="w-5 h-5" />
+      {!isRoomFullscreen && (
+        <div className={`p-4 border-b ${themeConfig.glassBorder} ${themeConfig.glassHeader} space-y-3.5 shrink-0`}>
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-[#8957FF] via-[#FF4FA3] to-[#FF8066] flex items-center justify-center text-white shadow-md shadow-[#8957FF]/25">
+                <Users className="w-5 h-5" />
+              </div>
+              <div>
+                <h2 className={`font-extrabold ${themeConfig.textPrimary} text-base sm:text-lg tracking-tight flex items-center gap-2`}>
+                  <span>Beacon Network Rooms</span>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-gradient-to-r from-[#8957FF]/20 to-[#FF4FA3]/20 text-[#FF4FA3] border border-[#FF4FA3]/30">
+                    {rooms.length} Active
+                  </span>
+                </h2>
+                <p className={`text-xs ${themeConfig.textSecondary}`}>
+                  Colourful private groups, live audio channels & real-time friend coordinates
+                </p>
+              </div>
             </div>
-            <div>
-              <h2 className={`font-extrabold ${themeConfig.textPrimary} text-base sm:text-lg tracking-tight flex items-center gap-2`}>
-                <span>Beacon Network Rooms</span>
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-gradient-to-r from-[#8957FF]/20 to-[#FF4FA3]/20 text-[#FF4FA3] border border-[#FF4FA3]/30">
-                  {rooms.length} Active
-                </span>
-              </h2>
-              <p className={`text-xs ${themeConfig.textSecondary}`}>
-                Colourful private groups, live audio channels & real-time friend coordinates
-              </p>
-            </div>
-          </div>
 
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setShowJoinModal(true)}
-              className="px-3.5 py-2 text-xs font-extrabold rounded-2xl transition-all flex items-center gap-1.5 bg-gradient-to-r from-[#397BFF] to-[#00D9FF] text-white shadow-md shadow-[#397BFF]/25 hover:opacity-95 active:scale-95 cursor-pointer"
-            >
-              <KeyRound className="w-3.5 h-3.5" />
-              <span>Join Room</span>
-            </button>
-            <button
-              onClick={() => setShowCreateModal(true)}
-              className="px-3.5 py-2 text-xs font-extrabold rounded-2xl transition-all flex items-center gap-1.5 bg-gradient-to-r from-[#8957FF] via-[#FF4FA3] to-[#FF8066] text-white shadow-md shadow-[#FF4FA3]/25 hover:opacity-95 active:scale-95 cursor-pointer"
-            >
-              <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
-              <span>Create Room</span>
-            </button>
-          </div>
-        </div>
-
-        {/* Search Bar at Top of Rooms Tab */}
-        <div className="relative">
-          <div
-            className={`flex items-center gap-2.5 px-3.5 py-2.5 rounded-2xl border transition-all shadow-inner ${
-              isDark
-                ? 'bg-[#171130]/90 border-[#8957FF]/30 focus-within:border-[#FF4FA3]'
-                : 'bg-white border-purple-200 focus-within:border-[#8957FF]'
-            }`}
-          >
-            <Search className="w-4 h-4 text-[#8957FF] shrink-0" />
-            <input
-              type="text"
-              placeholder="Search rooms or members by name, @handle, or role..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className={`w-full bg-transparent text-xs ${themeConfig.textPrimary} focus:outline-none placeholder-slate-400 font-medium`}
-            />
-            {searchQuery && (
+            <div className="flex items-center gap-2">
               <button
-                onClick={() => setSearchQuery('')}
-                className="p-1 text-slate-400 hover:text-[#FF4FA3] rounded-lg transition-colors cursor-pointer"
-                title="Clear search"
+                onClick={() => setShowJoinModal(true)}
+                className="px-3.5 py-2 text-xs font-extrabold rounded-2xl transition-all flex items-center gap-1.5 bg-gradient-to-r from-[#397BFF] to-[#00D9FF] text-white shadow-md shadow-[#397BFF]/25 hover:opacity-95 active:scale-95 cursor-pointer"
               >
-                <X className="w-3.5 h-3.5" />
+                <KeyRound className="w-3.5 h-3.5" />
+                <span>Join Room</span>
               </button>
+              <button
+                onClick={() => setShowCreateModal(true)}
+                className="px-3.5 py-2 text-xs font-extrabold rounded-2xl transition-all flex items-center gap-1.5 bg-gradient-to-r from-[#8957FF] via-[#FF4FA3] to-[#FF8066] text-white shadow-md shadow-[#FF4FA3]/25 hover:opacity-95 active:scale-95 cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
+                <span>Create Room</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Search Bar at Top of Rooms Tab */}
+          <div className="relative">
+            <div
+              className={`flex items-center gap-2.5 px-3.5 py-2.5 rounded-2xl border transition-all shadow-inner ${
+                isDark
+                  ? 'bg-[#171130]/90 border-[#8957FF]/30 focus-within:border-[#FF4FA3]'
+                  : 'bg-white border-purple-200 focus-within:border-[#8957FF]'
+              }`}
+            >
+              <Search className="w-4 h-4 text-[#8957FF] shrink-0" />
+              <input
+                type="text"
+                placeholder="Search rooms or members by name, @handle, or role..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className={`w-full bg-transparent text-xs ${themeConfig.textPrimary} focus:outline-none placeholder-slate-400 font-medium`}
+              />
+              {searchQuery && (
+                <button
+                  onClick={() => setSearchQuery('')}
+                  className="p-1 text-slate-400 hover:text-[#FF4FA3] rounded-lg transition-colors cursor-pointer"
+                  title="Clear search"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+
+            {/* Quick Filter Pills (Shown when search query is entered) */}
+            {searchQuery.trim() && (
+              <div className="flex items-center gap-1.5 mt-2 overflow-x-auto pb-0.5 text-[11px]">
+                <button
+                  onClick={() => setSearchCategory('all')}
+                  className={`px-3 py-1 rounded-xl font-bold transition-all cursor-pointer ${
+                    searchCategory === 'all'
+                      ? 'bg-gradient-to-r from-[#8957FF] to-[#FF4FA3] text-white shadow-sm'
+                      : isDark
+                      ? 'bg-white/5 text-slate-300 hover:bg-white/10'
+                      : 'bg-purple-50 text-slate-700 hover:bg-purple-100'
+                  }`}
+                >
+                  All ({filteredRooms.length + filteredMembers.length})
+                </button>
+                <button
+                  onClick={() => setSearchCategory('rooms')}
+                  className={`px-3 py-1 rounded-xl font-bold transition-all cursor-pointer ${
+                    searchCategory === 'rooms'
+                      ? 'bg-gradient-to-r from-[#397BFF] to-[#00D9FF] text-white shadow-sm'
+                      : isDark
+                      ? 'bg-white/5 text-slate-300 hover:bg-white/10'
+                      : 'bg-purple-50 text-slate-700 hover:bg-purple-100'
+                  }`}
+                >
+                  Rooms ({filteredRooms.length})
+                </button>
+                <button
+                  onClick={() => setSearchCategory('members')}
+                  className={`px-3 py-1 rounded-xl font-bold transition-all cursor-pointer ${
+                    searchCategory === 'members'
+                      ? 'bg-gradient-to-r from-[#00D6A0] to-[#00D9FF] text-slate-950 shadow-sm'
+                      : isDark
+                      ? 'bg-white/5 text-slate-300 hover:bg-white/10'
+                      : 'bg-purple-50 text-slate-700 hover:bg-purple-100'
+                  }`}
+                >
+                  Members ({filteredMembers.length})
+                </button>
+              </div>
             )}
           </div>
-
-          {/* Quick Filter Pills (Shown when search query is entered) */}
-          {searchQuery.trim() && (
-            <div className="flex items-center gap-1.5 mt-2 overflow-x-auto pb-0.5 text-[11px]">
-              <button
-                onClick={() => setSearchCategory('all')}
-                className={`px-3 py-1 rounded-xl font-bold transition-all cursor-pointer ${
-                  searchCategory === 'all'
-                    ? 'bg-gradient-to-r from-[#8957FF] to-[#FF4FA3] text-white shadow-sm'
-                    : isDark
-                    ? 'bg-white/5 text-slate-300 hover:bg-white/10'
-                    : 'bg-purple-50 text-slate-700 hover:bg-purple-100'
-                }`}
-              >
-                All ({filteredRooms.length + filteredMembers.length})
-              </button>
-              <button
-                onClick={() => setSearchCategory('rooms')}
-                className={`px-3 py-1 rounded-xl font-bold transition-all cursor-pointer ${
-                  searchCategory === 'rooms'
-                    ? 'bg-gradient-to-r from-[#397BFF] to-[#00D9FF] text-white shadow-sm'
-                    : isDark
-                    ? 'bg-white/5 text-slate-300 hover:bg-white/10'
-                    : 'bg-purple-50 text-slate-700 hover:bg-purple-100'
-                }`}
-              >
-                Rooms ({filteredRooms.length})
-              </button>
-              <button
-                onClick={() => setSearchCategory('members')}
-                className={`px-3 py-1 rounded-xl font-bold transition-all cursor-pointer ${
-                  searchCategory === 'members'
-                    ? 'bg-gradient-to-r from-[#00D6A0] to-[#00D9FF] text-slate-950 shadow-sm'
-                    : isDark
-                    ? 'bg-white/5 text-slate-300 hover:bg-white/10'
-                    : 'bg-purple-50 text-slate-700 hover:bg-purple-100'
-                }`}
-              >
-                Members ({filteredMembers.length})
-              </button>
-            </div>
-          )}
         </div>
-      </div>
+      )}
 
       {/* Real-time Search Results View */}
       {searchQuery.trim() ? (
-        <div className="flex-1 overflow-y-auto p-4 pb-28 space-y-4">
+        <div className="flex-1 p-4 pb-28 space-y-4">
           <div className={`flex items-center justify-between text-xs ${themeConfig.textSecondary}`}>
             <span>
               Search results for <strong className={`${themeConfig.textPrimary} font-bold`}>"{searchQuery}"</strong>
@@ -1001,8 +1663,8 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
       ) : (
         <>
           {/* Universal Hub Pinned Notification Banner */}
-          {rooms.some((r) => r.isUniversal || r.id === 'room-universal') && (
-            <div className="mx-3 mt-3 p-3.5 rounded-3xl bg-gradient-to-r from-[#8957FF] via-[#6C47FF] to-[#397BFF] text-white flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-lg shadow-[#8957FF]/25 border border-white/20">
+          {!isRoomFullscreen && rooms.some((r) => r.isUniversal || r.id === 'room-universal') && (
+            <div className="mx-3 sm:mx-4 mt-3 p-4 rounded-3xl bg-gradient-to-r from-[#8957FF] via-[#6C47FF] to-[#397BFF] text-white flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-lg shadow-[#8957FF]/25 border border-white/20 shrink-0">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-2xl bg-white/20 backdrop-blur-md border border-white/30 flex items-center justify-center text-white shadow-inner shrink-0">
                   <Globe className="w-5 h-5 text-[#00D9FF] animate-spin-slow" />
@@ -1019,7 +1681,7 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
                   </p>
                 </div>
               </div>
-              <div className="flex items-center gap-2 shrink-0">
+              <div className="flex items-center gap-2 flex-wrap shrink-0">
                 <button
                   onClick={() => {
                     onSelectRoom('room-universal');
@@ -1050,50 +1712,120 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
             </div>
           )}
 
-          {/* Colourful Room Cards Horizontal Carousel */}
-          <div className={`px-3 py-3 overflow-x-auto flex gap-2.5 border-b ${themeConfig.glassBorder} shrink-0 no-scrollbar`}>
-            {rooms.map((room, idx) => {
-              const isSelected = room.id === selectedRoomId;
-              const isUniversal = room.isUniversal || room.id === 'room-universal';
-              const palette = ROOM_PALETTES[idx % ROOM_PALETTES.length];
-              return (
-                <button
-                  key={room.id}
-                  onClick={() => onSelectRoom(room.id)}
-                  className={`group relative px-3.5 py-2.5 rounded-2xl text-xs font-extrabold transition-all whitespace-nowrap flex items-center gap-2.5 cursor-pointer border ${
-                    isSelected
-                      ? `bg-gradient-to-r ${palette.gradient} text-white border-white/30 shadow-md scale-[1.02]`
-                      : `${themeConfig.cardBg} ${themeConfig.textPrimary} hover:scale-[1.01]`
-                  }`}
-                >
+          {/* Full-Width Room Cards Grid (Universal Lounge & Custom Rooms span full width like other cards) */}
+          {!isRoomFullscreen && (
+            <div className={`px-3 sm:px-4 py-3 grid grid-cols-1 ${rooms.length > 1 ? 'sm:grid-cols-2' : ''} gap-2.5 border-b ${themeConfig.glassBorder} shrink-0`}>
+              {rooms.map((room, idx) => {
+                const isSelected = room.id === selectedRoomId;
+                const isUniversal = room.isUniversal || room.id === 'room-universal';
+                const palette = ROOM_PALETTES[idx % ROOM_PALETTES.length];
+                return (
                   <div
-                    className={`w-7 h-7 rounded-xl flex items-center justify-center text-[11px] font-black shrink-0 ${
+                    key={room.id}
+                    onClick={() => {
+                      onSelectRoom(room.id);
+                      setTimeout(() => {
+                        activeRoomSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                      }, 60);
+                    }}
+                    className={`w-full group relative p-3.5 rounded-3xl text-xs font-extrabold transition-all flex items-center justify-between gap-3 cursor-pointer border ${
+                      isUniversal && rooms.length % 2 === 1 ? 'sm:col-span-2' : ''
+                    } ${
                       isSelected
-                        ? 'bg-white/20 text-white'
-                        : `bg-gradient-to-tr ${palette.gradient} text-white shadow-xs`
+                        ? `bg-gradient-to-r ${palette.gradient} text-white border-white/30 shadow-lg shadow-[#FF4FA3]/20`
+                        : `${themeConfig.cardBg} ${themeConfig.textPrimary} hover:border-[#8957FF]/50`
                     }`}
                   >
-                    {isUniversal ? <Globe className="w-3.5 h-3.5" /> : room.name.slice(0, 2).toUpperCase()}
-                  </div>
-                  <div className="text-left">
-                    <div className="flex items-center gap-1.5">
-                      <span>{room.name}</span>
-                      {room.hasPassword && <Lock className="w-3 h-3 opacity-80" />}
+                    <div className="flex items-center gap-3 min-w-0 flex-1">
+                      <div
+                        className={`w-10 h-10 rounded-2xl flex items-center justify-center text-xs font-black shrink-0 ${
+                          isSelected
+                            ? 'bg-white/20 text-white border border-white/30'
+                            : `bg-gradient-to-tr ${palette.gradient} text-white shadow-sm`
+                        }`}
+                      >
+                        {isUniversal ? <Globe className="w-5 h-5" /> : room.name.slice(0, 2).toUpperCase()}
+                      </div>
+                      <div className="text-left min-w-0 flex-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-sm font-extrabold truncate">{room.name}</span>
+                          {room.hasPassword && <Lock className="w-3.5 h-3.5 opacity-80 shrink-0" />}
+                          {isUniversal && (
+                            <span
+                              className={`px-2 py-0.5 rounded-full text-[10px] font-extrabold ${
+                                isSelected
+                                  ? 'bg-white/25 text-white'
+                                  : 'bg-[#8957FF]/15 text-[#8957FF] dark:text-[#00D9FF]'
+                              }`}
+                            >
+                              Global Lounge
+                            </span>
+                          )}
+                        </div>
+                        <span className={`block text-[11px] font-medium truncate mt-0.5 ${isSelected ? 'text-white/90' : themeConfig.textSecondary}`}>
+                          {room.memberCount} member{room.memberCount === 1 ? '' : 's'} · {room.description || 'Tap to view live room map, voice lounge & members'}
+                        </span>
+                      </div>
                     </div>
-                    <span className={`block text-[10px] font-medium ${isSelected ? 'text-white/85' : themeConfig.textSecondary}`}>
-                      {room.memberCount} member{room.memberCount === 1 ? '' : 's'}
-                    </span>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onSelectRoom(room.id);
+                          setIsRoomFullscreen(true);
+                        }}
+                        className={`px-3 py-1.5 rounded-xl text-[11px] font-extrabold flex items-center gap-1.5 transition-all cursor-pointer active:scale-95 ${
+                          isSelected
+                            ? 'bg-white text-[#8957FF] shadow-sm hover:bg-slate-100'
+                            : isDark
+                            ? 'bg-white/10 hover:bg-white/20 text-white'
+                            : 'bg-purple-100 hover:bg-purple-200 text-purple-900'
+                        }`}
+                        title={`Expand ${room.name} to Full Screen`}
+                      >
+                        <Maximize2 className="w-3.5 h-3.5" />
+                        <span>Full Screen</span>
+                      </button>
+                    </div>
                   </div>
-                </button>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          )}
 
           {/* Active Room Detailed Content */}
           {activeRoomDetails ? (
-            <div className="flex-1 overflow-y-auto p-4 pb-28 space-y-5">
+            <div
+              ref={activeRoomSectionRef}
+              className={
+                isRoomFullscreen
+                  ? `fixed inset-0 z-50 overflow-y-auto p-4 sm:p-6 pb-28 space-y-5 ${themeConfig.appBg} animate-in fade-in duration-150`
+                  : 'flex-1 p-3 sm:p-4 pb-28 space-y-5'
+              }
+            >
+              {isRoomFullscreen && (
+                <div className="flex items-center justify-between gap-2 p-3 rounded-2xl bg-gradient-to-r from-[#8957FF] via-[#FF4FA3] to-[#397BFF] text-white shadow-lg">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <Globe className="w-5 h-5 shrink-0 animate-spin-slow" />
+                    <span className="font-extrabold text-sm truncate">
+                      {activeRoomDetails.name} — Full Screen View
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsRoomFullscreen(false)}
+                    className="px-3.5 py-1.5 rounded-xl bg-white/20 hover:bg-white/30 text-white text-xs font-extrabold flex items-center gap-1.5 cursor-pointer active:scale-95 shrink-0"
+                  >
+                    <Minimize2 className="w-3.5 h-3.5" />
+                    <span>Exit Full Screen</span>
+                  </button>
+                </div>
+              )}
+
               {/* Active Colourful Room Banner Card */}
-              <div className={`rounded-3xl border overflow-hidden shadow-lg ${themeConfig.cardBg}`}>
+              <div className={`w-full rounded-3xl border overflow-hidden shadow-lg ${themeConfig.cardBg}`}>
                 <div className="h-2 w-full bg-gradient-to-r from-[#8957FF] via-[#FF4FA3] to-[#00D9FF]" />
                 <div className="p-4 sm:p-5">
                   <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
@@ -1170,8 +1902,25 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
 
                     <div className="flex items-center gap-2 flex-wrap shrink-0">
                       <button
+                        type="button"
+                        onClick={() => setIsRoomFullscreen((prev) => !prev)}
+                        className={`px-3.5 py-2 rounded-2xl font-extrabold text-xs flex items-center gap-1.5 transition-all cursor-pointer active:scale-95 border ${
+                          isRoomFullscreen
+                            ? 'bg-white/15 text-white border-white/30'
+                            : isDark
+                            ? 'bg-white/10 hover:bg-white/20 text-white border-white/15'
+                            : 'bg-purple-100 hover:bg-purple-200 text-purple-900 border-purple-200'
+                        }`}
+                        title={isRoomFullscreen ? 'Exit Full Screen' : `Expand ${activeRoomDetails.name} to Full Screen`}
+                      >
+                        {isRoomFullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+                        <span>{isRoomFullscreen ? 'Normal View' : 'Full Screen'}</span>
+                      </button>
+
+                      <button
                         onClick={() => {
                           setRoomMapFocusCoords(null);
+                          setHasMountedRoomMap(true);
                           if (!showRoomMap) {
                             setShowRoomMap(true);
                             setTimeout(() => {
@@ -1186,6 +1935,54 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
                       >
                         <MapIcon className="w-3.5 h-3.5" />
                         <span>Live Map ({activeRoomDetails.members?.length || 1})</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        data-testid="room-header-define-geofence-btn"
+                        onClick={() => {
+                          roomGeofenceSectionRef.current?.scrollIntoView({
+                            behavior: 'smooth',
+                            block: 'nearest',
+                          });
+                          handleOpenDefinePlaceGeofenceModal();
+                        }}
+                        className="px-3.5 py-2 rounded-2xl bg-gradient-to-r from-[#FFD166] to-[#FF8066] text-slate-950 font-extrabold text-xs flex items-center gap-1.5 shadow-md shadow-[#FFD166]/20 transition-all cursor-pointer active:scale-95"
+                        title="Define a geofence around a saved place for this room"
+                      >
+                        <Radar className="w-3.5 h-3.5" />
+                        <span>
+                          Place Geofences ({activeRoomGeofences.filter((g) => g.enabled).length})
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          voiceNoteSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                          if (isRecordingVoiceNote) {
+                            stopAndSendRoomVoiceNote();
+                          } else {
+                            startRoomVoiceNoteRecording();
+                          }
+                        }}
+                        className={`px-3.5 py-2 rounded-2xl font-extrabold text-xs flex items-center gap-1.5 shadow-md transition-all cursor-pointer active:scale-95 ${
+                          isRecordingVoiceNote
+                            ? 'bg-gradient-to-r from-rose-500 to-[#FF4FA3] text-white shadow-rose-500/30 animate-pulse'
+                            : 'bg-gradient-to-r from-[#397BFF] to-[#8957FF] text-white shadow-[#397BFF]/25'
+                        }`}
+                        title={
+                          isRecordingVoiceNote
+                            ? `Stop & Send Voice Note to ${activeRoomDetails.name}`
+                            : `Record Voice Note for ${activeRoomDetails.name}`
+                        }
+                      >
+                        <Mic className="w-3.5 h-3.5" />
+                        <span>
+                          {isRecordingVoiceNote
+                            ? `Stop & Send (${formatVoiceNoteDuration(voiceNoteRecordingSeconds)})`
+                            : 'Record Voice Note'}
+                        </span>
                       </button>
 
                       <button
@@ -1278,6 +2075,19 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
                           />
                         </div>
                         <button
+                          type="button"
+                          onClick={() => {
+                            voiceNoteSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                            if (!isRecordingVoiceNote) {
+                              startRoomVoiceNoteRecording();
+                            }
+                          }}
+                          className="p-2 rounded-xl bg-white/15 hover:bg-white/25 text-[#00D9FF] border border-white/20 transition-all cursor-pointer shrink-0"
+                          title="Record a Voice Note for Universal Hub"
+                        >
+                          <Mic className="w-4 h-4" />
+                        </button>
+                        <button
                           type="submit"
                           disabled={!quickHubMessage.trim()}
                           className="px-4 py-2 rounded-xl bg-gradient-to-r from-[#397BFF] to-[#00D9FF] disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-extrabold transition-all cursor-pointer flex items-center gap-1 shrink-0 shadow-sm"
@@ -1287,6 +2097,300 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
                       </form>
                     </div>
                   )}
+
+                  {/* Record Voice Note for Active Room Studio */}
+                  <div
+                    ref={voiceNoteSectionRef}
+                    className={`mt-4 pt-4 border-t ${themeConfig.glassBorder} space-y-3`}
+                  >
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <div className="flex items-center gap-2.5">
+                        <div
+                          className={`w-8 h-8 rounded-xl flex items-center justify-center text-white shadow-sm ${
+                            isRecordingVoiceNote
+                              ? 'bg-gradient-to-tr from-rose-500 to-[#FF4FA3] animate-pulse'
+                              : 'bg-gradient-to-tr from-[#8957FF] to-[#397BFF]'
+                          }`}
+                        >
+                          <FileAudio className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className={`text-xs font-extrabold ${themeConfig.textPrimary}`}>
+                              Record Voice Note — {activeRoomDetails.name}
+                            </span>
+                            {isRecordingVoiceNote && (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-500 border border-rose-500/40 text-[10px] font-extrabold animate-pulse">
+                                <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+                                REC {formatVoiceNoteDuration(voiceNoteRecordingSeconds)}
+                              </span>
+                            )}
+                          </div>
+                          <span className={`text-[11px] ${themeConfig.textSecondary} block`}>
+                            Capture microphone audio, encode it, and post directly into this room's chat channel
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Target Channel Selector */}
+                      <div className="flex items-center gap-1 flex-wrap">
+                        <span className={`text-[10px] font-bold ${themeConfig.textSecondary} mr-1 flex items-center gap-0.5`}>
+                          <Hash className="w-3 h-3 text-[#8957FF]" />
+                          Channel:
+                        </span>
+                        {ROOM_VOICE_NOTE_CHANNELS.map((ch) => {
+                          const isSelectedChannel = voiceNoteChannel === ch.id;
+                          return (
+                            <button
+                              key={ch.id}
+                              type="button"
+                              onClick={() => setVoiceNoteChannel(ch.id)}
+                              className={`px-2.5 py-1 rounded-xl text-[11px] font-extrabold transition-all cursor-pointer ${
+                                isSelectedChannel
+                                  ? 'bg-gradient-to-r from-[#8957FF] to-[#FF4FA3] text-white shadow-xs'
+                                  : isDark
+                                  ? 'bg-white/5 hover:bg-white/10 text-slate-300'
+                                  : 'bg-purple-50 hover:bg-purple-100 text-purple-900'
+                              }`}
+                            >
+                              {ch.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* State 1: Currently Recording Audio from Microphone */}
+                    {isRecordingVoiceNote ? (
+                      <div className="p-3.5 rounded-2xl bg-gradient-to-r from-[#1A103C] via-[#24134A] to-[#2B123F] border border-rose-500/40 text-white space-y-3 shadow-lg">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                          <div className="flex items-center gap-3">
+                            <div className="relative flex items-center justify-center w-10 h-10 rounded-2xl bg-rose-500/20 border border-rose-400/40 shrink-0">
+                              <span className="absolute inset-0 rounded-2xl bg-rose-500/30 animate-ping" />
+                              <Mic className="w-5 h-5 text-rose-400 relative z-10" />
+                            </div>
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs font-extrabold text-white">
+                                  Recording Microphone Audio...
+                                </span>
+                                <span className="font-mono text-xs font-black text-rose-300 bg-rose-500/20 px-2 py-0.5 rounded-lg border border-rose-400/30">
+                                  {formatVoiceNoteDuration(voiceNoteRecordingSeconds)}
+                                </span>
+                              </div>
+                              <span className="text-[11px] text-slate-300 block mt-0.5">
+                                Target: <strong>{activeRoomDetails.name}</strong> ({`#${voiceNoteChannel}`})
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center justify-center bg-slate-950/60 px-3 py-1.5 rounded-xl border border-white/10">
+                            <AudioWaveformVisualizer
+                              analyser={voiceRecorderRef.current?.getAnalyser() || null}
+                              height={32}
+                            />
+                          </div>
+                        </div>
+
+                        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2 pt-2 border-t border-white/10">
+                          <input
+                            type="text"
+                            placeholder="Optional caption for this voice note..."
+                            value={voiceNoteCaption}
+                            onChange={(e) => setVoiceNoteCaption(e.target.value)}
+                            className="flex-1 px-3 py-1.5 rounded-xl bg-white/10 border border-white/15 text-xs text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-[#FF4FA3]"
+                          />
+                          <div className="flex items-center gap-2 justify-end shrink-0">
+                            <button
+                              type="button"
+                              onClick={cancelRoomVoiceNoteRecording}
+                              className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-rose-500/25 text-rose-300 border border-white/15 text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer"
+                              title="Cancel recording"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              <span>Cancel</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={stopRoomVoiceNoteForPreview}
+                              className="px-3 py-1.5 rounded-xl bg-white/15 hover:bg-white/25 text-white border border-white/20 text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer"
+                              title="Stop recording and preview before sending"
+                            >
+                              <Square className="w-3.5 h-3.5 fill-current text-[#FFD166]" />
+                              <span>Stop & Preview</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={stopAndSendRoomVoiceNote}
+                              disabled={isSendingVoiceNote}
+                              className="px-4 py-1.5 rounded-xl bg-gradient-to-r from-[#00D6A0] to-[#00D9FF] text-slate-950 text-xs font-extrabold flex items-center gap-1.5 shadow-md transition-all cursor-pointer active:scale-95 disabled:opacity-50"
+                              title="Stop recording, encode audio, and send immediately to room"
+                            >
+                              <Send className="w-3.5 h-3.5" />
+                              <span>Stop & Send</span>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ) : voiceNotePreview ? (
+                      /* State 2: Recorded Audio Encoded & Ready for Preview or Send */
+                      <div className="p-3.5 rounded-2xl bg-gradient-to-r from-[#15102F] via-[#1E1542] to-[#162447] border border-[#00D9FF]/40 text-white space-y-3 shadow-lg">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="px-2 py-0.5 rounded-full bg-[#00D6A0]/20 text-[#00D6A0] border border-[#00D6A0]/40 text-[10px] font-extrabold">
+                                Audio Encoded ({Math.max(1, Math.round(voiceNotePreview.sizeBytes / 1024))} KB)
+                              </span>
+                              <span className="text-xs font-extrabold text-white">
+                                Preview Voice Note ({formatVoiceNoteDuration(voiceNotePreview.durationSeconds)})
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-slate-300">
+                              Ready to send into <strong>{activeRoomDetails.name}</strong> ({`#${voiceNoteChannel}`})
+                            </p>
+                          </div>
+
+                          <div className="w-full sm:w-auto">
+                            <VoiceMessagePlayer
+                              src={voiceNotePreview.dataUrl}
+                              initialDuration={voiceNotePreview.durationSeconds}
+                              compact
+                            />
+                          </div>
+                        </div>
+
+                        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2 pt-2 border-t border-white/10">
+                          <input
+                            type="text"
+                            placeholder="Add an optional message caption with your voice note..."
+                            value={voiceNoteCaption}
+                            onChange={(e) => setVoiceNoteCaption(e.target.value)}
+                            className="flex-1 px-3 py-1.5 rounded-xl bg-white/10 border border-white/15 text-xs text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-[#00D9FF]"
+                          />
+                          <div className="flex items-center gap-2 justify-end shrink-0">
+                            <button
+                              type="button"
+                              onClick={cancelRoomVoiceNoteRecording}
+                              disabled={isSendingVoiceNote}
+                              className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-rose-500/25 text-rose-300 border border-white/15 text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              <span>Discard</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={startRoomVoiceNoteRecording}
+                              disabled={isSendingVoiceNote}
+                              className="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-white border border-white/15 text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer"
+                            >
+                              <Mic className="w-3.5 h-3.5 text-[#00D9FF]" />
+                              <span>Re-record</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => dispatchEncodedVoiceNoteToRoom(voiceNotePreview)}
+                              disabled={isSendingVoiceNote}
+                              className="px-4 py-1.5 rounded-xl bg-gradient-to-r from-[#8957FF] via-[#FF4FA3] to-[#FF8066] text-white text-xs font-extrabold flex items-center gap-1.5 shadow-md transition-all cursor-pointer active:scale-95 disabled:opacity-50"
+                            >
+                              <Send className="w-3.5 h-3.5" />
+                              <span>{isSendingVoiceNote ? 'Sending...' : `Send to #${voiceNoteChannel}`}</span>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      /* State 3: Idle - Ready to Record Voice Note */
+                      <div
+                        className={`p-3 rounded-2xl border flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 ${
+                          isDark
+                            ? 'bg-[#150E2E]/90 border-[#8957FF]/30'
+                            : 'bg-purple-50/70 border-purple-200/80'
+                        }`}
+                      >
+                        <input
+                          type="text"
+                          placeholder={`Optional caption for your voice note in ${activeRoomDetails.name} (#${voiceNoteChannel})...`}
+                          value={voiceNoteCaption}
+                          onChange={(e) => setVoiceNoteCaption(e.target.value)}
+                          className={`flex-1 px-3.5 py-2 rounded-xl text-xs font-medium focus:outline-none border ${
+                            isDark
+                              ? 'bg-white/5 border-white/15 text-white placeholder-slate-400 focus:border-[#FF4FA3]'
+                              : 'bg-white border-purple-200 text-slate-900 placeholder-slate-400 focus:border-[#8957FF]'
+                          }`}
+                        />
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            type="button"
+                            onClick={startRoomVoiceNoteRecording}
+                            className="w-full sm:w-auto px-4 py-2 rounded-xl bg-gradient-to-r from-[#8957FF] via-[#FF4FA3] to-[#FF8066] text-white text-xs font-extrabold flex items-center justify-center gap-2 shadow-md shadow-[#FF4FA3]/20 hover:opacity-95 transition-all cursor-pointer active:scale-95"
+                          >
+                            <Mic className="w-4 h-4" />
+                            <span>Record Voice Note</span>
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Recent Voice Notes Sent in Active Room */}
+                    {activeRoomVoiceNotes.length > 0 && (
+                      <div className="pt-1 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className={`text-[11px] font-extrabold ${themeConfig.textSecondary} flex items-center gap-1.5`}>
+                            <Volume2 className="w-3.5 h-3.5 text-[#00D9FF]" />
+                            <span>Recent Voice Notes in {activeRoomDetails.name} ({activeRoomVoiceNotes.length})</span>
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => onOpenChat?.(activeRoomDetails.id)}
+                            className="text-[11px] font-extrabold text-[#FF4FA3] hover:underline cursor-pointer"
+                          >
+                            Open in Room Chat →
+                          </button>
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                          {activeRoomVoiceNotes.map((vn) => (
+                            <div
+                              key={vn.id}
+                              className={`p-2.5 rounded-2xl border flex flex-col gap-2 ${
+                                isDark
+                                  ? 'bg-[#120C28]/90 border-white/10'
+                                  : 'bg-white border-purple-200/80'
+                              }`}
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <img
+                                    src={
+                                      vn.senderAvatar ||
+                                      `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(vn.senderName)}`
+                                    }
+                                    alt={vn.senderName}
+                                    className="w-6 h-6 rounded-full object-cover bg-slate-800 shrink-0"
+                                  />
+                                  <span className={`text-xs font-extrabold ${themeConfig.textPrimary} truncate`}>
+                                    {vn.senderName}
+                                  </span>
+                                  <span className="px-1.5 py-0.5 rounded-md bg-[#8957FF]/15 text-[#8957FF] dark:text-[#00D9FF] text-[10px] font-mono font-bold">
+                                    #{vn.channelId}
+                                  </span>
+                                </div>
+                                <span className={`text-[10px] font-mono ${themeConfig.textSecondary} shrink-0`}>
+                                  {new Date(vn.createdAt).toLocaleTimeString([], {
+                                    hour: '2-digit',
+                                    minute: '2-digit',
+                                  })}
+                                </span>
+                              </div>
+                              {vn.text && vn.text !== '🎤 Voice message' && (
+                                <p className={`text-[11px] ${themeConfig.textSecondary} truncate`}>{vn.text}</p>
+                              )}
+                              <VoiceMessagePlayer src={vn.url} initialDuration={vn.duration} compact />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
 
                   {/* Live WebRTC Voice Channel Island */}
                   <div className={`mt-4 pt-4 border-t ${themeConfig.glassBorder}`}>
@@ -1414,6 +2518,7 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
                           setIsRoomMapFullscreen(false);
                           setShowRoomMap(false);
                         } else {
+                          setHasMountedRoomMap(true);
                           setShowRoomMap(true);
                         }
                       }}
@@ -1431,12 +2536,14 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
                   </div>
                 </div>
 
-                {showRoomMap && (
+                {(showRoomMap || hasMountedRoomMap) && (
                   <div
                     className={
-                      isRoomMapFullscreen
-                        ? 'fixed inset-0 z-50 bg-slate-950 flex flex-col animate-in fade-in duration-150'
-                        : 'relative w-full h-[520px] sm:h-[580px] rounded-3xl overflow-hidden border-2 border-[#8957FF]/35 shadow-xl bg-slate-950 flex flex-col transition-all duration-200'
+                      !showRoomMap
+                        ? 'sr-only h-0 overflow-hidden pointer-events-none opacity-0'
+                        : isRoomMapFullscreen
+                          ? 'fixed inset-0 z-50 bg-slate-950 flex flex-col animate-in fade-in duration-150'
+                          : 'relative w-full h-[520px] sm:h-[580px] rounded-3xl overflow-hidden border-2 border-[#8957FF]/35 shadow-xl bg-slate-950 flex flex-col transition-all duration-200'
                     }
                   >
                     {isRoomMapFullscreen && (
@@ -1497,6 +2604,458 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
                           onSetReminderAtCoords?.(lat, lng, title);
                         }}
                       />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* ======================================================================== */}
+              {/* SAVED-PLACE GEOFENCES & AUTOMATIC ENTER/LEAVE PUSH NOTIFICATIONS SECTION */}
+              {/* ======================================================================== */}
+              <div
+                ref={roomGeofenceSectionRef}
+                data-testid="room-saved-place-geofences-section"
+                className={`rounded-3xl border p-4 sm:p-5 space-y-4 shadow-lg ${themeConfig.cardBg}`}
+              >
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div className="flex items-start gap-3">
+                    <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-[#FFD166] via-[#FF8066] to-[#FF4FA3] text-slate-950 flex items-center justify-center shrink-0 shadow-md">
+                      <Radar className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <h4 className={`font-extrabold ${themeConfig.textPrimary} text-sm sm:text-base`}>
+                          Saved-Place Geofences — {activeRoomDetails.name}
+                        </h4>
+                        <span className="px-2.5 py-0.5 rounded-full bg-[#FFD166]/20 text-amber-600 dark:text-[#FFD166] border border-[#FFD166]/40 text-[10px] font-extrabold">
+                          {activeRoomGeofences.filter((g) => g.enabled).length} Active Zone
+                          {activeRoomGeofences.filter((g) => g.enabled).length === 1 ? '' : 's'}
+                        </span>
+                      </div>
+                      <p className={`text-xs ${themeConfig.textSecondary} mt-0.5`}>
+                        Define a geofence perimeter around any saved place to trigger an automatic push notification when a group member enters or leaves that area.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 flex-wrap shrink-0">
+                    <button
+                      type="button"
+                      data-testid="open-define-place-geofence-modal-btn"
+                      onClick={() => handleOpenDefinePlaceGeofenceModal()}
+                      className="px-4 py-2 rounded-2xl bg-gradient-to-r from-[#8957FF] via-[#FF4FA3] to-[#FF8066] text-white text-xs font-extrabold flex items-center gap-1.5 shadow-md shadow-[#FF4FA3]/25 hover:opacity-95 transition-all cursor-pointer active:scale-95"
+                    >
+                      <Plus className="w-4 h-4 stroke-[2.5]" />
+                      <span>Define Place Geofence</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Quick Saved Places Strip (1-Click Define Geofence for any Saved Place not yet configured in this room) */}
+                {savedPlaces.length > 0 && (
+                  <div className={`pt-2 border-t ${themeConfig.glassBorder} space-y-2`}>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className={`text-[11px] font-extrabold ${themeConfig.textSecondary} flex items-center gap-1.5`}>
+                        <Sparkles className="w-3.5 h-3.5 text-[#FFD166]" />
+                        <span>Your Saved Places ({savedPlaces.length}) — Tap any place to configure its Room Geofence:</span>
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 overflow-x-auto pb-1">
+                      {savedPlaces.map((place) => {
+                        const existingGf = activeRoomGeofences.find((g) => g.placeId === place.id);
+                        const emoji = getLocationTypeEmoji(place.markerIcon || place.category);
+                        return (
+                          <button
+                            key={place.id}
+                            type="button"
+                            onClick={() =>
+                              existingGf
+                                ? handleOpenEditRoomGeofence(existingGf)
+                                : handleOpenDefinePlaceGeofenceModal(place)
+                            }
+                            className={`px-3 py-1.5 rounded-2xl border text-xs font-bold flex items-center gap-2 shrink-0 transition-all cursor-pointer ${
+                              existingGf?.enabled
+                                ? 'bg-gradient-to-r from-[#8957FF]/25 to-[#FF4FA3]/25 border-[#FF4FA3]/50 text-white'
+                                : isDark
+                                ? 'bg-white/5 hover:bg-white/10 border-white/15 text-slate-200'
+                                : 'bg-purple-50 hover:bg-purple-100 border-purple-200 text-slate-800'
+                            }`}
+                          >
+                            <span>{emoji}</span>
+                            <span className="truncate max-w-[130px]">{place.name}</span>
+                            <span className="text-[10px] font-mono opacity-80">
+                              {existingGf ? `${existingGf.radiusMeters}m Active` : `${place.radiusMeters}m · + Add`}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
+                {/* Active Room Geofences Grid */}
+                {activeRoomGeofences.length === 0 ? (
+                  <div
+                    className={`p-5 rounded-2xl border text-center space-y-2.5 ${
+                      isDark
+                        ? 'bg-[#120C29]/70 border-white/10'
+                        : 'bg-purple-50/60 border-purple-200/70'
+                    }`}
+                  >
+                    <div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-[#FFD166]/20 to-[#FF4FA3]/20 text-[#FFD166] flex items-center justify-center mx-auto">
+                      <MapPin className="w-5 h-5" />
+                    </div>
+                    <div className="space-y-1">
+                      <p className={`text-xs font-extrabold ${themeConfig.textPrimary}`}>
+                        No Saved-Place Geofences Defined for {activeRoomDetails.name} Yet
+                      </p>
+                      <p className={`text-[11px] ${themeConfig.textSecondary} max-w-md mx-auto`}>
+                        Select a saved place (like Home, Office, Campus, or Meetup Spot) and set a boundary radius to receive automatic push notifications whenever a group member enters or leaves.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleOpenDefinePlaceGeofenceModal()}
+                      className="px-4 py-2 rounded-xl bg-gradient-to-r from-[#FFD166] to-[#FF8066] text-slate-950 text-xs font-extrabold inline-flex items-center gap-1.5 shadow-sm cursor-pointer active:scale-95"
+                    >
+                      <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
+                      <span>Define First Saved-Place Geofence</span>
+                    </button>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {activeRoomGeofences.map((gf) => {
+                      const emoji = getLocationTypeEmoji(gf.placeIcon || gf.placeCategory || 'home');
+                      const roomPeers = (activeRoomDetails.members || []).filter(
+                        (m) => m.userId !== user?.id
+                      );
+                      const watchedMembersList =
+                        gf.watchedMemberIds && gf.watchedMemberIds.length > 0
+                          ? roomPeers.filter((m) => gf.watchedMemberIds.includes(m.userId))
+                          : roomPeers;
+
+                      // Calculate live inside/outside status for each watched room member
+                      const memberStatuses = watchedMembersList.map((m) => {
+                        const loc = userLocations.find((l) => l.userId === m.userId);
+                        if (!loc) {
+                          return {
+                            userId: m.userId,
+                            name: m.user.fullName,
+                            avatar: m.user.avatarUrl,
+                            distanceMeters: null as number | null,
+                            isInside: false,
+                          };
+                        }
+                        const dist = Math.round(
+                          calculateDistanceMeters(
+                            loc.latitude,
+                            loc.longitude,
+                            gf.latitude,
+                            gf.longitude
+                          )
+                        );
+                        return {
+                          userId: m.userId,
+                          name: m.user.fullName,
+                          avatar: m.user.avatarUrl,
+                          distanceMeters: dist,
+                          isInside: dist <= gf.radiusMeters,
+                        };
+                      });
+
+                      const insideCount = memberStatuses.filter((s) => s.isInside).length;
+
+                      return (
+                        <div
+                          key={gf.id}
+                          data-testid={`room-geofence-card-${gf.placeId}`}
+                          className={`p-4 rounded-2xl border flex flex-col justify-between gap-3 transition-all ${
+                            gf.enabled
+                              ? isDark
+                                ? 'bg-[#150E2E]/95 border-[#FFD166]/45 shadow-md'
+                                : 'bg-white border-[#8957FF]/35 shadow-sm'
+                              : 'opacity-65 border-white/10'
+                          }`}
+                        >
+                          <div className="space-y-2.5">
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="flex items-center gap-2.5 min-w-0">
+                                <div
+                                  className="w-10 h-10 rounded-2xl flex items-center justify-center text-lg text-white shadow-md border border-white/40 shrink-0"
+                                  style={{ backgroundColor: gf.color || '#8957FF' }}
+                                >
+                                  {emoji}
+                                </div>
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <h5 className={`font-extrabold text-sm ${themeConfig.textPrimary} truncate`}>
+                                      {gf.placeName}
+                                    </h5>
+                                    <span
+                                      className={`px-2 py-0.5 rounded-full text-[10px] font-extrabold ${
+                                        gf.enabled
+                                          ? 'bg-[#00D6A0]/20 text-[#00D6A0] border border-[#00D6A0]/40'
+                                          : 'bg-slate-500/20 text-slate-400'
+                                      }`}
+                                    >
+                                      {gf.enabled ? 'Push Active' : 'Paused'}
+                                    </span>
+                                  </div>
+                                  <div className={`flex items-center gap-1.5 text-[11px] font-mono ${themeConfig.textSecondary} mt-0.5 flex-wrap`}>
+                                    <span className="text-[#00D9FF] font-bold">
+                                      Radius: {gf.radiusMeters}m
+                                    </span>
+                                    <span>·</span>
+                                    <span>
+                                      {gf.latitude.toFixed(4)}, {gf.longitude.toFixed(4)}
+                                    </span>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-1 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() => handleToggleRoomGeofenceEnabled(gf)}
+                                  className={`px-2.5 py-1 rounded-xl text-[11px] font-extrabold cursor-pointer transition-colors ${
+                                    gf.enabled
+                                      ? 'bg-[#FFD166]/20 text-[#FFD166] border border-[#FFD166]/40 hover:bg-[#FFD166]/30'
+                                      : 'bg-white/10 text-slate-300 hover:bg-white/20'
+                                  }`}
+                                  title={gf.enabled ? 'Pause Geofence Push Alerts' : 'Resume Geofence Push Alerts'}
+                                >
+                                  {gf.enabled ? 'On' : 'Off'}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenEditRoomGeofence(gf)}
+                                  className={`p-1.5 rounded-xl border cursor-pointer transition-colors ${
+                                    isDark
+                                      ? 'bg-white/5 hover:bg-white/15 border-white/10 text-slate-200'
+                                      : 'bg-purple-50 hover:bg-purple-100 border-purple-200 text-slate-700'
+                                  }`}
+                                  title="Edit Geofence Radius & Triggers"
+                                >
+                                  <SlidersHorizontal className="w-3.5 h-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteRoomGeofence(gf)}
+                                  className="p-1.5 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-400 border border-rose-500/30 cursor-pointer transition-colors"
+                                  title="Delete Room Geofence"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </div>
+
+                            {/* Configured Push Trigger Badges */}
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              {gf.notifyOnEnter && (
+                                <span className="px-2 py-0.5 rounded-lg bg-[#00D6A0]/15 text-[#00D6A0] border border-[#00D6A0]/30 text-[10px] font-extrabold">
+                                  🔔 Push on Enter
+                                </span>
+                              )}
+                              {gf.notifyOnLeave && (
+                                <span className="px-2 py-0.5 rounded-lg bg-[#FF4FA3]/15 text-[#FF4FA3] border border-[#FF4FA3]/30 text-[10px] font-extrabold">
+                                  🚶 Push on Leave
+                                </span>
+                              )}
+                              {gf.postToRoomChat && (
+                                <span className="px-2 py-0.5 rounded-lg bg-[#8957FF]/15 text-[#8957FF] dark:text-[#E9DFFF] border border-[#8957FF]/30 text-[10px] font-extrabold">
+                                  💬 #live-locations Chat
+                                </span>
+                              )}
+                              <span className="px-2 py-0.5 rounded-lg bg-white/10 text-[10px] font-bold text-slate-300">
+                                👥{' '}
+                                {gf.watchedMemberIds.length === 0
+                                  ? 'All Room Members'
+                                  : `${gf.watchedMemberIds.length} Member${gf.watchedMemberIds.length === 1 ? '' : 's'}`}
+                              </span>
+                            </div>
+
+                            {/* Live Member Presence Inside / Outside This Geofence */}
+                            <div
+                              className={`p-2.5 rounded-xl border space-y-1.5 ${
+                                isDark
+                                  ? 'bg-[#0B081B]/80 border-white/10'
+                                  : 'bg-slate-50 border-slate-200/80'
+                              }`}
+                            >
+                              <div className="flex items-center justify-between text-[11px]">
+                                <span className={`font-extrabold ${themeConfig.textSecondary}`}>
+                                  Live Group Member Status:
+                                </span>
+                                <span
+                                  className={`font-mono font-bold ${
+                                    insideCount > 0 ? 'text-[#00D6A0]' : themeConfig.textSecondary
+                                  }`}
+                                >
+                                  {insideCount} Inside Zone
+                                </span>
+                              </div>
+                              {memberStatuses.length === 0 ? (
+                                <p className={`text-[11px] ${themeConfig.textSecondary}`}>
+                                  Monitoring all group members who join {activeRoomDetails.name}.
+                                </p>
+                              ) : (
+                                <div className="flex flex-wrap gap-1.5">
+                                  {memberStatuses.map((st) => (
+                                    <span
+                                      key={st.userId}
+                                      className={`px-2 py-0.5 rounded-lg text-[10px] font-bold inline-flex items-center gap-1 border ${
+                                        st.isInside
+                                          ? 'bg-[#00D6A0]/20 text-[#00D6A0] border-[#00D6A0]/40'
+                                          : isDark
+                                          ? 'bg-white/5 text-slate-300 border-white/10'
+                                          : 'bg-white text-slate-700 border-slate-200'
+                                      }`}
+                                    >
+                                      <span
+                                        className={`w-1.5 h-1.5 rounded-full ${
+                                          st.isInside ? 'bg-[#00D6A0]' : 'bg-slate-400'
+                                        }`}
+                                      />
+                                      <span className="truncate max-w-[90px]">{st.name}</span>
+                                      <span className="font-mono opacity-80">
+                                        {st.distanceMeters !== null
+                                          ? st.isInside
+                                            ? `Inside (${st.distanceMeters}m)`
+                                            : formatDistance(st.distanceMeters)
+                                          : 'Offline'}
+                                      </span>
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Card Footer Actions: View on Room Map + Test Enter/Leave Push Notification */}
+                          <div className={`pt-2.5 border-t ${themeConfig.glassBorder} flex items-center justify-between gap-2 flex-wrap`}>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setRoomMapFocusCoords({ lat: gf.latitude, lng: gf.longitude });
+                                setHasMountedRoomMap(true);
+                                setShowRoomMap(true);
+                                setTimeout(() => {
+                                  roomMapPanelRef.current?.scrollIntoView({
+                                    behavior: 'smooth',
+                                    block: 'nearest',
+                                  });
+                                }, 60);
+                              }}
+                              className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-[#00D6A0] to-[#00D9FF] text-slate-950 text-[11px] font-extrabold flex items-center gap-1 cursor-pointer active:scale-95"
+                              title="Focus this Saved-Place Geofence on the Room Live Map"
+                            >
+                              <Navigation className="w-3 h-3" />
+                              <span>View on Room Map</span>
+                            </button>
+
+                            <div className="flex items-center gap-1.5">
+                              {gf.notifyOnEnter && (
+                                <button
+                                  type="button"
+                                  data-testid={`test-enter-geofence-${gf.placeId}`}
+                                  onClick={() => handleSimulateRoomGeofenceTransition(gf, 'entered')}
+                                  className="px-2.5 py-1 rounded-xl bg-[#00D6A0]/15 hover:bg-[#00D6A0]/25 text-[#00D6A0] border border-[#00D6A0]/35 text-[10px] font-extrabold cursor-pointer transition-colors"
+                                  title="Simulate a group member entering this saved place to test the automatic push notification"
+                                >
+                                  Test Enter Push
+                                </button>
+                              )}
+                              {gf.notifyOnLeave && (
+                                <button
+                                  type="button"
+                                  data-testid={`test-leave-geofence-${gf.placeId}`}
+                                  onClick={() => handleSimulateRoomGeofenceTransition(gf, 'left')}
+                                  className="px-2.5 py-1 rounded-xl bg-[#FF4FA3]/15 hover:bg-[#FF4FA3]/25 text-[#FF4FA3] border border-[#FF4FA3]/35 text-[10px] font-extrabold cursor-pointer transition-colors"
+                                  title="Simulate a group member leaving this saved place to test the automatic push notification"
+                                >
+                                  Test Leave Push
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* Room Geofence Push Notification Activity Log */}
+                {activeRoomGeofenceEvents.length > 0 && (
+                  <div className="p-3.5 rounded-2xl bg-gradient-to-r from-[#FFD166]/15 via-[#FF4FA3]/10 to-[#8957FF]/15 border border-[#FFD166]/40 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className={`text-xs font-extrabold ${themeConfig.textPrimary} flex items-center gap-1.5`}>
+                        <BellRing className="w-4 h-4 text-[#FFD166]" />
+                        <span>
+                          Room Geofence Push Notification Log ({activeRoomGeofenceEvents.length})
+                        </span>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          clearRoomGeofenceEvents(activeRoomDetails.id);
+                          setRoomGeofenceEvents(loadRoomGeofenceEvents());
+                        }}
+                        className="text-[11px] font-extrabold text-[#FF4FA3] hover:underline cursor-pointer"
+                      >
+                        Clear Log
+                      </button>
+                    </div>
+                    <div className="space-y-1.5 max-h-40 overflow-y-auto">
+                      {activeRoomGeofenceEvents.map((ev) => (
+                        <div
+                          key={ev.id}
+                          className={`text-xs ${themeConfig.textPrimary} flex items-center justify-between gap-2 ${themeConfig.cardBg} px-3 py-2 rounded-xl border`}
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span
+                              className={`px-2 py-0.5 rounded-md text-[10px] font-extrabold uppercase shrink-0 ${
+                                ev.action === 'entered'
+                                  ? 'bg-[#00D6A0]/20 text-[#00D6A0]'
+                                  : 'bg-[#FF4FA3]/20 text-[#FF4FA3]'
+                              }`}
+                            >
+                              {ev.action}
+                            </span>
+                            <span className="truncate">
+                              <strong>{ev.memberName}</strong> {ev.action}{' '}
+                              <strong>{ev.placeName}</strong>{' '}
+                              <span className={`text-[11px] font-mono ${themeConfig.textSecondary}`}>
+                                ({ev.distanceMeters}m · {ev.radiusMeters}m zone)
+                              </span>
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setRoomMapFocusCoords({ lat: ev.latitude, lng: ev.longitude });
+                                setHasMountedRoomMap(true);
+                                setShowRoomMap(true);
+                                setTimeout(() => {
+                                  roomMapPanelRef.current?.scrollIntoView({
+                                    behavior: 'smooth',
+                                    block: 'nearest',
+                                  });
+                                }, 60);
+                              }}
+                              className="px-2 py-0.5 rounded-lg bg-[#00D9FF]/15 text-[#00D9FF] text-[10px] font-extrabold cursor-pointer hover:bg-[#00D9FF]/25"
+                            >
+                              Map
+                            </button>
+                            <span className={`text-[10px] ${themeConfig.textSecondary} font-mono`}>
+                              {new Date(ev.timestamp).toLocaleTimeString([], {
+                                hour: '2-digit',
+                                minute: '2-digit',
+                              })}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 )}
@@ -2059,6 +3618,473 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
                   className="px-5 py-2 text-xs font-bold text-white bg-sky-600 hover:bg-sky-500 active:scale-95 rounded-xl shadow-md transition-all cursor-pointer"
                 >
                   Create Room
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Define / Edit Room Saved-Place Geofence Modal */}
+      {showDefineGeofenceModal && (
+        <div
+          data-testid="define-room-place-geofence-modal"
+          className="fixed inset-0 z-50 bg-black/70 backdrop-blur-md flex items-center justify-center p-4"
+        >
+          <div
+            className={`rounded-3xl p-5 sm:p-6 max-w-lg w-full shadow-2xl border max-h-[92vh] overflow-y-auto space-y-4 ${
+              isDark
+                ? 'bg-[#130F2B] border-[#8957FF]/45 text-[#F8F7FF]'
+                : 'bg-white border-[#8957FF]/25 text-slate-900'
+            }`}
+          >
+            <div className="flex items-start justify-between gap-3 pb-3 border-b border-white/10">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-[#FFD166] via-[#FF8066] to-[#FF4FA3] text-slate-950 flex items-center justify-center shrink-0 shadow-md">
+                  <Radar className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-base">
+                    {editingGeofenceId
+                      ? 'Edit Saved-Place Geofence'
+                      : 'Define Geofence Around Saved Place'}
+                  </h3>
+                  <p className={`text-xs ${isDark ? 'text-[#A9A2D0]' : 'text-slate-500'}`}>
+                    Room: <strong>{activeRoomDetails?.name || 'Active Room'}</strong> · Automatic push notification on member enter/leave
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowDefineGeofenceModal(false)}
+                className="p-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-slate-300 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveRoomPlaceGeofence} className="space-y-4">
+              {/* Step 1: Choose Existing Saved Place OR Create New Saved Place */}
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <label className="text-xs font-extrabold uppercase tracking-wider text-[#00D9FF]">
+                    1. Saved Place Location
+                  </label>
+                  {!editingGeofenceId && (
+                    <div className="flex items-center gap-1 bg-white/5 p-1 rounded-xl border border-white/10">
+                      <button
+                        type="button"
+                        onClick={() => setGeofencePlaceMode('existing')}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-extrabold cursor-pointer transition-all ${
+                          geofencePlaceMode === 'existing'
+                            ? 'bg-gradient-to-r from-[#8957FF] to-[#FF4FA3] text-white'
+                            : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        Saved Places ({savedPlaces.length})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setGeofencePlaceMode('new')}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-extrabold cursor-pointer transition-all ${
+                          geofencePlaceMode === 'new'
+                            ? 'bg-gradient-to-r from-[#00D6A0] to-[#00D9FF] text-slate-950'
+                            : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        + New Place
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {geofencePlaceMode === 'existing' ? (
+                  savedPlaces.length === 0 ? (
+                    <div className="p-3.5 rounded-2xl border border-[#FFD166]/40 bg-[#FFD166]/10 text-xs space-y-2">
+                      <p className="font-bold">You don't have any Saved Places yet.</p>
+                      <button
+                        type="button"
+                        onClick={() => setGeofencePlaceMode('new')}
+                        className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-[#00D6A0] to-[#00D9FF] text-slate-950 font-extrabold text-xs cursor-pointer"
+                      >
+                        + Create a Saved Place Now
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 gap-2 max-h-44 overflow-y-auto pr-1">
+                      {savedPlaces.map((place) => {
+                        const isSelected = selectedGeofencePlaceId === place.id;
+                        const emoji = getLocationTypeEmoji(place.markerIcon || place.category);
+                        return (
+                          <button
+                            key={place.id}
+                            type="button"
+                            onClick={() => {
+                              setSelectedGeofencePlaceId(place.id);
+                              setGeofenceRadiusMeters(place.radiusMeters || 150);
+                            }}
+                            className={`p-3 rounded-2xl border text-left flex items-center justify-between gap-3 transition-all cursor-pointer ${
+                              isSelected
+                                ? 'bg-gradient-to-r from-[#8957FF]/25 to-[#FF4FA3]/25 border-[#FF4FA3] ring-1 ring-[#FF4FA3]'
+                                : isDark
+                                ? 'bg-[#0B081B]/80 border-white/10 hover:border-white/25'
+                                : 'bg-slate-50 border-slate-200 hover:border-[#8957FF]/40'
+                            }`}
+                          >
+                            <div className="flex items-center gap-3 min-w-0">
+                              <div
+                                className="w-9 h-9 rounded-xl flex items-center justify-center text-base text-white shrink-0 shadow"
+                                style={{ backgroundColor: place.markerColor || '#8957FF' }}
+                              >
+                                {emoji}
+                              </div>
+                              <div className="min-w-0">
+                                <span className="font-extrabold text-xs block truncate">
+                                  {place.name}
+                                </span>
+                                <span className="text-[10px] font-mono opacity-75 block">
+                                  {place.latitude.toFixed(4)}, {place.longitude.toFixed(4)} · Default {place.radiusMeters}m
+                                </span>
+                              </div>
+                            </div>
+                            {isSelected && (
+                              <span className="px-2 py-0.5 rounded-full bg-[#00D6A0] text-slate-950 text-[10px] font-extrabold shrink-0">
+                                Selected
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )
+                ) : (
+                  <div
+                    className={`p-3.5 rounded-2xl border space-y-3 ${
+                      isDark ? 'bg-[#0B081B]/90 border-white/15' : 'bg-slate-50 border-slate-200'
+                    }`}
+                  >
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      <div>
+                        <label className="block text-[11px] font-extrabold mb-1">Place Name *</label>
+                        <input
+                          type="text"
+                          required={geofencePlaceMode === 'new'}
+                          placeholder="e.g. Home, School, HQ"
+                          value={newPlaceName}
+                          onChange={(e) => setNewPlaceName(e.target.value)}
+                          className={`w-full px-3 py-2 rounded-xl border text-xs font-semibold ${
+                            isDark
+                              ? 'bg-[#130F2B] border-white/15 text-white'
+                              : 'bg-white border-slate-300 text-slate-900'
+                          }`}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-extrabold mb-1">Category</label>
+                        <select
+                          value={newPlaceCategory}
+                          onChange={(e) => {
+                            const cat = e.target.value as SavedPlace['category'];
+                            setNewPlaceCategory(cat);
+                            const found = LOCATION_TYPES.find((t) => t.id === cat);
+                            if (found) setNewPlaceColor(found.defaultColor);
+                          }}
+                          className={`w-full px-3 py-2 rounded-xl border text-xs font-semibold ${
+                            isDark
+                              ? 'bg-[#130F2B] border-white/15 text-white'
+                              : 'bg-white border-slate-300 text-slate-900'
+                          }`}
+                        >
+                          {LOCATION_TYPES.map((t) => (
+                            <option key={t.id} value={t.id}>
+                              {t.emoji} {t.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-[11px] font-extrabold mb-1">Latitude</label>
+                        <input
+                          type="number"
+                          step="any"
+                          required={geofencePlaceMode === 'new'}
+                          value={newPlaceLat}
+                          onChange={(e) => setNewPlaceLat(e.target.value)}
+                          className={`w-full px-3 py-1.5 rounded-xl border text-xs font-mono ${
+                            isDark
+                              ? 'bg-[#130F2B] border-white/15 text-white'
+                              : 'bg-white border-slate-300 text-slate-900'
+                          }`}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-extrabold mb-1">Longitude</label>
+                        <input
+                          type="number"
+                          step="any"
+                          required={geofencePlaceMode === 'new'}
+                          value={newPlaceLng}
+                          onChange={(e) => setNewPlaceLng(e.target.value)}
+                          className={`w-full px-3 py-1.5 rounded-xl border text-xs font-mono ${
+                            isDark
+                              ? 'bg-[#130F2B] border-white/15 text-white'
+                              : 'bg-white border-slate-300 text-slate-900'
+                          }`}
+                        />
+                      </div>
+                    </div>
+
+                    {myLocation && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setNewPlaceLat(myLocation.latitude.toFixed(6));
+                          setNewPlaceLng(myLocation.longitude.toFixed(6));
+                        }}
+                        className="px-3 py-1.5 rounded-xl bg-[#00D9FF]/15 text-[#00D9FF] border border-[#00D9FF]/30 text-[11px] font-extrabold inline-flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <MapPin className="w-3.5 h-3.5" />
+                        <span>Use My Current GPS Location</span>
+                      </button>
+                    )}
+
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {MARKER_COLORS.slice(0, 6).map((c) => (
+                        <button
+                          key={c.id}
+                          type="button"
+                          onClick={() => setNewPlaceColor(c.hex)}
+                          className={`w-6 h-6 rounded-full border-2 cursor-pointer ${
+                            newPlaceColor.toLowerCase() === c.hex.toLowerCase()
+                              ? 'border-white scale-110 shadow'
+                              : 'border-transparent opacity-70'
+                          }`}
+                          style={{ backgroundColor: c.hex }}
+                          title={c.label}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Step 2: Define Geofence Radius */}
+              <div className="space-y-2 pt-2 border-t border-white/10">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-extrabold uppercase tracking-wider text-[#00D9FF]">
+                    2. Geofence Boundary Radius
+                  </label>
+                  <span className="px-2.5 py-0.5 rounded-full bg-[#00D6A0]/20 text-[#00D6A0] font-mono text-xs font-extrabold">
+                    {geofenceRadiusMeters} meters
+                  </span>
+                </div>
+
+                <input
+                  type="range"
+                  min={25}
+                  max={2000}
+                  step={25}
+                  value={geofenceRadiusMeters}
+                  onChange={(e) => setGeofenceRadiusMeters(Number(e.target.value))}
+                  className="w-full accent-[#FF4FA3]"
+                />
+
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {[50, 100, 150, 250, 500, 1000].map((preset) => (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => setGeofenceRadiusMeters(preset)}
+                      className={`px-2.5 py-1 rounded-xl text-[11px] font-mono font-extrabold cursor-pointer border transition-all ${
+                        geofenceRadiusMeters === preset
+                          ? 'bg-gradient-to-r from-[#8957FF] to-[#FF4FA3] text-white border-transparent'
+                          : isDark
+                          ? 'bg-white/5 border-white/10 text-slate-300 hover:bg-white/10'
+                          : 'bg-slate-100 border-slate-200 text-slate-700'
+                      }`}
+                    >
+                      {preset >= 1000 ? `${preset / 1000}km` : `${preset}m`}
+                    </button>
+                  ))}
+                </div>
+
+                {geofencePlaceMode === 'existing' && (
+                  <label className="inline-flex items-center gap-2 text-xs font-semibold cursor-pointer pt-1">
+                    <input
+                      type="checkbox"
+                      checked={syncRadiusToSavedPlace}
+                      onChange={(e) => setSyncRadiusToSavedPlace(e.target.checked)}
+                      className="rounded accent-[#8957FF]"
+                    />
+                    <span>Also update this Saved Place's default radius to {geofenceRadiusMeters}m</span>
+                  </label>
+                )}
+              </div>
+
+              {/* Step 3: Automatic Push Notification Triggers */}
+              <div className="space-y-2.5 pt-2 border-t border-white/10">
+                <label className="block text-xs font-extrabold uppercase tracking-wider text-[#00D9FF]">
+                  3. Automatic Push Notification Triggers
+                </label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <label
+                    className={`p-3 rounded-2xl border flex items-center justify-between gap-2 cursor-pointer transition-all ${
+                      geofenceNotifyOnEnter
+                        ? 'bg-[#00D6A0]/15 border-[#00D6A0]/50'
+                        : isDark
+                        ? 'bg-white/5 border-white/10'
+                        : 'bg-slate-50 border-slate-200'
+                    }`}
+                  >
+                    <div>
+                      <span className="text-xs font-extrabold block">When Member Enters</span>
+                      <span className="text-[10px] opacity-75 block">
+                        Push alert on arrival inside {geofenceRadiusMeters}m
+                      </span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={geofenceNotifyOnEnter}
+                      onChange={(e) => setGeofenceNotifyOnEnter(e.target.checked)}
+                      className="w-4 h-4 rounded accent-[#00D6A0]"
+                    />
+                  </label>
+
+                  <label
+                    className={`p-3 rounded-2xl border flex items-center justify-between gap-2 cursor-pointer transition-all ${
+                      geofenceNotifyOnLeave
+                        ? 'bg-[#FF4FA3]/15 border-[#FF4FA3]/50'
+                        : isDark
+                        ? 'bg-white/5 border-white/10'
+                        : 'bg-slate-50 border-slate-200'
+                    }`}
+                  >
+                    <div>
+                      <span className="text-xs font-extrabold block">When Member Leaves</span>
+                      <span className="text-[10px] opacity-75 block">
+                        Push alert on departure outside {geofenceRadiusMeters}m
+                      </span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={geofenceNotifyOnLeave}
+                      onChange={(e) => setGeofenceNotifyOnLeave(e.target.checked)}
+                      className="w-4 h-4 rounded accent-[#FF4FA3]"
+                    />
+                  </label>
+                </div>
+
+                <label
+                  className={`p-3 rounded-2xl border flex items-center justify-between gap-2 cursor-pointer transition-all ${
+                    geofencePostToRoomChat
+                      ? 'bg-[#8957FF]/15 border-[#8957FF]/50'
+                      : isDark
+                      ? 'bg-white/5 border-white/10'
+                      : 'bg-slate-50 border-slate-200'
+                  }`}
+                >
+                  <div>
+                    <span className="text-xs font-extrabold block">
+                      Post Automatic Check-In / Check-Out to Room Chat (#live-locations)
+                    </span>
+                    <span className="text-[10px] opacity-75 block">
+                      Keeps all room members informed in the #live-locations channel
+                    </span>
+                  </div>
+                  <input
+                    type="checkbox"
+                    checked={geofencePostToRoomChat}
+                    onChange={(e) => setGeofencePostToRoomChat(e.target.checked)}
+                    className="w-4 h-4 rounded accent-[#8957FF]"
+                  />
+                </label>
+              </div>
+
+              {/* Step 4: Watched Group Members Filter */}
+              <div className="space-y-2 pt-2 border-t border-white/10">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-extrabold uppercase tracking-wider text-[#00D9FF]">
+                    4. Watched Group Members
+                  </label>
+                  {geofenceWatchedMemberIds.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setGeofenceWatchedMemberIds([])}
+                      className="text-[11px] font-extrabold text-[#FF4FA3] hover:underline cursor-pointer"
+                    >
+                      Watch All Members
+                    </button>
+                  )}
+                </div>
+                <p className={`text-[11px] ${isDark ? 'text-[#A9A2D0]' : 'text-slate-500'}`}>
+                  {geofenceWatchedMemberIds.length === 0
+                    ? `Currently monitoring ALL members in ${activeRoomDetails?.name || 'this room'}. Tap specific members below to filter:`
+                    : `Monitoring ${geofenceWatchedMemberIds.length} selected member${geofenceWatchedMemberIds.length === 1 ? '' : 's'}:`}
+                </p>
+
+                <div className="flex flex-wrap gap-1.5">
+                  {(activeRoomDetails?.members || [])
+                    .filter((m) => m.userId !== user?.id)
+                    .map((m) => {
+                      const isSelected = geofenceWatchedMemberIds.includes(m.userId);
+                      return (
+                        <button
+                          key={m.userId}
+                          type="button"
+                          onClick={() =>
+                            setGeofenceWatchedMemberIds((prev) =>
+                              prev.includes(m.userId)
+                                ? prev.filter((id) => id !== m.userId)
+                                : [...prev, m.userId]
+                            )
+                          }
+                          className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 border cursor-pointer transition-all ${
+                            isSelected
+                              ? 'bg-gradient-to-r from-[#8957FF] to-[#FF4FA3] text-white border-transparent shadow-xs'
+                              : geofenceWatchedMemberIds.length === 0
+                              ? isDark
+                                ? 'bg-white/10 border-white/20 text-white'
+                                : 'bg-purple-50 border-purple-200 text-purple-950'
+                              : 'opacity-50 border-white/10'
+                          }`}
+                        >
+                          <img
+                            src={
+                              m.user.avatarUrl ||
+                              `https://api.dicebear.com/7.x/bottts/svg?seed=${m.userId}`
+                            }
+                            alt={m.user.fullName}
+                            className="w-4 h-4 rounded-full object-cover"
+                          />
+                          <span>{m.user.fullName}</span>
+                        </button>
+                      );
+                    })}
+                </div>
+              </div>
+
+              <div className="pt-3 border-t border-white/10 flex items-center justify-end gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setShowDefineGeofenceModal(false)}
+                  className="px-4 py-2 rounded-xl text-xs font-extrabold bg-white/10 hover:bg-white/15 cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingRoomGeofence}
+                  data-testid="save-room-place-geofence-btn"
+                  className="px-5 py-2 rounded-xl text-xs font-extrabold text-white bg-gradient-to-r from-[#8957FF] via-[#FF4FA3] to-[#FF8066] shadow-lg shadow-[#FF4FA3]/25 cursor-pointer active:scale-95 disabled:opacity-50"
+                >
+                  {isSavingRoomGeofence
+                    ? 'Saving...'
+                    : editingGeofenceId
+                    ? 'Update Geofence & Push Rules'
+                    : 'Activate Saved-Place Geofence'}
                 </button>
               </div>
             </form>

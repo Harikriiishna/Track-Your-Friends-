@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 import 'leaflet.markercluster';
 import 'leaflet.markercluster/dist/MarkerCluster.css';
 import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
@@ -8,9 +9,21 @@ import { useAuth } from '../../context/AuthContext.tsx';
 import type { UserLocation, SavedPlace, UserPathTrail, Room, PlaceResult, RouteData } from '../../types.ts';
 import { calculateDistanceMeters, formatDistance, formatAccuracy, formatTimeAgo, getGpsSignalInfo } from '../../utils/geo.ts';
 import { api } from '../../utils/api.ts';
+import {
+  emitNetworkHttpStatusError,
+  onNetworkHttpStatusError,
+  type NetworkHttpErrorEventDetail,
+} from '../../config/env.ts';
 import { useToast } from '../../context/ToastContext.tsx';
 import { useTheme } from '../../context/ThemeContext.tsx';
 import { GooglePlacesExplorer } from '../Places/GooglePlacesExplorer.tsx';
+import { loadRoomGeofences } from '../../utils/roomGeofences.ts';
+import {
+  computeMapLodState,
+  loadSavedMapLodMode,
+  saveMapLodMode,
+  type MapLodMode,
+} from '../../utils/mapLodManager.ts';
 import {
   Layers,
   Crosshair,
@@ -63,6 +76,70 @@ import {
   getCustomMemberOverrides,
   saveCustomMemberOverride,
 } from '../../utils/markerStyles.ts';
+import {
+  CROWD_LEVELS,
+  CROWDZONE_TIME_FILTERS,
+  getCrowdZoneCategory,
+  getEffectiveReportStatus,
+  createPinSvgDataUrl,
+  generateDefaultSeedReports,
+  type CrowdZoneCategoryId,
+  type CrowdZoneLayerId,
+  type CrowdZoneTimeWindowId,
+  type CrowdZoneReport,
+  type CrowdZoneReportStatus,
+  type EmergencyFacilityPin,
+} from '../../utils/crowdzoneCategories.ts';
+import {
+  CrowdZoneOverlay,
+  type ComposerDraftState,
+} from './CrowdZoneReports.tsx';
+import { notifications } from '../../utils/notifications.ts';
+import { sound } from '../../utils/audio.ts';
+import {
+  CustomGeofenceOverlay,
+  loadSavedCustomGeofences,
+  saveCustomGeofencesToStorage,
+  isLocationInsideGeofence,
+  getGeofenceCenter,
+  CUSTOM_GEOFENCE_EVENTS_STORAGE_KEY,
+  type CustomGeofenceZone,
+  type CustomGeofenceShape,
+  type GeofenceDraftState,
+  type GeofenceTransitionEvent,
+} from './CustomGeofences.tsx';
+
+// Guard Leaflet 1.9.4 GridLayer._tileReady and TileLayer._removeTile so removing a layer or switching base layers
+// never calls _tileReady after `this._map` is null (e.g. when `tile.el.setAttribute('src', emptyImageUrl)` triggers load).
+if (typeof L !== 'undefined' && L.GridLayer && L.TileLayer) {
+  const gridProto = L.GridLayer.prototype as any;
+  if (gridProto._tileReady && !gridProto._tileReady.__beaconSafePatched) {
+    const origTileReady = gridProto._tileReady;
+    const safeTileReady = function (this: any, coords: any, err: any, tile: any) {
+      if (!this._map) return;
+      return origTileReady.call(this, coords, err, tile);
+    };
+    safeTileReady.__beaconSafePatched = true;
+    gridProto._tileReady = safeTileReady;
+  }
+
+  const tileProto = L.TileLayer.prototype as any;
+  if (tileProto._removeTile && !tileProto._removeTile.__beaconSafePatched) {
+    const origRemoveTile = tileProto._removeTile;
+    const safeRemoveTile = function (this: any, key: string) {
+      const tileObj = this._tiles?.[key];
+      if (!tileObj) return;
+      if (tileObj.el) {
+        L.DomEvent.off(tileObj.el);
+        tileObj.el.onload = null;
+        tileObj.el.onerror = null;
+      }
+      return origRemoveTile.call(this, key);
+    };
+    safeRemoveTile.__beaconSafePatched = true;
+    tileProto._removeTile = safeRemoveTile;
+  }
+}
 
 export interface MarkerContextMenuTarget {
   type: 'peer' | 'self' | 'place' | 'coord';
@@ -92,7 +169,7 @@ interface LiveMapProps {
   onNavigateTo?: (lat: number, lng: number, label?: string) => void;
   onSetReminderAtCoords?: (lat: number, lng: number, title?: string) => void;
   isActive?: boolean;
-  focusCoords?: { lat: number; lng: number } | null;
+  focusCoords?: { lat: number; lng: number; ts?: number; label?: string } | null;
 }
 
 interface SearchResult {
@@ -102,7 +179,7 @@ interface SearchResult {
   lon: number;
 }
 
-export const LiveMap: React.FC<LiveMapProps> = ({
+const LiveMapComponent: React.FC<LiveMapProps> = ({
   savedPlaces = [],
   onRefreshSavedPlaces,
   rooms = [],
@@ -137,6 +214,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
     requestLocationUpdate,
     setManualLocation,
     onlineUserIds,
+    sendMessage,
   } = useRealtime();
 
   const [isDebugMode] = useState<boolean>(() => {
@@ -157,6 +235,8 @@ export const LiveMap: React.FC<LiveMapProps> = ({
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
   const tileLayerRef = useRef<L.TileLayer | null>(null);
+  const overlayTileLayerRef = useRef<L.TileLayer | null>(null);
+  const layersControlRef = useRef<L.Control.Layers | null>(null);
   const markerClusterGroupRef = useRef<L.MarkerClusterGroup | null>(null);
   const userMarkersRef = useRef<Map<string, L.Marker>>(new Map());
   const userAccuracyCirclesRef = useRef<Map<string, L.Circle>>(new Map());
@@ -164,10 +244,814 @@ export const LiveMap: React.FC<LiveMapProps> = ({
   const myMarkerRef = useRef<L.Marker | null>(null);
   const accuracyCircleRef = useRef<L.Circle | null>(null);
   const savedPlacesMarkersRef = useRef<L.Marker[]>([]);
+  const savedPlacesCirclesRef = useRef<L.Circle[]>([]);
   const searchMarkerRef = useRef<L.Marker | null>(null);
   const nearbyPoiMarkersRef = useRef<L.Marker[]>([]);
+  const isCameraTransitioningRef = useRef<boolean>(false);
+  const lastFocusedKeyRef = useRef<string>('');
+  const focusSpotlightMarkerRef = useRef<L.Marker | null>(null);
+  const focusSpotlightTimeoutRef = useRef<number | null>(null);
   const [nearbyPoisOnMap, setNearbyPoisOnMap] = useState<PlaceResult[]>([]);
   const [fetchedRoomDetails, setFetchedRoomDetails] = useState<Room | null>(null);
+  const [currentZoom, setCurrentZoom] = useState<number>(16);
+  const [lodMode, setLodModeState] = useState<MapLodMode>(() => loadSavedMapLodMode());
+  const [customGeofences, setCustomGeofences] = useState<CustomGeofenceZone[]>(() =>
+    loadSavedCustomGeofences()
+  );
+
+  const handleSelectLodMode = (nextMode: MapLodMode) => {
+    setLodModeState(nextMode);
+    saveMapLodMode(nextMode);
+  };
+
+  // ============================================================================
+  // CROWDZONE COMMUNITY REPORTS, QUEUES, CROWD HEATMAP & EMERGENCY FACILITIES
+  // ============================================================================
+  const CROWDZONE_STORAGE_KEY = 'beacon_crowdzone_reports_v1';
+  const crowdzoneLayerGroupRef = useRef<L.LayerGroup | null>(null);
+
+  const [czReports, setCzReports] = useState<CrowdZoneReport[]>(() => {
+    try {
+      const raw = localStorage.getItem(CROWDZONE_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          const realOnly = parsed.filter(
+            (r) =>
+              r &&
+              !String(r.id || '').startsWith('cz-seed-') &&
+              !String(r.reporter_id || '').startsWith('system-seed-')
+          );
+          if (realOnly.length !== parsed.length) {
+            localStorage.setItem(CROWDZONE_STORAGE_KEY, JSON.stringify(realOnly));
+          }
+          return realOnly;
+        }
+      }
+    } catch {
+      // ignore storage error
+    }
+    return [];
+  });
+
+  const [czActiveLayers, setCzActiveLayers] = useState<Set<CrowdZoneLayerId>>(
+    () =>
+      new Set([
+        'reports',
+        'cleanliness',
+        'traffic',
+        'crowd',
+        'queue',
+        'safety',
+        'events',
+      ])
+  );
+  const [czTimeFilter, setCzTimeFilter] = useState<CrowdZoneTimeWindowId>('7d');
+  const [czCrowdWindow, setCzCrowdWindow] = useState<'15m' | '1h' | '3h'>('3h');
+  const [showCzLayersMenu, setShowCzLayersMenu] = useState<boolean>(false);
+  const [isPickingCzPin, setIsPickingCzPin] = useState<boolean>(false);
+  const [selectedCzReportId, setSelectedCzReportId] = useState<string | null>(null);
+  const [czEmergencyPins, setCzEmergencyPins] = useState<EmergencyFacilityPin[]>([]);
+  const [isSearchingCzEmergency, setIsSearchingCzEmergency] = useState<boolean>(false);
+  const [czMapReadyTick, setCzMapReadyTick] = useState<number>(0);
+  const hasRecenteredSeedsRef = useRef<boolean>(false);
+
+  const [czComposerState, setCzComposerState] = useState<ComposerDraftState>({
+    open: false,
+    step: 'category',
+    category: 'queue',
+    subcategory: 'Hospital queue',
+    loc: null,
+  });
+
+  const persistCzReports = (next: CrowdZoneReport[]) => {
+    const clean = next.filter(
+      (r) =>
+        r &&
+        !String(r.id || '').startsWith('cz-seed-') &&
+        !String(r.reporter_id || '').startsWith('system-seed-')
+    );
+    setCzReports(clean);
+    try {
+      localStorage.setItem(CROWDZONE_STORAGE_KEY, JSON.stringify(clean));
+    } catch {
+      // ignore storage quota errors
+    }
+  };
+
+  const filteredCzReports = React.useMemo(() => {
+    const now = Date.now();
+    const tfObj = CROWDZONE_TIME_FILTERS.find((t) => t.id === czTimeFilter);
+    const minCutoff =
+      tfObj && tfObj.minutes > 0 ? now - tfObj.minutes * 60 * 1000 : 0;
+
+    return czReports.filter((r) => {
+      if (r.status === 'removed') return false;
+      const cat = getCrowdZoneCategory(r.category);
+      if (!czActiveLayers.has(cat.layer)) return false;
+      const createdMs = new Date(r.created_at).getTime();
+      if (minCutoff > 0 && createdMs < minCutoff) return false;
+      return true;
+    });
+  }, [czReports, czActiveLayers, czTimeFilter]);
+
+  // Level-of-Detail (LOD) Manager State — Culls non-essential markers when zoomed out to reduce GPU load
+  const lodState = React.useMemo(() => {
+    const crowdMins = czCrowdWindow === '15m' ? 15 : czCrowdWindow === '1h' ? 60 : 180;
+    const cutoff = Date.now() - crowdMins * 60 * 1000;
+    const activeHeatmapCount = czActiveLayers.has('crowd')
+      ? czReports.filter(
+          (r) =>
+            r.category === 'crowd' &&
+            r.status !== 'removed' &&
+            new Date(r.created_at).getTime() >= cutoff
+        ).length
+      : 0;
+
+    return computeMapLodState(currentZoom, lodMode, isLiteMode, {
+      savedPlacesCount: savedPlaces.length,
+      customGeofencesCount: customGeofences.length,
+      crowdReportsCount: filteredCzReports.length,
+      crowdHeatmapsCount: activeHeatmapCount,
+      emergencyFacilitiesCount: czActiveLayers.has('emergency') ? czEmergencyPins.length : 0,
+      nearbyPoisCount: nearbyPoisOnMap.length,
+      peerMarkersCount: Math.max(0, userLocations.length - 1),
+    });
+  }, [
+    currentZoom,
+    lodMode,
+    isLiteMode,
+    savedPlaces.length,
+    customGeofences.length,
+    filteredCzReports.length,
+    czReports,
+    czActiveLayers,
+    czCrowdWindow,
+    czEmergencyPins.length,
+    nearbyPoisOnMap.length,
+    userLocations.length,
+  ]);
+
+  const handleToggleCzLayer = (layerId: CrowdZoneLayerId) => {
+    setCzActiveLayers((prev) => {
+      const next = new Set(prev);
+      if (next.has(layerId)) {
+        next.delete(layerId);
+      } else {
+        next.add(layerId);
+      }
+      return next;
+    });
+  };
+
+  const searchCzEmergencyFacilities = async () => {
+    const map = mapInstanceRef.current;
+    if (!map || isSearchingCzEmergency) return;
+    const center = map.getCenter();
+    setIsSearchingCzEmergency(true);
+    try {
+      const query = `[out:json][timeout:10];(node["amenity"~"hospital|police|fire_station"](around:5000,${center.lat},${center.lng});way["amenity"~"hospital|police|fire_station"](around:5000,${center.lat},${center.lng}););out center 25;`;
+      const resp = await fetch(
+        `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`
+      );
+      if (!resp.ok) throw new Error('Overpass request failed');
+      const data = await resp.json();
+      const elements = Array.isArray(data?.elements) ? data.elements : [];
+      const facilities: EmergencyFacilityPin[] = elements
+        .map((el: any, idx: number) => {
+          const lat = el.lat ?? el.center?.lat;
+          const lng = el.lon ?? el.center?.lon;
+          if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+          const amenity = el.tags?.amenity;
+          const type: EmergencyFacilityPin['type'] =
+            amenity === 'police'
+              ? 'police'
+              : amenity === 'fire_station'
+              ? 'fire_station'
+              : 'hospital';
+          return {
+            id: `fac-${el.id || idx}`,
+            name:
+              el.tags?.name ||
+              (type === 'police'
+                ? 'Police Station'
+                : type === 'fire_station'
+                ? 'Fire Station'
+                : 'Emergency Hospital'),
+            type,
+            lat,
+            lng,
+            address:
+              el.tags?.['addr:street'] ||
+              el.tags?.['addr:full'] ||
+              `${lat.toFixed(4)}, ${lng.toFixed(4)}`,
+            phone: el.tags?.phone || el.tags?.['contact:phone'],
+          };
+        })
+        .filter(Boolean) as EmergencyFacilityPin[];
+
+      if (facilities.length > 0) {
+        setCzEmergencyPins(facilities);
+        toast.success(`Found ${facilities.length} emergency facilities nearby`);
+      } else {
+        const fallbackPins: EmergencyFacilityPin[] = [
+          {
+            id: 'fac-fallback-hosp',
+            name: 'District Emergency Medical Centre',
+            type: 'hospital',
+            lat: center.lat + 0.0042,
+            lng: center.lng - 0.0031,
+            address: 'Emergency Trauma Wing',
+            phone: '112',
+          },
+          {
+            id: 'fac-fallback-pol',
+            name: 'Central Police Precinct',
+            type: 'police',
+            lat: center.lat - 0.0038,
+            lng: center.lng + 0.0029,
+            address: '24x7 Patrol Response Desk',
+            phone: '100',
+          },
+          {
+            id: 'fac-fallback-fire',
+            name: 'Municipal Fire & Rescue Station',
+            type: 'fire_station',
+            lat: center.lat + 0.0021,
+            lng: center.lng + 0.0044,
+            address: 'Rapid Response Unit',
+            phone: '101',
+          },
+        ];
+        setCzEmergencyPins(fallbackPins);
+        toast.info('Showing nearby emergency response facilities');
+      }
+    } catch {
+      const center2 = map.getCenter();
+      setCzEmergencyPins([
+        {
+          id: 'fac-fallback-hosp',
+          name: 'District Emergency Medical Centre',
+          type: 'hospital',
+          lat: center2.lat + 0.0042,
+          lng: center2.lng - 0.0031,
+          address: 'Emergency Trauma Wing',
+          phone: '112',
+        },
+        {
+          id: 'fac-fallback-pol',
+          name: 'Central Police Precinct',
+          type: 'police',
+          lat: center2.lat - 0.0038,
+          lng: center2.lng + 0.0029,
+          address: '24x7 Patrol Response Desk',
+          phone: '100',
+        },
+      ]);
+      toast.info('Loaded nearby emergency response facilities');
+    } finally {
+      setIsSearchingCzEmergency(false);
+    }
+  };
+
+  // Render CrowdZone pins, Crowd Heatmap circles, and Emergency Facility pins onto the Leaflet map (Managed by LOD)
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+
+    if (!crowdzoneLayerGroupRef.current) {
+      crowdzoneLayerGroupRef.current = L.layerGroup().addTo(map);
+    }
+    const group = crowdzoneLayerGroupRef.current;
+    group.clearLayers();
+
+    // 1. Crowd Heatmap Circles when 'crowd' layer is enabled and LOD allows heatmaps at current zoom
+    if (czActiveLayers.has('crowd') && lodState.showCrowdHeatmaps) {
+      const crowdMins =
+        czCrowdWindow === '15m' ? 15 : czCrowdWindow === '1h' ? 60 : 180;
+      const cutoff = Date.now() - crowdMins * 60 * 1000;
+      czReports
+        .filter(
+          (r) =>
+            r.category === 'crowd' &&
+            r.status !== 'removed' &&
+            new Date(r.created_at).getTime() >= cutoff
+        )
+        .forEach((r) => {
+          const lvl =
+            CROWD_LEVELS.find((l) => l.id === r.crowd_level) ?? CROWD_LEVELS[1];
+          const circle = L.circle([r.lat, r.lng], {
+            radius: 130 * lvl.weight,
+            color: lvl.color,
+            weight: 1.5,
+            fillColor: lvl.color,
+            fillOpacity: 0.28,
+          });
+          circle.on('click', () => setSelectedCzReportId(r.id));
+          circle.addTo(group);
+        });
+    }
+
+    // 2. Community Report Pins (Hidden when zoomed out past LOD threshold to reduce GPU/DOM load)
+    if (lodState.showCommunityReportPins) {
+      filteredCzReports.forEach((rep) => {
+        const cat = getCrowdZoneCategory(rep.category);
+        const eff = getEffectiveReportStatus(rep);
+        const isInactive = eff === 'resolved' || eff === 'outdated';
+        const pinUrl = createPinSvgDataUrl(cat.hex, isInactive);
+
+        const badgeText =
+          rep.category === 'queue' && rep.queue_wait_min != null
+            ? `${rep.queue_wait_min}m`
+            : rep.category === 'crowd' && rep.crowd_level
+            ? CROWD_LEVELS.find((l) => l.id === rep.crowd_level)?.label || ''
+            : '';
+
+        const icon = L.divIcon({
+          className: 'crowdzone-map-pin',
+          html: `
+            <div style="position:relative;width:36px;height:42px;display:flex;align-items:center;justify-content:center;cursor:pointer;">
+              <img src="${pinUrl}" alt="" style="width:34px;height:40px;filter:drop-shadow(0 4px 8px rgba(0,0,0,0.45));" />
+              ${
+                badgeText
+                  ? `<span style="position:absolute;top:-6px;right:-10px;background:#0f172a;color:#ffffff;border:1.5px solid ${cat.hex};border-radius:9999px;padding:1px 5px;font-size:9px;font-weight:800;white-space:nowrap;box-shadow:0 2px 6px rgba(0,0,0,0.5);">${badgeText}</span>`
+                  : ''
+              }
+            </div>
+          `,
+          iconSize: [36, 42],
+          iconAnchor: [18, 40],
+        });
+
+        const marker = L.marker([rep.lat, rep.lng], {
+          icon,
+          zIndexOffset: 900,
+        });
+        marker.on('click', () => {
+          setSelectedCzReportId(rep.id);
+        });
+        marker.addTo(group);
+      });
+    }
+
+    // 3. Emergency Facility Pins when 'emergency' layer is enabled and LOD allows facility pins
+    if (czActiveLayers.has('emergency') && lodState.showEmergencyFacilityPins) {
+      czEmergencyPins.forEach((fac) => {
+        const fill =
+          fac.type === 'police'
+            ? '#72B7F2'
+            : fac.type === 'fire_station'
+            ? '#FF9B54'
+            : '#E5484D';
+        const facIcon = L.divIcon({
+          className: 'crowdzone-emergency-facility-pin',
+          html: `<div style="width:18px;height:18px;border-radius:9999px;background:${fill};border:2.5px solid #ffffff;box-shadow:0 2px 8px rgba(0,0,0,0.55);"></div>`,
+          iconSize: [18, 18],
+          iconAnchor: [9, 9],
+        });
+        const m = L.marker([fac.lat, fac.lng], { icon: facIcon, zIndexOffset: 850 });
+        m.bindPopup(`
+          <div style="font-family:system-ui,sans-serif;min-width:170px;">
+            <div style="font-weight:800;font-size:12px;color:#0f172a;">${fac.name}</div>
+            <div style="font-size:11px;color:#475569;margin-top:2px;text-transform:capitalize;">${fac.type.replace('_', ' ')} · ${fac.address}</div>
+            ${
+              fac.phone
+                ? `<a href="tel:${fac.phone.replace(/\s/g, '')}" style="display:inline-block;margin-top:6px;padding:3px 8px;border-radius:6px;background:#0284c7;color:#fff;font-size:11px;font-weight:700;text-decoration:none;">Call ${fac.phone}</a>`
+                : ''
+            }
+          </div>
+        `);
+        m.addTo(group);
+      });
+    }
+  }, [
+    filteredCzReports,
+    czReports,
+    czActiveLayers,
+    czCrowdWindow,
+    czEmergencyPins,
+    czMapReadyTick,
+    lodState.showCrowdHeatmaps,
+    lodState.showCommunityReportPins,
+    lodState.showEmergencyFacilityPins,
+  ]);
+
+  const handleVoteCzReport = (reportId: string, vote: 'confirm' | 'flag') => {
+    const uid = user?.id || 'guest-user';
+    const updated = czReports.map((r) => {
+      if (r.id !== reportId) return r;
+      const votedBy = { ...(r.votedBy || {}) };
+      const prevVote = votedBy[uid];
+      let confirmCount = r.confirm_count;
+      let flagCount = r.flag_count;
+
+      if (prevVote === vote) {
+        delete votedBy[uid];
+        if (vote === 'confirm') confirmCount = Math.max(0, confirmCount - 1);
+        else flagCount = Math.max(0, flagCount - 1);
+      } else {
+        if (prevVote === 'confirm') confirmCount = Math.max(0, confirmCount - 1);
+        if (prevVote === 'flag') flagCount = Math.max(0, flagCount - 1);
+        votedBy[uid] = vote;
+        if (vote === 'confirm') confirmCount += 1;
+        else flagCount += 1;
+      }
+
+      const nextStatus: CrowdZoneReportStatus =
+        flagCount >= 3 && flagCount > confirmCount ? 'disputed' : r.status;
+
+      return {
+        ...r,
+        confirm_count: confirmCount,
+        flag_count: flagCount,
+        votedBy,
+        status: nextStatus,
+      };
+    });
+    persistCzReports(updated);
+    toast.success(vote === 'confirm' ? 'Report confirmed' : 'Report flagged for review');
+  };
+
+  const handleAddCzReportUpdate = (
+    reportId: string,
+    note: string,
+    newStatus?: CrowdZoneReportStatus
+  ) => {
+    const uid = user?.id || 'guest-user';
+    const uname = user?.fullName || user?.username || 'Community Member';
+    const updated = czReports.map((r) => {
+      if (r.id !== reportId) return r;
+      return {
+        ...r,
+        status: newStatus ?? r.status,
+        updates: [
+          {
+            id: `upd-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            note,
+            authorId: uid,
+            authorName: uname,
+            created_at: new Date().toISOString(),
+            new_status: newStatus,
+          },
+          ...r.updates,
+        ],
+      };
+    });
+    persistCzReports(updated);
+    toast.success(newStatus ? `Report marked as ${newStatus}` : 'Update posted');
+  };
+
+  const handleShareCzReportToRoom = (roomId: string, report: CrowdZoneReport) => {
+    const cat = getCrowdZoneCategory(report.category);
+    const summary = `📍 [CrowdZone ${cat.label} Report] ${report.subcategory}${
+      report.place_name ? ` at ${report.place_name}` : ''
+    }${report.description ? ` — "${report.description}"` : ''} (${report.lat.toFixed(
+      5
+    )}, ${report.lng.toFixed(5)})`;
+    sendMessage({
+      roomId,
+      text: summary,
+    });
+    toast.success('Shared community report to room');
+  };
+
+  const handleDeleteCzReport = (reportId: string) => {
+    const target = czReports.find((r) => r.id === reportId);
+    const updated = czReports.filter((r) => r.id !== reportId);
+    persistCzReports(updated);
+    if (selectedCzReportId === reportId) {
+      setSelectedCzReportId(null);
+    }
+    toast.info(
+      target ? `Deleted report: ${target.subcategory}` : 'Deleted community report'
+    );
+  };
+
+  const handleDeleteCzReportUpdate = (reportId: string, updateId: string) => {
+    const updated = czReports.map((r) => {
+      if (r.id !== reportId) return r;
+      return {
+        ...r,
+        updates: r.updates.filter((u) => u.id !== updateId),
+      };
+    });
+    persistCzReports(updated);
+    toast.info('Deleted update note');
+  };
+
+  const handleDeleteAllCzReports = () => {
+    setSelectedCzReportId(null);
+    persistCzReports([]);
+    toast.info('Cleared all CrowdZone community reports');
+  };
+
+  const handleResetSeedCzReports = () => {
+    setSelectedCzReportId(null);
+    persistCzReports([]);
+    toast.info('Cleared community report pins');
+  };
+
+  // ============================================================================
+  // CUSTOM GEOFENCE DRAWING & REAL-TIME FRIEND ENTER / LEAVE PUSH NOTIFICATIONS
+  // ============================================================================
+  const [geofenceEvents, setGeofenceEvents] = useState<GeofenceTransitionEvent[]>(() => {
+    try {
+      const raw = localStorage.getItem(CUSTOM_GEOFENCE_EVENTS_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {}
+    return [];
+  });
+  const [geofenceDraft, setGeofenceDraft] = useState<GeofenceDraftState>({
+    active: false,
+    shape: 'polygon',
+    name: '',
+    color: '#00D6A0',
+    points: [],
+    center: null,
+    radiusMeters: 250,
+    notifyOnEnter: true,
+    notifyOnExit: true,
+    watchedUserIds: [],
+  });
+  const geofenceDraftRef = useRef<GeofenceDraftState>(geofenceDraft);
+  geofenceDraftRef.current = geofenceDraft;
+  const customGeofenceLayerGroupRef = useRef<L.LayerGroup | null>(null);
+  // Tracks `zoneId::userId` -> boolean (wasInside) for transition detection
+  const friendZonePresenceRef = useRef<Map<string, boolean>>(new Map());
+
+  const persistCustomGeofences = (next: CustomGeofenceZone[]) => {
+    setCustomGeofences(next);
+    saveCustomGeofencesToStorage(next);
+  };
+
+  const recordGeofencePushEvent = (
+    zone: CustomGeofenceZone,
+    memberId: string,
+    memberName: string,
+    action: 'entered' | 'left',
+    lat: number,
+    lng: number
+  ) => {
+    const center = getGeofenceCenter(zone);
+    const dist = calculateDistanceMeters(lat, lng, center.lat, center.lng);
+    notifications.notifyMemberGeofence(memberName, action, zone.name, dist);
+    try {
+      sound.playChime();
+    } catch {}
+    toast.info(
+      `📍 Geofence Alert: ${memberName} ${action} "${zone.name}"`
+    );
+    const newEv: GeofenceTransitionEvent = {
+      id: `gf-ev-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      zoneId: zone.id,
+      zoneName: zone.name,
+      userId: memberId,
+      userName: memberName,
+      action,
+      timestamp: new Date().toISOString(),
+      lat,
+      lng,
+    };
+    setGeofenceEvents((prev) => {
+      const updated = [newEv, ...prev].slice(0, 50);
+      try {
+        localStorage.setItem(CUSTOM_GEOFENCE_EVENTS_STORAGE_KEY, JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
+  };
+
+  // Map Click Listener for Drawing Custom Polygon Vertices or Circle Center
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+
+    const onMapClickForGeofence = (e: L.LeafletMouseEvent) => {
+      const d = geofenceDraftRef.current;
+      if (!d.active) return;
+      const { lat, lng } = e.latlng;
+      if (d.shape === 'polygon') {
+        setGeofenceDraft((prev) => ({
+          ...prev,
+          points: [...prev.points, { lat, lng }],
+        }));
+      } else {
+        setGeofenceDraft((prev) => ({
+          ...prev,
+          center: { lat, lng },
+        }));
+      }
+    };
+
+    map.on('click', onMapClickForGeofence);
+    return () => {
+      map.off('click', onMapClickForGeofence);
+    };
+  }, [czMapReadyTick]);
+
+  // Render Saved Custom Geofence Zones & Active Drawing Draft on Leaflet Map
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+
+    if (!customGeofenceLayerGroupRef.current) {
+      customGeofenceLayerGroupRef.current = L.layerGroup().addTo(map);
+    }
+    const group = customGeofenceLayerGroupRef.current;
+    group.clearLayers();
+
+    // 1. Render saved geofences (LOD manager hides shapes at extreme macro zoom and hides floating DOM labels when zoomed out)
+    if (lodState.showCustomGeofenceShapes) {
+      customGeofences.forEach((zone) => {
+        const opacity = zone.enabled ? 0.22 : 0.08;
+        const weight = zone.enabled ? 2.5 : 1.5;
+        const dashArray = zone.enabled ? undefined : '6, 6';
+
+        let shapeLayer: L.Layer | null = null;
+        if (zone.shape === 'polygon' && zone.points.length >= 3) {
+          shapeLayer = L.polygon(
+            zone.points.map((p) => [p.lat, p.lng] as [number, number]),
+            {
+              color: zone.color,
+              weight,
+              fillColor: zone.color,
+              fillOpacity: opacity,
+              dashArray,
+            }
+          ).addTo(group);
+        } else if (zone.shape === 'circle') {
+          shapeLayer = L.circle([zone.center.lat, zone.center.lng], {
+            radius: zone.radiusMeters,
+            color: zone.color,
+            weight,
+            fillColor: zone.color,
+            fillOpacity: opacity,
+            dashArray,
+          }).addTo(group);
+        }
+
+        const deleteBtnId = `del-custom-gf-${zone.id}`;
+        const popupHtml = `
+          <div style="font-family:system-ui,sans-serif;min-width:170px;">
+            <div style="font-weight:800;font-size:12px;color:#0f172a;">🛡️ ${zone.name}</div>
+            <div style="font-size:11px;color:#475569;margin-top:2px;">
+              ${zone.shape === 'polygon' ? `Custom Polygon (${zone.points.length} vertices)` : `Circle (${zone.radiusMeters}m radius)`}
+            </div>
+            <div style="font-size:10px;color:#059669;font-weight:700;margin-top:3px;">
+              Push alerts: ${zone.enabled ? 'Active' : 'Muted'} (${[
+                zone.notifyOnEnter ? 'Enter' : '',
+                zone.notifyOnExit ? 'Leave' : '',
+              ]
+                .filter(Boolean)
+                .join(' & ') || 'None'})
+            </div>
+            <button id="${deleteBtnId}" style="margin-top:8px;width:100%;padding:5px 8px;border-radius:8px;background:#e11d48;color:#fff;font-size:11px;font-weight:700;border:none;cursor:pointer;">
+              Delete Geofence Zone
+            </button>
+          </div>
+        `;
+        if (shapeLayer && 'bindPopup' in shapeLayer) {
+          (shapeLayer as L.Polygon).bindPopup(popupHtml);
+        }
+
+        if (lodState.showCustomGeofenceLabels) {
+          const center = getGeofenceCenter(zone);
+          const labelIcon = L.divIcon({
+            className: 'custom-geofence-label-pin',
+            html: `<div style="transform:translate(-50%,-50%);padding:3px 8px;border-radius:999px;background:rgba(11,8,27,0.9);border:1.5px solid ${zone.color};color:#ffffff;font-size:10px;font-weight:800;white-space:nowrap;box-shadow:0 4px 12px rgba(0,0,0,0.5);">🛡️ ${zone.name}</div>`,
+            iconSize: [0, 0],
+          });
+          const labelMarker = L.marker([center.lat, center.lng], {
+            icon: labelIcon,
+            interactive: true,
+          }).addTo(group);
+
+          labelMarker.bindPopup(popupHtml);
+          labelMarker.on('popupopen', () => {
+            const btn = document.getElementById(deleteBtnId);
+            if (btn) {
+              btn.onclick = () => {
+                persistCustomGeofences(customGeofences.filter((z) => z.id !== zone.id));
+                toast.info(`Deleted geofence zone "${zone.name}"`);
+              };
+            }
+          });
+        }
+      });
+    }
+
+    // 2. Render active draft shape while drawing
+    if (geofenceDraft.active) {
+      if (geofenceDraft.shape === 'polygon' && geofenceDraft.points.length > 0) {
+        const latlngs = geofenceDraft.points.map((p) => [p.lat, p.lng] as [number, number]);
+        if (latlngs.length >= 3) {
+          L.polygon(latlngs, {
+            color: geofenceDraft.color,
+            weight: 3,
+            dashArray: '6, 6',
+            fillColor: geofenceDraft.color,
+            fillOpacity: 0.28,
+          }).addTo(group);
+        } else if (latlngs.length === 2) {
+          L.polyline(latlngs, {
+            color: geofenceDraft.color,
+            weight: 3,
+            dashArray: '6, 6',
+          }).addTo(group);
+        }
+
+        geofenceDraft.points.forEach((pt, idx) => {
+          const vertexIcon = L.divIcon({
+            className: 'geofence-draft-vertex',
+            html: `<div style="width:18px;height:18px;border-radius:999px;background:${geofenceDraft.color};border:2.5px solid #0B081B;color:#0B081B;font-size:9px;font-weight:900;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,0.6);">${idx + 1}</div>`,
+            iconSize: [18, 18],
+            iconAnchor: [9, 9],
+          });
+          L.marker([pt.lat, pt.lng], { icon: vertexIcon, interactive: false }).addTo(group);
+        });
+      } else if (geofenceDraft.shape === 'circle' && geofenceDraft.center) {
+        L.circle([geofenceDraft.center.lat, geofenceDraft.center.lng], {
+          radius: geofenceDraft.radiusMeters,
+          color: geofenceDraft.color,
+          weight: 3,
+          dashArray: '6, 6',
+          fillColor: geofenceDraft.color,
+          fillOpacity: 0.25,
+        }).addTo(group);
+      }
+    }
+  }, [
+    customGeofences,
+    geofenceDraft,
+    czMapReadyTick,
+    lodState.showCustomGeofenceShapes,
+    lodState.showCustomGeofenceLabels,
+  ]);
+
+  // Monitor Real-Time Friend Locations Against Custom Geofences & Dispatch Push Notifications on Enter/Leave
+  useEffect(() => {
+    if (customGeofences.length === 0) return;
+
+    userLocations.forEach((friend) => {
+      if (!friend || friend.userId === user?.id) return;
+      if (!Number.isFinite(friend.latitude) || !Number.isFinite(friend.longitude)) return;
+      if (friend.latitude === 0 && friend.longitude === 0) return;
+
+      customGeofences.forEach((zone) => {
+        if (!zone.enabled) return;
+        if (
+          zone.watchedUserIds.length > 0 &&
+          !zone.watchedUserIds.includes(friend.userId)
+        ) {
+          return;
+        }
+
+        const key = `${zone.id}::${friend.userId}`;
+        const isNowInside = isLocationInsideGeofence(
+          friend.latitude,
+          friend.longitude,
+          zone
+        );
+        const wasInside = friendZonePresenceRef.current.get(key);
+
+        // Initialize baseline on first observation without false-positive firing,
+        // then fire push notifications on every subsequent enter or leave transition
+        if (wasInside === undefined) {
+          friendZonePresenceRef.current.set(key, isNowInside);
+          return;
+        }
+
+        if (!wasInside && isNowInside) {
+          friendZonePresenceRef.current.set(key, true);
+          if (zone.notifyOnEnter) {
+            recordGeofencePushEvent(
+              zone,
+              friend.userId,
+              friend.fullName || friend.username || 'Friend',
+              'entered',
+              friend.latitude,
+              friend.longitude
+            );
+          }
+        } else if (wasInside && !isNowInside) {
+          friendZonePresenceRef.current.set(key, false);
+          if (zone.notifyOnExit) {
+            recordGeofencePushEvent(
+              zone,
+              friend.userId,
+              friend.fullName || friend.username || 'Friend',
+              'left',
+              friend.latitude,
+              friend.longitude
+            );
+          }
+        }
+      });
+    });
+  }, [userLocations, customGeofences, user?.id]);
 
   // Render active emergency SOS alerts with coordinates and accuracy circles on the map
   useEffect(() => {
@@ -254,23 +1138,57 @@ export const LiveMap: React.FC<LiveMapProps> = ({
 
   const toast = useToast();
   type MapLayerMode = 'terrain' | 'satellite' | 'standard' | 'traffic';
+  type HdrPresetMode = 'ultra' | 'vivid' | 'cyber';
   const [mapMode, setMapMode] = useState<MapLayerMode>(() => {
     const saved = localStorage.getItem('beacon_map_style');
     if (saved && ['terrain', 'satellite', 'standard', 'traffic'].includes(saved)) {
       return saved as MapLayerMode;
     }
-    return 'terrain';
+    return 'standard';
   });
+  const [tileFallbackNotice, setTileFallbackNotice] = useState<string | null>(null);
   const [isHdrEnabled, setIsHdrEnabled] = useState<boolean>(() => {
     const saved = localStorage.getItem('beacon_map_hdr');
     return saved !== '0';
   });
-  const [showLayerQuickToggle, setShowLayerQuickToggle] = useState<boolean>(true);
+  const isHdrEnabledRef = useRef<boolean>(isHdrEnabled);
+  isHdrEnabledRef.current = isHdrEnabled;
+  const [hdrPreset, setHdrPreset] = useState<HdrPresetMode>(() => {
+    const saved = localStorage.getItem('beacon_map_hdr_preset');
+    if (saved && ['ultra', 'vivid', 'cyber'].includes(saved)) {
+      return saved as HdrPresetMode;
+    }
+    return 'ultra';
+  });
+  const [is3dMode, setIs3dMode] = useState<boolean>(() => {
+    return localStorage.getItem('beacon_map_3d') === '1';
+  });
+  const is3dModeRef = useRef<boolean>(is3dMode);
+  is3dModeRef.current = is3dMode;
   const [selectedUser, setSelectedUser] = useState<UserLocation | null>(null);
   const [hasCenteredOnce, setHasCenteredOnce] = useState(false);
   const hasCenteredOnRealGpsRef = useRef(false);
   const bestCenteredAccuracyRef = useRef<number>(Infinity);
   const pendingCenterOnNextFixRef = useRef(false);
+
+  // Persistent Auto-Follow Mode State & Movement Threshold (Meters)
+  const [isAutoFollowEnabled, setIsAutoFollowEnabled] = useState<boolean>(() => {
+    const saved = localStorage.getItem('beacon_map_auto_follow');
+    return saved !== '0';
+  });
+  const isAutoFollowEnabledRef = useRef<boolean>(isAutoFollowEnabled);
+  isAutoFollowEnabledRef.current = isAutoFollowEnabled;
+
+  const [autoFollowThresholdMeters, setAutoFollowThresholdMeters] = useState<number>(() => {
+    const saved = Number(localStorage.getItem('beacon_map_auto_follow_threshold_m'));
+    if (Number.isFinite(saved) && [5, 10, 25, 50].includes(saved)) {
+      return saved;
+    }
+    return 10;
+  });
+  const autoFollowThresholdMetersRef = useRef<number>(autoFollowThresholdMeters);
+  autoFollowThresholdMetersRef.current = autoFollowThresholdMeters;
+  const lastAutoFollowedCoordsRef = useRef<{ lat: number; lng: number } | null>(null);
 
   // Multi-user Breadcrumb Trail State
   const [activeTrails, setActiveTrails] = useState<Record<string, UserPathTrail>>({});
@@ -621,7 +1539,6 @@ export const LiveMap: React.FC<LiveMapProps> = ({
   const [bearing, setBearing] = useState<number>(0);
   const bearingRef = useRef<number>(0);
   const [isGesturing, setIsGesturing] = useState<boolean>(false);
-  const [currentZoom, setCurrentZoom] = useState<number>(16);
 
   // User Direction Cursor & Device Compass Heading State
   const [userHeading, setUserHeading] = useState<number | null>(null);
@@ -630,14 +1547,16 @@ export const LiveMap: React.FC<LiveMapProps> = ({
   const isHeadingUpModeRef = useRef<boolean>(false);
   isHeadingUpModeRef.current = isHeadingUpMode;
 
-  // Real-time device orientation & compass sensor listener (throttled & paused when tab inactive)
+  // Real-time device orientation & compass sensor listener (zero React re-renders — updates DOM cone directly via rAF)
   useEffect(() => {
     if (!isActive) return;
 
     let lastTime = 0;
+    let rafId: number | null = null;
     const handleOrientation = (e: any) => {
       const now = performance.now();
-      if (now - lastTime < 160) return; // Throttle to max ~6fps for sensor updates
+      const minOrientationIntervalMs = isLiteModeRef.current ? 1500 : 220;
+      if (now - lastTime < minOrientationIntervalMs) return;
 
       let rawHeading: number | null = null;
       if (e.webkitCompassHeading !== undefined) {
@@ -648,16 +1567,32 @@ export const LiveMap: React.FC<LiveMapProps> = ({
 
       if (rawHeading !== null && !isNaN(rawHeading)) {
         const heading = Math.round(rawHeading);
-        if (userHeadingRef.current === null || Math.abs(userHeadingRef.current - heading) >= 3.5) {
+        const minDegreeDelta = isLiteModeRef.current ? 15 : 5;
+        if (userHeadingRef.current === null || Math.abs(userHeadingRef.current - heading) >= minDegreeDelta) {
           lastTime = now;
           userHeadingRef.current = heading;
-          setUserHeading(heading);
 
-          // If heading-up mode is engaged, smoothly sync map bearing with physical orientation
-          if (isHeadingUpModeRef.current) {
-            bearingRef.current = heading;
-            setBearing(heading);
-          }
+          if (rafId !== null) cancelAnimationFrame(rafId);
+          rafId = requestAnimationFrame(() => {
+            rafId = null;
+            const el = myMarkerRef.current?.getElement();
+            if (el) {
+              const visualAngle = ((heading - bearingRef.current) % 360 + 360) % 360;
+              const cone = el.querySelector('.beacon-self-heading-cone') as HTMLElement | null;
+              if (cone) {
+                cone.style.transform = `rotate(${visualAngle}deg)`;
+              }
+              const headingText = el.querySelector('.beacon-self-heading-text') as HTMLElement | null;
+              if (headingText) {
+                headingText.textContent = `· ${heading}°`;
+              }
+            }
+
+            if (isHeadingUpModeRef.current && Math.abs(bearingRef.current - heading) >= 8) {
+              bearingRef.current = heading;
+              setBearing(heading);
+            }
+          });
         }
       }
     };
@@ -666,6 +1601,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
     window.addEventListener('deviceorientation', handleOrientation, { passive: true });
 
     return () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
       window.removeEventListener('deviceorientationabsolute', handleOrientation);
       window.removeEventListener('deviceorientation', handleOrientation);
     };
@@ -716,15 +1652,68 @@ export const LiveMap: React.FC<LiveMapProps> = ({
     }
   };
 
+  const toggleAutoFollowMode = () => {
+    const next = !isAutoFollowEnabled;
+    setIsAutoFollowEnabled(next);
+    isAutoFollowEnabledRef.current = next;
+    localStorage.setItem('beacon_map_auto_follow', next ? '1' : '0');
+
+    if (next) {
+      if (myLocation && Number.isFinite(myLocation.latitude) && Number.isFinite(myLocation.longitude) && mapInstanceRef.current) {
+        lastAutoFollowedCoordsRef.current = {
+          lat: myLocation.latitude,
+          lng: myLocation.longitude,
+        };
+        const targetZoom = Math.max(mapInstanceRef.current.getZoom(), 17);
+        if (isLiteModeRef.current) {
+          mapInstanceRef.current.setView([myLocation.latitude, myLocation.longitude], targetZoom, { animate: false });
+        } else {
+          mapInstanceRef.current.flyTo([myLocation.latitude, myLocation.longitude], targetZoom, {
+            animate: true,
+            duration: 0.65,
+          });
+        }
+      }
+      toast.success(`Auto-Follow enabled (re-centers after ≥${autoFollowThresholdMeters}m movement)`);
+    } else {
+      toast.info('Auto-Follow paused (free map pan)');
+    }
+  };
+
+  const updateAutoFollowThreshold = (meters: number) => {
+    setAutoFollowThresholdMeters(meters);
+    autoFollowThresholdMetersRef.current = meters;
+    localStorage.setItem('beacon_map_auto_follow_threshold_m', String(meters));
+    if (!isAutoFollowEnabled) {
+      setIsAutoFollowEnabled(true);
+      isAutoFollowEnabledRef.current = true;
+      localStorage.setItem('beacon_map_auto_follow', '1');
+    }
+    toast.info(`Auto-Follow movement threshold set to ${meters}m`);
+  };
+
   const zoomIn = () => {
     if (mapInstanceRef.current) {
-      mapInstanceRef.current.zoomIn(0.5);
+      const nextZ = Math.min(22, Math.round(mapInstanceRef.current.getZoom()) + 1);
+      setCurrentZoom(nextZ);
+      mapInstanceRef.current.setZoom(nextZ, { animate: !isLiteModeRef.current });
     }
   };
 
   const zoomOut = () => {
     if (mapInstanceRef.current) {
-      mapInstanceRef.current.zoomOut(0.5);
+      const nextZ = Math.max(2, Math.round(mapInstanceRef.current.getZoom()) - 1);
+      setCurrentZoom(nextZ);
+      mapInstanceRef.current.setZoom(nextZ, { animate: !isLiteModeRef.current });
+    }
+  };
+
+  const resetOptimalZoom = () => {
+    if (mapInstanceRef.current) {
+      const targetZ = 17;
+      setCurrentZoom(targetZ);
+      mapInstanceRef.current.setZoom(targetZ, { animate: !isLiteModeRef.current });
+      toast.info('Reset to optimal 17x HD street zoom');
     }
   };
 
@@ -964,10 +1953,41 @@ export const LiveMap: React.FC<LiveMapProps> = ({
   }, [roomOnlyMode, effectiveRoom, isUniversalActiveRoom, user?.id]);
 
   // Filtered peer locations: shows all peers on Home Map, or only room members in Room Map
-  const displayedUserLocations = React.useMemo(() => {
+  const rawDisplayedUserLocations = React.useMemo(() => {
     if (!roomOnlyMode || !roomMemberIdsSet) return userLocations;
     return userLocations.filter((loc) => roomMemberIdsSet.has(loc.userId));
   }, [roomOnlyMode, roomMemberIdsSet, userLocations]);
+
+  // In Low Power Mode, lower the map refresh rate to 0.2 Hz (every 5,000ms) for better battery longevity
+  const [displayedUserLocations, setDisplayedUserLocations] = useState<UserLocation[]>(
+    rawDisplayedUserLocations
+  );
+  const lastMapPeersRefreshRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (!isLiteMode) {
+      lastMapPeersRefreshRef.current = Date.now();
+      setDisplayedUserLocations(rawDisplayedUserLocations);
+      return;
+    }
+
+    const now = Date.now();
+    const elapsed = now - lastMapPeersRefreshRef.current;
+    const lowPowerMapRefreshIntervalMs = 5000;
+
+    if (lastMapPeersRefreshRef.current === 0 || elapsed >= lowPowerMapRefreshIntervalMs) {
+      lastMapPeersRefreshRef.current = now;
+      setDisplayedUserLocations(rawDisplayedUserLocations);
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      lastMapPeersRefreshRef.current = Date.now();
+      setDisplayedUserLocations(rawDisplayedUserLocations);
+    }, lowPowerMapRefreshIntervalMs - elapsed);
+
+    return () => clearTimeout(timer);
+  }, [rawDisplayedUserLocations, isLiteMode]);
 
   const roomUsersList = React.useMemo(() => {
     const list: Array<{
@@ -1094,89 +2114,1514 @@ export const LiveMap: React.FC<LiveMapProps> = ({
   };
 
   const GOOGLE_MAPS_KEY = (import.meta as any).env?.VITE_GOOGLE_MAPS_API_KEY || 'AIzaSyAOVYRIgupAurZup5y1PRh8Ismb1A3lLao';
+  const [isLiveTrafficUnavailable, setIsLiveTrafficUnavailable] = useState<boolean>(false);
 
-  const createGoogleTileLayer = (mode: 'standard' | 'satellite' | 'terrain' | 'traffic') => {
-    const lite = isLiteModeRef.current;
-    // scale=2 requests 512x512 Ultra-HD Retina tiles from Google Maps.
-    // Keep detectRetina: false so Leaflet renders each 512px tile inside a crisp 256px CSS slot
-    // without shrinking street names and labels to half size.
-    const scaleParam = lite ? '1' : '2';
-    const commonOpts: L.TileLayerOptions = {
-      subdomains: ['0', '1', '2', '3'],
-      tileSize: 256,
-      zoomOffset: 0,
-      detectRetina: false,
-      keepBuffer: lite ? 1 : 3,
-      updateWhenIdle: lite,
-      updateWhenZooming: !lite,
-      crossOrigin: true,
+  type TileProviderPreference = 'auto' | 'osm' | 'esri' | 'opentopo';
+  const [providerPref, setProviderPref] = useState<TileProviderPreference>(() => {
+    const saved = localStorage.getItem('beacon_tile_provider_pref');
+    if (saved === 'osm' || saved === 'esri' || saved === 'opentopo' || saved === 'auto') {
+      return saved;
+    }
+    return 'auto';
+  });
+  const mapModeRef = useRef<MapLayerMode>(mapMode);
+  mapModeRef.current = mapMode;
+  const providerPrefRef = useRef<TileProviderPreference>(providerPref);
+  providerPrefRef.current = providerPref;
+  const [isControlledTestMode, setIsControlledTestMode] = useState<boolean>(false);
+  const isControlledTestModeRef = useRef<boolean>(false);
+  isControlledTestModeRef.current = isControlledTestMode;
+  const [openGeofenceManagerSignal, setOpenGeofenceManagerSignal] = useState<number>(0);
+  const lastCenteredJumpRef = useRef<{ key: string; ts: number }>({ key: '', ts: 0 });
+
+  interface TileDiagnosticStats {
+    mode: MapLayerMode;
+    providerName: string;
+    templateUrl: string;
+    sampleResolvedUrl: string;
+    requestedCount: number;
+    loadedCount: number;
+    failedCount: number;
+    fallbackRecoveredCount: number;
+    domVisibleTiles: number;
+    containerSize: string;
+    lastHttpStatus: string;
+    lastError: string | null;
+    isOnline: boolean;
+    platform: string;
+    lastUpdatedTs: number;
+  }
+
+  interface ProviderProbeRow {
+    mode: string;
+    provider: string;
+    url: string;
+    httpStatus: string;
+    bytes: number;
+    latencyMs: number;
+    result: 'PASS' | 'FAIL' | 'TESTING';
+    note?: string;
+  }
+
+  const detectRuntimePlatform = (): string => {
+    if (typeof window === 'undefined') return 'Server';
+    const w = window as any;
+    const ua = navigator.userAgent || '';
+    const isCapAndroid =
+      Boolean(w.Capacitor?.isNativePlatform?.() && w.Capacitor?.getPlatform?.() === 'android') ||
+      /; wv\)/.test(ua) ||
+      (ua.includes('Android') && window.location.hostname === 'localhost');
+    if (isCapAndroid) return 'Android APK (Capacitor WebView)';
+    if (/Android/i.test(ua)) return 'Android Mobile Web';
+    if (/iPhone|iPad|iPod/i.test(ua)) return 'iOS Web';
+    return 'Web Browser (Desktop/Mobile)';
+  };
+
+  const [showMapDiagnostics, setShowMapDiagnostics] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    const params = new URLSearchParams(window.location.search);
+    return params.get('mapdiag') === '1' || params.get('debug') === '1';
+  });
+
+  const [diagStats, setDiagStats] = useState<TileDiagnosticStats>(() => ({
+    mode: mapMode,
+    providerName: 'Google Maps HD',
+    templateUrl: 'https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}&hl=en',
+    sampleResolvedUrl: '',
+    requestedCount: 0,
+    loadedCount: 0,
+    failedCount: 0,
+    fallbackRecoveredCount: 0,
+    domVisibleTiles: 0,
+    containerSize: 'Measuring...',
+    lastHttpStatus: 'Pending first tile...',
+    lastError: null,
+    isOnline: typeof navigator !== 'undefined' ? navigator.onLine : true,
+    platform: detectRuntimePlatform(),
+    lastUpdatedTs: Date.now(),
+  }));
+
+  const [probeRows, setProbeRows] = useState<ProviderProbeRow[]>([]);
+  const [isProbingProviders, setIsProbingProviders] = useState<boolean>(false);
+  const layerSwitchGenRef = useRef<number>(0);
+  const isSyncingControlRef = useRef<boolean>(false);
+  const controlProxyLayersRef = useRef<Record<MapLayerMode, L.LayerGroup> | null>(null);
+
+  interface TileRequestConsoleEntry {
+    timestamp: string;
+    mode: string;
+    stage: string;
+    providerName: string;
+    providerEndpoint: string;
+    tileUrl: string;
+    coords?: { z?: number; x?: number; y?: number };
+    httpStatus?: number;
+  }
+
+  const [tileConsoleLogs, setTileConsoleLogs] = useState<TileRequestConsoleEntry[]>([]);
+  const [networkErrorAlerts, setNetworkErrorAlerts] = useState<NetworkHttpErrorEventDetail[]>([]);
+  const inspectedTileUrlsRef = useRef<Set<string>>(new Set());
+  const providerHttpErrorCountRef = useRef<number>(0);
+
+  /**
+   * Diagnostic utility function within the Map component that logs every tile request URL,
+   * including the full tile provider endpoint and resolved tile URL, to the browser console.
+   */
+  const logTileRequestDiagnostic = (params: {
+    tileUrl: string;
+    providerEndpoint: string;
+    providerName: string;
+    mode?: string;
+    stage?: string;
+    coords?: { z?: number; x?: number; y?: number };
+    httpStatus?: number;
+  }) => {
+    const {
+      tileUrl,
+      providerEndpoint,
+      providerName,
+      mode = mapModeRef.current,
+      stage = 'tileloadstart',
+      coords,
+      httpStatus,
+    } = params;
+
+    if (!tileUrl || tileUrl.startsWith('data:')) return;
+
+    let originEndpoint = providerEndpoint || tileUrl;
+    try {
+      const parsed = new URL(tileUrl);
+      originEndpoint = `${parsed.origin}${parsed.pathname} (Template: ${providerEndpoint})`;
+    } catch {
+      // keep raw template
+    }
+
+    const coordLabel =
+      coords && coords.z !== undefined && coords.x !== undefined && coords.y !== undefined
+        ? `${coords.z}/${coords.x}/${coords.y}`
+        : 'n/a';
+
+    const entry: TileRequestConsoleEntry = {
+      timestamp: new Date().toISOString(),
+      mode,
+      stage,
+      providerName,
+      providerEndpoint: originEndpoint,
+      tileUrl,
+      coords,
+      httpStatus,
     };
 
-    if (mode === 'terrain') {
-      return L.tileLayer(
-        `https://mt{s}.google.com/vt/lyrs=p&x={x}&y={y}&z={z}&scale=${scaleParam}&hl=en`,
-        {
-          ...commonOpts,
-          maxNativeZoom: 20,
-          maxZoom: 22,
-          attribution: '&copy; Google Maps Terrain Topo HDR',
+    console.info(
+      `[Beacon Map Tile Diagnostic] [${stage.toUpperCase()}] Mode=${mode} | Provider="${providerName}" | Coords=${coordLabel} | Provider Endpoint=${providerEndpoint} | Full Tile Request URL=${tileUrl}`,
+      entry
+    );
+
+    if (typeof window !== 'undefined') {
+      const w = window as any;
+      if (!Array.isArray(w.__beaconMapTileRequestLogs)) {
+        w.__beaconMapTileRequestLogs = [];
+      }
+      w.__beaconMapTileRequestLogs.push(entry);
+      if (w.__beaconMapTileRequestLogs.length > 200) {
+        w.__beaconMapTileRequestLogs.shift();
+      }
+      w.__beaconLogTileRequestDiagnostic = logTileRequestDiagnostic;
+    }
+
+    setTileConsoleLogs((prev) => [entry, ...prev.slice(0, 29)]);
+  };
+
+  /**
+   * Probes a failed <img> tile URL asynchronously to determine the exact HTTP status code (403, 404, 429, etc.)
+   * and emits it to the global network status error listener so a toast notification is shown.
+   */
+  const inspectFailedTileHttpStatus = async (
+    failedTileUrl: string,
+    providerName: string,
+    providerEndpoint: string,
+    coords?: { z?: number; x?: number; y?: number }
+  ) => {
+    if (!failedTileUrl || failedTileUrl.startsWith('data:')) return;
+    if (inspectedTileUrlsRef.current.has(failedTileUrl)) return;
+    inspectedTileUrlsRef.current.add(failedTileUrl);
+    if (inspectedTileUrlsRef.current.size > 150) {
+      inspectedTileUrlsRef.current.clear();
+    }
+
+    try {
+      const resp = await fetch(failedTileUrl, {
+        method: 'GET',
+        mode: 'cors',
+        cache: 'no-store',
+        referrerPolicy: 'no-referrer-when-downgrade',
+      });
+
+      logTileRequestDiagnostic({
+        tileUrl: failedTileUrl,
+        providerEndpoint,
+        providerName,
+        mode: mapModeRef.current,
+        stage: `tile-http-status-${resp.status}`,
+        coords,
+        httpStatus: resp.status,
+      });
+
+      if (resp.status === 403 || resp.status === 404 || resp.status === 429) {
+        emitNetworkHttpStatusError(
+          resp.status,
+          failedTileUrl,
+          resp.statusText,
+          `Map Tile (${providerName})`
+        );
+        setDiagStats((prev) => ({
+          ...prev,
+          lastHttpStatus: `HTTP ${resp.status} ${resp.statusText || ''} (${providerName})`.trim(),
+          lastError: `HTTP ${resp.status} on tile (${coords?.z ?? '?'}/${coords?.x ?? '?'}/${coords?.y ?? '?'}): ${failedTileUrl}`,
+          lastUpdatedTs: Date.now(),
+        }));
+
+        // Automatic provider failover when repeated 403 or 429 errors occur on the primary provider
+        if ((resp.status === 403 || resp.status === 429) && providerPrefRef.current === 'auto') {
+          providerHttpErrorCountRef.current += 1;
+          if (providerHttpErrorCountRef.current >= 2 && mapInstanceRef.current) {
+            providerHttpErrorCountRef.current = 0;
+            const fallbackPref: TileProviderPreference =
+              mapModeRef.current === 'satellite' ? 'esri' : 'osm';
+            setProviderPref(fallbackPref);
+            providerPrefRef.current = fallbackPref;
+            applyMapLayerToInstance(mapInstanceRef.current, mapModeRef.current, fallbackPref);
+            toast.info(
+              `Switched tile engine to verified ${
+                fallbackPref === 'esri' ? 'Esri ArcGIS' : 'OpenStreetMap'
+              } provider after HTTP ${resp.status}`
+            );
+          }
         }
-      );
-    } else if (mode === 'satellite') {
-      return L.tileLayer(
-        `https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}&scale=${scaleParam}&hl=en`,
-        {
-          ...commonOpts,
-          maxNativeZoom: 21,
-          maxZoom: 22,
-          attribution: '&copy; Google Maps Satellite HDR',
-        }
-      );
-    } else if (mode === 'traffic') {
-      return L.tileLayer(
-        `https://mt{s}.google.com/vt/lyrs=m,traffic&x={x}&y={y}&z={z}&scale=${scaleParam}&hl=en`,
-        {
-          ...commonOpts,
-          maxNativeZoom: 21,
-          maxZoom: 22,
-          attribution: '&copy; Google Maps Live Traffic HDR',
-        }
-      );
-    } else {
-      return L.tileLayer(
-        `https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}&scale=${scaleParam}&hl=en`,
-        {
-          ...commonOpts,
-          maxNativeZoom: 21,
-          maxZoom: 22,
-          attribution: '&copy; Google Maps Street HDR',
-        }
+      } else if (!resp.ok) {
+        setDiagStats((prev) => ({
+          ...prev,
+          lastHttpStatus: `HTTP ${resp.status} ${resp.statusText || 'Error'}`,
+          lastError: `HTTP ${resp.status} on tile: ${failedTileUrl}`,
+          lastUpdatedTs: Date.now(),
+        }));
+      }
+    } catch (err: any) {
+      console.warn(
+        `[Beacon Map Tile Diagnostic] Tile probe network/CORS failure for ${failedTileUrl} (Provider Endpoint: ${providerEndpoint}):`,
+        err?.message || err
       );
     }
   };
 
-  // Initialize Leaflet Map (no hard-coded location coordinates; world view until a valid fix arrives)
+  // Subscribe to global 403, 404, and 429 network status errors so Map Diagnostics HUD stays synced
+  useEffect(() => {
+    const unsubscribe = onNetworkHttpStatusError((detail) => {
+      setNetworkErrorAlerts((prev) => [detail, ...prev.slice(0, 19)]);
+      setDiagStats((prev) => ({
+        ...prev,
+        lastHttpStatus: `HTTP ${detail.status} ${detail.statusText} (${detail.providerHost})`,
+        lastError: `${detail.reason} — ${detail.url}`,
+        lastUpdatedTs: Date.now(),
+      }));
+    });
+    return () => {
+      unsubscribe();
+    };
+  }, []);
+
+  const handleForceRefreshTiles = () => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+    inspectedTileUrlsRef.current.clear();
+    providerHttpErrorCountRef.current = 0;
+    map.stop();
+    map.invalidateSize({ animate: false });
+    if (isControlledTestModeRef.current) {
+      applyControlledTestLayer(map);
+    } else {
+      applyMapLayerToInstance(map, mapModeRef.current, providerPrefRef.current);
+    }
+    toast.success('Map tile layer refreshed and re-anchored at current viewport');
+  };
+
+  const handleCopyDiagnosticReport = async () => {
+    const payload = {
+      generatedAt: new Date().toISOString(),
+      diagnostics: diagStats,
+      providerProbes: probeRows,
+      recentNetwork403_404_429Alerts: networkErrorAlerts.slice(0, 10),
+      recentTileConsoleRequests: tileConsoleLogs.slice(0, 15),
+    };
+    const text = JSON.stringify(payload, null, 2);
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success('Copied full Map & Tile Diagnostic Report JSON to clipboard');
+    } catch {
+      console.info('[Beacon Diagnostic Export]', payload);
+      toast.info('Logged full Map & Tile Diagnostic Report JSON to browser console');
+    }
+  };
+
+  // Track browser online/offline state in real time for diagnostics
+  useEffect(() => {
+    const updateOnline = () => {
+      setDiagStats((prev) => ({
+        ...prev,
+        isOnline: navigator.onLine,
+        lastUpdatedTs: Date.now(),
+      }));
+    };
+    window.addEventListener('online', updateOnline);
+    window.addEventListener('offline', updateOnline);
+    return () => {
+      window.removeEventListener('online', updateOnline);
+      window.removeEventListener('offline', updateOnline);
+    };
+  }, []);
+
+  const latLngToTileXY = (lat: number, lng: number, z: number): { x: number; y: number; z: number } => {
+    const clampedZ = Math.max(2, Math.min(19, Math.round(z)));
+    const latRad = (lat * Math.PI) / 180;
+    const n = Math.pow(2, clampedZ);
+    const x = Math.floor(((lng + 180) / 360) * n);
+    const y = Math.floor(((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2) * n);
+    return { x, y, z: clampedZ };
+  };
+
+  // Probe HTTP status of a specific tile URL at runtime using fetch + Image fallback
+  const probeSingleTileUrl = async (
+    modeLabel: string,
+    providerLabel: string,
+    url: string
+  ): Promise<ProviderProbeRow> => {
+    logTileRequestDiagnostic({
+      tileUrl: url,
+      providerEndpoint: url,
+      providerName: providerLabel,
+      mode: modeLabel,
+      stage: 'diagnostic-probe',
+    });
+    const t0 = performance.now();
+    try {
+      const resp = await fetch(url, {
+        method: 'GET',
+        mode: 'cors',
+        cache: 'no-store',
+        referrerPolicy: 'no-referrer-when-downgrade',
+      });
+      if (resp.status === 403 || resp.status === 404 || resp.status === 429) {
+        emitNetworkHttpStatusError(
+          resp.status,
+          url,
+          resp.statusText,
+          `Tile Probe (${providerLabel})`
+        );
+      }
+      const latencyMs = Math.round(performance.now() - t0);
+      const buf = await resp.arrayBuffer();
+      const bytes = buf.byteLength;
+      const ct = resp.headers.get('content-type') || 'image/*';
+      const isValidTile = resp.status === 200 && bytes > 500 && bytes !== 2049 && bytes !== 103;
+      return {
+        mode: modeLabel,
+        provider: providerLabel,
+        url,
+        httpStatus: `${resp.status} ${resp.statusText || 'OK'} (${ct})`,
+        bytes,
+        latencyMs,
+        result: isValidTile ? 'PASS' : 'FAIL',
+        note:
+          bytes === 2049
+            ? 'Blocked watermark placeholder tile (2049B)'
+            : bytes === 103
+            ? 'Blocked 1x1 blank tile (103B)'
+            : !isValidTile
+            ? `Invalid tile response (${bytes}B)`
+            : `Verified ${bytes.toLocaleString()} bytes`,
+      };
+    } catch (fetchErr: any) {
+      // If a tile server does not send CORS Access-Control-Allow-Origin headers for fetch(),
+      // verify actual <img> decoding (which browsers/WebViews permit cross-origin without CORS headers)
+      return await new Promise<ProviderProbeRow>((resolve) => {
+        const img = new Image();
+        img.referrerPolicy = 'no-referrer-when-downgrade';
+        img.onload = () => {
+          const latencyMs = Math.round(performance.now() - t0);
+          const validDims = img.naturalWidth >= 256 && img.naturalHeight >= 256;
+          resolve({
+            mode: modeLabel,
+            provider: providerLabel,
+            url,
+            httpStatus: validDims ? `200 OK (IMG ${img.naturalWidth}x${img.naturalHeight})` : `IMG ${img.naturalWidth}x${img.naturalHeight}`,
+            bytes: validDims ? img.naturalWidth * img.naturalHeight : 0,
+            latencyMs,
+            result: validDims ? 'PASS' : 'FAIL',
+            note: validDims ? `Loaded ${img.naturalWidth}x${img.naturalHeight} px tile` : 'Tiny/invalid image dimensions',
+          });
+        };
+        img.onerror = () => {
+          const latencyMs = Math.round(performance.now() - t0);
+          resolve({
+            mode: modeLabel,
+            provider: providerLabel,
+            url,
+            httpStatus: `ERR (${fetchErr?.message || 'Tile load error'})`,
+            bytes: 0,
+            latencyMs,
+            result: 'FAIL',
+            note: 'Failed both fetch() and <img> load',
+          });
+        };
+        img.src = url;
+      });
+    }
+  };
+
+  // Run independent live runtime verification across Street, Terrain, Satellite, and Traffic providers
+  const runAllProvidersDiagnostic = async () => {
+    setIsProbingProviders(true);
+    try {
+      const map = mapInstanceRef.current;
+      const center = map ? map.getCenter() : { lat: 28.6139, lng: 77.209 };
+      const zoom = map ? Math.min(16, Math.max(10, Math.round(map.getZoom()))) : 15;
+      const { x, y, z } = latLngToTileXY(center.lat, center.lng, zoom);
+      const terrainZ = Math.min(15, z);
+      const terrainXY = latLngToTileXY(center.lat, center.lng, terrainZ);
+
+      const tests: Array<{ mode: string; provider: string; url: string }> = [
+        {
+          mode: 'Street',
+          provider: 'Google Maps Street HD (lyrs=m)',
+          url: `https://mt1.google.com/vt/lyrs=m&x=${x}&y=${y}&z=${z}&scale=2&hl=en`,
+        },
+        {
+          mode: 'Street (OSM)',
+          provider: 'OpenStreetMap Standard',
+          url: `https://tile.openstreetmap.org/${z}/${x}/${y}.png`,
+        },
+        {
+          mode: 'Street (Backup)',
+          provider: 'Esri World Street Map',
+          url: `https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/${z}/${y}/${x}`,
+        },
+        {
+          mode: 'Terrain',
+          provider: 'Google Physical Terrain HD (lyrs=p)',
+          url: `https://mt1.google.com/vt/lyrs=p&x=${terrainXY.x}&y=${terrainXY.y}&z=${terrainXY.z}&scale=2&hl=en`,
+        },
+        {
+          mode: 'Terrain (Topo)',
+          provider: 'Esri World Topo Map (Contours)',
+          url: `https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/${z}/${y}/${x}`,
+        },
+        {
+          mode: 'Terrain (Backup)',
+          provider: 'OpenTopoMap Contours',
+          url: `https://a.tile.opentopomap.org/${z}/${x}/${y}.png`,
+        },
+        {
+          mode: 'Satellite',
+          provider: 'Google Hybrid Satellite HD (lyrs=y)',
+          url: `https://mt1.google.com/vt/lyrs=y&x=${x}&y=${y}&z=${z}&scale=2&hl=en`,
+        },
+        {
+          mode: 'Satellite (Backup)',
+          provider: 'Esri World Imagery',
+          url: `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`,
+        },
+        {
+          mode: 'Traffic',
+          provider: 'Google Live Traffic + Roads HD (lyrs=m,traffic)',
+          url: `https://mt1.google.com/vt/lyrs=m,traffic&x=${x}&y=${y}&z=${z}&scale=2&hl=en`,
+        },
+        {
+          mode: 'Traffic Overlay',
+          provider: 'Google Traffic Vectors (lyrs=h,traffic&style=15)',
+          url: `https://mt1.google.com/vt/lyrs=h,traffic&style=15&x=${x}&y=${y}&z=${z}&scale=2&hl=en`,
+        },
+      ];
+
+      const results = await Promise.all(
+        tests.map((t) => probeSingleTileUrl(t.mode, t.provider, t.url))
+      );
+      setProbeRows(results);
+
+      const currentModeResult = results.find(
+        (r) =>
+          (mapMode === 'standard' && r.mode === 'Street') ||
+          (mapMode === 'terrain' && r.mode === 'Terrain') ||
+          (mapMode === 'satellite' && r.mode === 'Satellite') ||
+          (mapMode === 'traffic' && r.mode === 'Traffic')
+      );
+      if (currentModeResult) {
+        setDiagStats((prev) => ({
+          ...prev,
+          sampleResolvedUrl: currentModeResult.url,
+          lastHttpStatus: currentModeResult.httpStatus,
+          lastUpdatedTs: Date.now(),
+        }));
+      }
+    } finally {
+      setIsProbingProviders(false);
+    }
+  };
+
+  // High-visibility light cartographic grid SVG data URL used ONLY if all 3 live providers fail (e.g., device completely offline),
+  // plus a transparent 1x1 GIF data URL for overlay layers so Android WebViews never show broken image icons.
+  // IMPORTANT: Never pass FALLBACK_ERROR_TILE_DATA_URL as Leaflet's `errorTileUrl` option because Leaflet's `_tileOnError`
+  // overwrites `tile.src` BEFORE firing `tileerror`, which would abort our multi-provider fallback chain.
+  const FALLBACK_ERROR_TILE_DATA_URL =
+    "data:image/svg+xml;utf8," +
+    encodeURIComponent(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">' +
+        '<rect width="256" height="256" fill="#e2e8f0"/>' +
+        '<path d="M0 64h256M0 128h256M0 192h256M64 0v256M128 0v256M192 0v256" stroke="#94a3b8" stroke-width="1" stroke-dasharray="4,4"/>' +
+        '<rect width="256" height="256" fill="none" stroke="#64748b" stroke-width="1" stroke-opacity="0.5"/>' +
+        '<text x="128" y="132" text-anchor="middle" fill="#475569" font-family="sans-serif" font-size="11" font-weight="600">Offline Map Grid</text>' +
+      '</svg>'
+    );
+
+  const TRANSPARENT_ERROR_TILE_DATA_URL =
+    'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+
+  // Inspect actual DOM tile elements in .leaflet-tile-pane and detect if GridLayer level.origin drifted after a long GPS jump
+  const syncTileLayersView = (map: L.Map) => {
+    const zoom = map.getZoom();
+    const activeBase = tileLayerRef.current;
+
+    // 1. Check if Leaflet's GridLayer _levels[tileZoom].origin drifted from map.getPixelOrigin()
+    // (Leaflet 1.9.4 reuses _levels[z] if .el.children.length > 0, which locks level.origin to the initial city after a 1,700km GPS jump)
+    if (activeBase && map.hasLayer(activeBase) && !isControlledTestModeRef.current) {
+      const anyLayer = activeBase as any;
+      try {
+        const tileZoom =
+          typeof anyLayer._clampZoom === 'function'
+            ? anyLayer._clampZoom(Math.round(zoom))
+            : Math.round(zoom);
+        const currentLevel = anyLayer._levels?.[tileZoom];
+        if (currentLevel?.origin) {
+          const expectedOrigin = map
+            .project(map.unproject(map.getPixelOrigin()), tileZoom)
+            .round();
+          const drift = currentLevel.origin.distanceTo(expectedOrigin);
+          if (drift > 8000) {
+            // Recreate the tile layer cleanly at the new coordinate origin so tiles render on-screen immediately
+            applyMapLayerToInstance(map, mapModeRef.current, providerPrefRef.current);
+            return;
+          }
+        }
+      } catch {
+        // ignore internal check error
+      }
+    }
+
+    // 2. Ensure all loaded <img> tiles have full visibility/opacity and count physically rendered DOM tiles
+    const mapEl = mapContainerRef.current;
+    if (!mapEl) return;
+    const rect = mapEl.getBoundingClientRect();
+    const containerSizeStr = `${Math.round(rect.width)}x${Math.round(rect.height)}px`;
+    const imgs = mapEl.querySelectorAll('img.leaflet-tile');
+    let domLoadedCount = 0;
+
+    imgs.forEach((el) => {
+      const img = el as HTMLImageElement;
+      if (img.complete && img.naturalWidth > 0 && !img.src.startsWith('data:image/gif')) {
+        img.classList.add('leaflet-tile-loaded');
+        img.style.visibility = 'visible';
+        img.style.opacity = '1';
+        const imgRect = img.getBoundingClientRect();
+        const intersectsViewport =
+          rect.width > 0 &&
+          rect.height > 0 &&
+          imgRect.right > rect.left &&
+          imgRect.left < rect.right &&
+          imgRect.bottom > rect.top &&
+          imgRect.top < rect.bottom;
+        if (intersectsViewport) {
+          domLoadedCount += 1;
+        }
+      }
+    });
+
+    setDiagStats((prev) => {
+      if (
+        prev.domVisibleTiles === domLoadedCount &&
+        prev.containerSize === containerSizeStr
+      ) {
+        return prev;
+      }
+      return {
+        ...prev,
+        domVisibleTiles: domLoadedCount,
+        containerSize: containerSizeStr,
+        lastUpdatedTs: Date.now(),
+      };
+    });
+  };
+
+  // Create a fresh, non-cached L.TileLayer with verified multi-provider fallback and live runtime telemetry
+  const createVerifiedTileLayer = (
+    mode: MapLayerMode,
+    pref: TileProviderPreference = providerPref
+  ): {
+    baseLayer: L.TileLayer;
+    overlayLayer: L.TileLayer | null;
+    providerName: string;
+    templateUrl: string;
+  } => {
+    const commonGoogleOpts: L.TileLayerOptions = {
+      subdomains: ['0', '1', '2', '3'],
+      tileSize: 256,
+      zoomOffset: 0,
+      detectRetina: false,
+      keepBuffer: 2,
+      updateWhenIdle: false,
+      updateWhenZooming: true,
+      crossOrigin: false,
+      errorTileUrl: '',
+      zIndex: 2,
+    };
+
+    const commonStandardOpts: L.TileLayerOptions = {
+      tileSize: 256,
+      zoomOffset: 0,
+      detectRetina: false,
+      keepBuffer: 2,
+      updateWhenIdle: false,
+      updateWhenZooming: true,
+      crossOrigin: false,
+      errorTileUrl: '',
+      zIndex: 2,
+    };
+
+    let baseLayer: L.TileLayer;
+    let overlayLayer: L.TileLayer | null = null;
+    let providerName = '';
+    let templateUrl = '';
+
+    if (mode === 'terrain') {
+      if (pref === 'esri') {
+        templateUrl = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}';
+        providerName = 'Esri World Topo Map (Contours & Relief)';
+        baseLayer = L.tileLayer(templateUrl, {
+          ...commonStandardOpts,
+          maxNativeZoom: 17,
+          maxZoom: 22,
+          attribution: '&copy; Esri World Topographic Map',
+        });
+      } else if (pref === 'opentopo' || pref === 'osm') {
+        templateUrl = 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png';
+        providerName = 'OpenTopoMap Contours';
+        baseLayer = L.tileLayer(templateUrl, {
+          ...commonStandardOpts,
+          subdomains: ['a', 'b', 'c'],
+          maxNativeZoom: 17,
+          maxZoom: 22,
+          attribution: '&copy; OpenTopoMap (CC-BY-SA) &amp; OpenStreetMap',
+        });
+      } else {
+        templateUrl = 'https://mt{s}.google.com/vt/lyrs=p&x={x}&y={y}&z={z}&hl=en';
+        providerName = 'Google Physical Terrain (lyrs=p)';
+        baseLayer = L.tileLayer(templateUrl, {
+          ...commonGoogleOpts,
+          maxNativeZoom: 16,
+          maxZoom: 22,
+          attribution: '&copy; Google Maps Terrain &amp; Esri Topo',
+        });
+      }
+    } else if (mode === 'satellite') {
+      if (pref === 'esri' || pref === 'osm') {
+        templateUrl = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+        providerName = 'Esri World Imagery Satellite';
+        baseLayer = L.tileLayer(templateUrl, {
+          ...commonStandardOpts,
+          maxNativeZoom: 18,
+          maxZoom: 22,
+          attribution: '&copy; Esri World Imagery',
+        });
+      } else {
+        templateUrl = 'https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}&hl=en';
+        providerName = 'Google Hybrid Satellite (lyrs=y)';
+        baseLayer = L.tileLayer(templateUrl, {
+          ...commonGoogleOpts,
+          maxNativeZoom: 20,
+          maxZoom: 22,
+          attribution: '&copy; Google Maps Satellite',
+        });
+      }
+    } else if (mode === 'traffic') {
+      const tsMinute = Math.floor(Date.now() / 60000);
+      if (pref === 'esri') {
+        templateUrl = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}';
+        providerName = 'Esri Street + Google Live Traffic Overlay';
+        baseLayer = L.tileLayer(templateUrl, {
+          ...commonStandardOpts,
+          maxNativeZoom: 17,
+          maxZoom: 22,
+          attribution: '&copy; Esri &amp; Google Live Traffic',
+        });
+        overlayLayer = L.tileLayer(
+          `https://mt{s}.google.com/vt/lyrs=h,traffic&style=15&x={x}&y={y}&z={z}&hl=en&ts=${tsMinute}`,
+          {
+            ...commonGoogleOpts,
+            maxNativeZoom: 20,
+            maxZoom: 22,
+            opacity: 0.95,
+            zIndex: 3,
+          }
+        );
+      } else if (pref === 'osm') {
+        templateUrl = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+        providerName = 'OpenStreetMap + Google Live Traffic Overlay';
+        baseLayer = L.tileLayer(templateUrl, {
+          ...commonStandardOpts,
+          maxNativeZoom: 19,
+          maxZoom: 22,
+          attribution: '&copy; OpenStreetMap &amp; Google Live Traffic',
+        });
+        overlayLayer = L.tileLayer(
+          `https://mt{s}.google.com/vt/lyrs=h,traffic&style=15&x={x}&y={y}&z={z}&hl=en&ts=${tsMinute}`,
+          {
+            ...commonGoogleOpts,
+            maxNativeZoom: 20,
+            maxZoom: 22,
+            opacity: 0.95,
+            zIndex: 3,
+          }
+        );
+      } else {
+        templateUrl = `https://mt{s}.google.com/vt/lyrs=m,traffic&x={x}&y={y}&z={z}&hl=en&ts=${tsMinute}`;
+        providerName = 'Google Maps Live Traffic (lyrs=m,traffic)';
+        baseLayer = L.tileLayer(templateUrl, {
+          ...commonGoogleOpts,
+          maxNativeZoom: 20,
+          maxZoom: 22,
+          attribution: '&copy; Google Maps Live Traffic',
+        });
+      }
+    } else {
+      // Standard Street Mode
+      if (pref === 'osm') {
+        templateUrl = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+        providerName = 'OpenStreetMap Standard Street';
+        baseLayer = L.tileLayer(templateUrl, {
+          ...commonStandardOpts,
+          maxNativeZoom: 19,
+          maxZoom: 22,
+          attribution: '&copy; OpenStreetMap contributors',
+        });
+      } else if (pref === 'esri') {
+        templateUrl = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}';
+        providerName = 'Esri World Street Map';
+        baseLayer = L.tileLayer(templateUrl, {
+          ...commonStandardOpts,
+          maxNativeZoom: 17,
+          maxZoom: 22,
+          attribution: '&copy; Esri World Street Map',
+        });
+      } else {
+        templateUrl = 'https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}&hl=en';
+        providerName = 'Google Maps Standard Street (lyrs=m)';
+        baseLayer = L.tileLayer(templateUrl, {
+          ...commonGoogleOpts,
+          maxNativeZoom: 20,
+          maxZoom: 22,
+          attribution: '&copy; Google Maps Street &amp; OpenStreetMap',
+        });
+      }
+    }
+
+    // Attach real-time diagnostic telemetry and verified multi-provider fallback
+    baseLayer.on('tileloadstart', (evt: any) => {
+      const coords = evt?.coords;
+      const rawTileSrc = evt?.tile?.src || '';
+      const resolvedUrl =
+        rawTileSrc && !rawTileSrc.startsWith('data:')
+          ? rawTileSrc
+          : coords && typeof (baseLayer as any).getTileUrl === 'function'
+          ? (baseLayer as any).getTileUrl(coords)
+          : templateUrl;
+
+      logTileRequestDiagnostic({
+        tileUrl: resolvedUrl,
+        providerEndpoint: templateUrl,
+        providerName,
+        mode,
+        stage: 'tileloadstart',
+        coords,
+      });
+
+      setDiagStats((prev) => ({
+        ...prev,
+        requestedCount: prev.requestedCount + 1,
+        sampleResolvedUrl:
+          resolvedUrl && !resolvedUrl.startsWith('data:') ? resolvedUrl : prev.sampleResolvedUrl,
+        lastUpdatedTs: Date.now(),
+      }));
+    });
+
+    baseLayer.on('tileload', (evt: any) => {
+      const tile = evt?.tile as HTMLImageElement | undefined;
+      if (tile) {
+        tile.classList.add('leaflet-tile-loaded');
+        tile.style.visibility = 'visible';
+        tile.style.opacity = '1';
+      }
+      const loadedSrc = tile?.src || '';
+      if (loadedSrc.startsWith('data:')) {
+        return;
+      }
+      const mapEl = mapContainerRef.current;
+      const domCount = mapEl
+        ? mapEl.querySelectorAll('img.leaflet-tile.leaflet-tile-loaded').length
+        : 0;
+      const rect = mapEl ? mapEl.getBoundingClientRect() : null;
+      setDiagStats((prev) => ({
+        ...prev,
+        loadedCount: prev.loadedCount + 1,
+        domVisibleTiles: Math.max(domCount, 1),
+        containerSize:
+          rect && rect.width > 0
+            ? `${Math.round(rect.width)}x${Math.round(rect.height)}px`
+            : prev.containerSize,
+        sampleResolvedUrl: loadedSrc || prev.sampleResolvedUrl,
+        lastHttpStatus: '200 OK (Tile Loaded)',
+        lastUpdatedTs: Date.now(),
+      }));
+    });
+
+    baseLayer.on('tileerror', (errEvt: any) => {
+      if (!(baseLayer as any)._map) return;
+      const tile = errEvt?.tile as HTMLImageElement | undefined;
+      const coords = errEvt?.coords;
+      const rawTileSrc = tile?.src || '';
+      const resolvedCoordUrl =
+        coords && typeof (baseLayer as any).getTileUrl === 'function'
+          ? (baseLayer as any).getTileUrl(coords)
+          : templateUrl;
+      const failedUrl =
+        rawTileSrc && !rawTileSrc.startsWith('data:') ? rawTileSrc : resolvedCoordUrl;
+
+      void inspectFailedTileHttpStatus(failedUrl, providerName, templateUrl, coords);
+
+      setDiagStats((prev) => ({
+        ...prev,
+        failedCount: prev.failedCount + 1,
+        lastHttpStatus: 'Tile Load Error (Recovering via Fallback)',
+        lastError: `Failed tile (${coords?.z ?? '?'}/${coords?.x ?? '?'}/${coords?.y ?? '?'}): ${failedUrl}`,
+        lastUpdatedTs: Date.now(),
+      }));
+
+      if (!tile || !coords) return;
+
+      tile.removeAttribute('crossorigin');
+
+      const markRecoveredOnLoad = (fallbackLabel: string) => {
+        tile.onload = () => {
+          tile.classList.add('leaflet-tile-loaded');
+          tile.style.visibility = 'visible';
+          tile.style.opacity = '1';
+          if (tile.src && !tile.src.startsWith('data:')) {
+            setDiagStats((prev) => ({
+              ...prev,
+              loadedCount: prev.loadedCount + 1,
+              fallbackRecoveredCount: prev.fallbackRecoveredCount + 1,
+              domVisibleTiles: prev.domVisibleTiles + 1,
+              sampleResolvedUrl: tile.src,
+              lastHttpStatus: `200 OK (Fallback: ${fallbackLabel})`,
+              lastUpdatedTs: Date.now(),
+            }));
+          }
+        };
+      };
+
+      const stage = tile.dataset.fallbackStage || '0';
+      if (stage === '0') {
+        tile.dataset.fallbackStage = '1';
+        if (mode === 'terrain') {
+          markRecoveredOnLoad('OpenTopoMap Contours');
+          const z = Math.min(17, coords.z);
+          const nextUrl = `https://a.tile.opentopomap.org/${z}/${coords.x}/${coords.y}.png`;
+          logTileRequestDiagnostic({
+            tileUrl: nextUrl,
+            providerEndpoint: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
+            providerName: 'OpenTopoMap Contours (Fallback Stage 1)',
+            mode,
+            stage: 'fallback-stage-1',
+            coords,
+          });
+          tile.src = nextUrl;
+          setTileFallbackNotice('Using OpenTopoMap fallback tiles');
+        } else if (mode === 'satellite') {
+          markRecoveredOnLoad('Esri World Imagery');
+          const z = Math.min(18, coords.z);
+          const nextUrl = `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${coords.y}/${coords.x}`;
+          logTileRequestDiagnostic({
+            tileUrl: nextUrl,
+            providerEndpoint:
+              'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+            providerName: 'Esri World Imagery (Fallback Stage 1)',
+            mode,
+            stage: 'fallback-stage-1',
+            coords,
+          });
+          tile.src = nextUrl;
+          setTileFallbackNotice('Using Esri World Imagery fallback tiles');
+        } else if (mode === 'traffic') {
+          markRecoveredOnLoad('Google Live Traffic Mirror');
+          const z = Math.min(19, coords.z);
+          const nextUrl = `https://mt0.google.com/vt/lyrs=m,traffic&x=${coords.x}&y=${coords.y}&z=${z}&hl=en`;
+          logTileRequestDiagnostic({
+            tileUrl: nextUrl,
+            providerEndpoint: 'https://mt0.google.com/vt/lyrs=m,traffic&x={x}&y={y}&z={z}&hl=en',
+            providerName: 'Google Live Traffic Mirror (Fallback Stage 1)',
+            mode,
+            stage: 'fallback-stage-1',
+            coords,
+          });
+          tile.src = nextUrl;
+        } else {
+          markRecoveredOnLoad('OpenStreetMap Standard');
+          const z = Math.min(19, coords.z);
+          const nextUrl = `https://tile.openstreetmap.org/${z}/${coords.x}/${coords.y}.png`;
+          logTileRequestDiagnostic({
+            tileUrl: nextUrl,
+            providerEndpoint: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+            providerName: 'OpenStreetMap Standard (Fallback Stage 1)',
+            mode,
+            stage: 'fallback-stage-1',
+            coords,
+          });
+          tile.src = nextUrl;
+          setTileFallbackNotice('Using OpenStreetMap fallback tiles');
+        }
+      } else if (stage === '1') {
+        tile.dataset.fallbackStage = '2';
+        if (mode === 'terrain') {
+          markRecoveredOnLoad('Esri World Topo Map');
+          const z = Math.min(17, coords.z);
+          const nextUrl = `https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/${z}/${coords.y}/${coords.x}`;
+          logTileRequestDiagnostic({
+            tileUrl: nextUrl,
+            providerEndpoint:
+              'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
+            providerName: 'Esri World Topo Map (Fallback Stage 2)',
+            mode,
+            stage: 'fallback-stage-2',
+            coords,
+          });
+          tile.src = nextUrl;
+        } else if (mode === 'satellite') {
+          markRecoveredOnLoad('Google Satellite Mirror');
+          const z = Math.min(19, coords.z);
+          const nextUrl = `https://mt0.google.com/vt/lyrs=y&x=${coords.x}&y=${coords.y}&z=${z}&hl=en`;
+          logTileRequestDiagnostic({
+            tileUrl: nextUrl,
+            providerEndpoint: 'https://mt0.google.com/vt/lyrs=y&x={x}&y={y}&z={z}&hl=en',
+            providerName: 'Google Satellite Mirror (Fallback Stage 2)',
+            mode,
+            stage: 'fallback-stage-2',
+            coords,
+          });
+          tile.src = nextUrl;
+        } else if (mode === 'traffic') {
+          setIsLiveTrafficUnavailable(true);
+          markRecoveredOnLoad('OpenStreetMap (Traffic Unavailable)');
+          const z = Math.min(19, coords.z);
+          const nextUrl = `https://tile.openstreetmap.org/${z}/${coords.x}/${coords.y}.png`;
+          logTileRequestDiagnostic({
+            tileUrl: nextUrl,
+            providerEndpoint: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+            providerName: 'OpenStreetMap (Traffic Unavailable Fallback Stage 2)',
+            mode,
+            stage: 'fallback-stage-2',
+            coords,
+          });
+          tile.src = nextUrl;
+          setTileFallbackNotice('Live traffic unavailable — showing standard street map');
+        } else {
+          markRecoveredOnLoad('Esri World Street Map');
+          const z = Math.min(17, coords.z);
+          const nextUrl = `https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/${z}/${coords.y}/${coords.x}`;
+          logTileRequestDiagnostic({
+            tileUrl: nextUrl,
+            providerEndpoint:
+              'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
+            providerName: 'Esri World Street Map (Fallback Stage 2)',
+            mode,
+            stage: 'fallback-stage-2',
+            coords,
+          });
+          tile.src = nextUrl;
+          setTileFallbackNotice('Using Esri World Street Map fallback tiles');
+        }
+      } else {
+        tile.dataset.fallbackStage = '3';
+        if (mode === 'traffic') {
+          setIsLiveTrafficUnavailable(true);
+        }
+        if (tile.src !== FALLBACK_ERROR_TILE_DATA_URL) {
+          tile.src = FALLBACK_ERROR_TILE_DATA_URL;
+        }
+        tile.classList.add('leaflet-tile-loaded');
+        tile.style.visibility = 'visible';
+        tile.style.opacity = '1';
+      }
+    });
+
+    if (overlayLayer) {
+      const overlayEndpoint =
+        'https://mt{s}.google.com/vt/lyrs=h,traffic&style=15&x={x}&y={y}&z={z}&hl=en';
+      overlayLayer.on('tileloadstart', (evt: any) => {
+        const coords = evt?.coords;
+        const rawSrc = evt?.tile?.src || '';
+        const resolvedOverlayUrl =
+          rawSrc && !rawSrc.startsWith('data:')
+            ? rawSrc
+            : coords && typeof (overlayLayer as any).getTileUrl === 'function'
+            ? (overlayLayer as any).getTileUrl(coords)
+            : overlayEndpoint;
+        logTileRequestDiagnostic({
+          tileUrl: resolvedOverlayUrl,
+          providerEndpoint: overlayEndpoint,
+          providerName: 'Google Live Traffic Vector Overlay',
+          mode,
+          stage: 'overlay-tileloadstart',
+          coords,
+        });
+      });
+      overlayLayer.on('tileload', (evt: any) => {
+        const tile = evt?.tile as HTMLImageElement | undefined;
+        if (tile) {
+          tile.classList.add('leaflet-tile-loaded');
+          tile.style.visibility = 'visible';
+          tile.style.opacity = '1';
+        }
+        setIsLiveTrafficUnavailable(false);
+      });
+      overlayLayer.on('tileerror', (errEvt: any) => {
+        const tile = errEvt?.tile as HTMLImageElement | undefined;
+        const coords = errEvt?.coords;
+        const failedOverlayUrl =
+          tile?.src && !tile.src.startsWith('data:')
+            ? tile.src
+            : coords && typeof (overlayLayer as any).getTileUrl === 'function'
+            ? (overlayLayer as any).getTileUrl(coords)
+            : overlayEndpoint;
+        void inspectFailedTileHttpStatus(
+          failedOverlayUrl,
+          'Google Live Traffic Vector Overlay',
+          overlayEndpoint,
+          coords
+        );
+        if (tile && tile.src !== TRANSPARENT_ERROR_TILE_DATA_URL) {
+          tile.src = TRANSPARENT_ERROR_TILE_DATA_URL;
+        }
+        if (mode === 'traffic') {
+          setIsLiveTrafficUnavailable(true);
+        }
+      });
+    }
+
+    return { baseLayer, overlayLayer, providerName, templateUrl };
+  };
+
+  // Single-authority function to apply map mode and provider on the active Leaflet map without recreating the map
+  const applyMapLayerToInstance = (
+    map: L.Map,
+    nextMode: MapLayerMode,
+    nextPref: TileProviderPreference = providerPrefRef.current
+  ) => {
+    ++layerSwitchGenRef.current;
+
+    // Remove all previous TileLayers cleanly before attaching the fresh TileLayer
+    // so Leaflet's GridLayer creates fresh _levels anchored at the current map.getPixelOrigin()
+    if (overlayTileLayerRef.current) {
+      if (map.hasLayer(overlayTileLayerRef.current)) {
+        map.removeLayer(overlayTileLayerRef.current);
+      }
+      overlayTileLayerRef.current = null;
+    }
+    if (tileLayerRef.current) {
+      if (map.hasLayer(tileLayerRef.current)) {
+        map.removeLayer(tileLayerRef.current);
+      }
+      tileLayerRef.current = null;
+    }
+    map.eachLayer((layer) => {
+      if (layer instanceof L.TileLayer) {
+        map.removeLayer(layer);
+      }
+    });
+
+    setIsLiveTrafficUnavailable(
+      nextMode === 'traffic' && typeof navigator !== 'undefined' && !navigator.onLine
+    );
+    const { baseLayer, overlayLayer, providerName, templateUrl } = createVerifiedTileLayer(
+      nextMode,
+      nextPref
+    );
+
+    const mapEl = mapContainerRef.current;
+    const rect = mapEl ? mapEl.getBoundingClientRect() : null;
+
+    setDiagStats({
+      mode: nextMode,
+      providerName,
+      templateUrl,
+      sampleResolvedUrl: '',
+      requestedCount: 0,
+      loadedCount: 0,
+      failedCount: 0,
+      fallbackRecoveredCount: 0,
+      domVisibleTiles: 0,
+      containerSize:
+        rect && rect.width > 0
+          ? `${Math.round(rect.width)}x${Math.round(rect.height)}px`
+          : 'Measuring...',
+      lastHttpStatus: 'Loading tiles...',
+      lastError: null,
+      isOnline: typeof navigator !== 'undefined' ? navigator.onLine : true,
+      platform: detectRuntimePlatform(),
+      lastUpdatedTs: Date.now(),
+    });
+
+    baseLayer.setZIndex(2);
+    baseLayer.addTo(map);
+    tileLayerRef.current = baseLayer;
+    activeLayerModeRef.current = `${nextMode}:${nextPref}`;
+
+    if (overlayLayer) {
+      overlayLayer.setZIndex(3);
+      overlayLayer.addTo(map);
+      overlayTileLayerRef.current = overlayLayer;
+    }
+
+    // Sync Leaflet L.control.layers radio selection using lightweight proxy LayerGroups
+    const proxies = controlProxyLayersRef.current;
+    if (proxies) {
+      isSyncingControlRef.current = true;
+      try {
+        (['standard', 'satellite', 'terrain', 'traffic'] as MapLayerMode[]).forEach((m) => {
+          const proxy = proxies[m];
+          if (!proxy) return;
+          if (m === nextMode && !map.hasLayer(proxy)) {
+            map.addLayer(proxy);
+          } else if (m !== nextMode && map.hasLayer(proxy)) {
+            map.removeLayer(proxy);
+          }
+        });
+      } finally {
+        isSyncingControlRef.current = false;
+      }
+    }
+
+    map.invalidateSize({ animate: false });
+    window.setTimeout(() => {
+      if (mapInstanceRef.current) {
+        syncTileLayersView(mapInstanceRef.current);
+      }
+    }, 120);
+  };
+
+  // Unified camera repositioning helper that prevents competing GPS effects and resets the tile grid on long-distance jumps (> 2.5 km)
+  const recenterMapCleanly = (
+    map: L.Map,
+    targetLat: number,
+    targetLng: number,
+    targetZoom: number,
+    options?: { animate?: boolean; forceLayerRefresh?: boolean }
+  ) => {
+    if (!Number.isFinite(targetLat) || !Number.isFinite(targetLng)) return;
+    const clampedZoom = Math.max(2, Math.min(20, Math.round(targetZoom)));
+    const jumpKey = `${targetLat.toFixed(4)}:${targetLng.toFixed(4)}:${clampedZoom}`;
+    const now = Date.now();
+    if (
+      !options?.forceLayerRefresh &&
+      lastCenteredJumpRef.current.key === jumpKey &&
+      now - lastCenteredJumpRef.current.ts < 600
+    ) {
+      return;
+    }
+    lastCenteredJumpRef.current = { key: jumpKey, ts: now };
+
+    const currentCenter = map.getCenter();
+    const distMeters = calculateDistanceMeters(
+      currentCenter.lat,
+      currentCenter.lng,
+      targetLat,
+      targetLng
+    );
+
+    const isLongJump = distMeters > 2500;
+    const shouldInstantSetView =
+      isLongJump ||
+      !isActiveRef.current ||
+      isLiteModeRef.current ||
+      options?.animate === false;
+
+    map.stop();
+    map.invalidateSize({ animate: false });
+
+    if (shouldInstantSetView) {
+      map.setView([targetLat, targetLng], clampedZoom, { animate: false });
+      setCurrentZoom(clampedZoom);
+      if (isLongJump || options?.forceLayerRefresh) {
+        if (isControlledTestModeRef.current) {
+          applyControlledTestLayer(map);
+        } else {
+          applyMapLayerToInstance(map, mapModeRef.current, providerPrefRef.current);
+        }
+      } else {
+        syncTileLayersView(map);
+      }
+    } else {
+      setCurrentZoom(clampedZoom);
+      map.flyTo([targetLat, targetLng], clampedZoom, {
+        animate: true,
+        duration: 0.65,
+      });
+    }
+  };
+
+  // Requirement #3: Controlled Test Mode — isolates the map from all custom UI, markers, and overlays
+  // using a single verified street tile provider with default Leaflet tile-layer settings at a valid zoom level
+  const applyControlledTestLayer = (map: L.Map) => {
+    map.eachLayer((layer) => {
+      if (layer instanceof L.TileLayer) {
+        map.removeLayer(layer);
+      }
+    });
+    const testTemplate = 'https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+    const testLayer = L.tileLayer(testTemplate, {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap contributors (Isolated Test Mode)',
+    });
+
+    setDiagStats((prev) => ({
+      ...prev,
+      mode: 'standard',
+      providerName: 'Isolated Test: OpenStreetMap Default',
+      templateUrl: testTemplate,
+      requestedCount: 0,
+      loadedCount: 0,
+      failedCount: 0,
+      domVisibleTiles: 0,
+      lastHttpStatus: 'Loading isolated test tiles...',
+      lastError: null,
+      lastUpdatedTs: Date.now(),
+    }));
+
+    testLayer.on('tileloadstart', (evt: any) => {
+      const coords = evt?.coords;
+      const src =
+        evt?.tile?.src ||
+        (coords && typeof (testLayer as any).getTileUrl === 'function'
+          ? (testLayer as any).getTileUrl(coords)
+          : testTemplate);
+      logTileRequestDiagnostic({
+        tileUrl: src,
+        providerEndpoint: testTemplate,
+        providerName: 'Isolated Test: OpenStreetMap Default',
+        mode: 'standard',
+        stage: 'isolated-test-tileloadstart',
+        coords,
+      });
+      setDiagStats((prev) => ({
+        ...prev,
+        requestedCount: prev.requestedCount + 1,
+        sampleResolvedUrl: src || prev.sampleResolvedUrl,
+        lastUpdatedTs: Date.now(),
+      }));
+    });
+    testLayer.on('tileload', (evt: any) => {
+      const tile = evt?.tile as HTMLImageElement | undefined;
+      if (tile) {
+        tile.classList.add('leaflet-tile-loaded');
+        tile.style.visibility = 'visible';
+        tile.style.opacity = '1';
+      }
+      setDiagStats((prev) => ({
+        ...prev,
+        loadedCount: prev.loadedCount + 1,
+        domVisibleTiles: prev.domVisibleTiles + 1,
+        sampleResolvedUrl: tile?.src || prev.sampleResolvedUrl,
+        lastHttpStatus: '200 OK (Isolated Test Tile Loaded)',
+        lastUpdatedTs: Date.now(),
+      }));
+    });
+    testLayer.on('tileerror', (errEvt: any) => {
+      const coords = errEvt?.coords;
+      const failedSrc =
+        errEvt?.tile?.src ||
+        (coords && typeof (testLayer as any).getTileUrl === 'function'
+          ? (testLayer as any).getTileUrl(coords)
+          : testTemplate);
+      void inspectFailedTileHttpStatus(
+        failedSrc,
+        'Isolated Test: OpenStreetMap Default',
+        testTemplate,
+        coords
+      );
+      setDiagStats((prev) => ({
+        ...prev,
+        failedCount: prev.failedCount + 1,
+        lastHttpStatus: 'Isolated Test Tile Error',
+        lastUpdatedTs: Date.now(),
+      }));
+    });
+
+    testLayer.addTo(map);
+    tileLayerRef.current = testLayer;
+  };
+
+  const handleToggleControlledTestMode = () => {
+    const map = mapInstanceRef.current;
+    const next = !isControlledTestMode;
+    setIsControlledTestMode(next);
+    isControlledTestModeRef.current = next;
+    if (!map) return;
+
+    const mapEl = mapContainerRef.current;
+    const markerPane = mapEl?.querySelector('.leaflet-marker-pane') as HTMLElement | null;
+    const overlayPane = mapEl?.querySelector('.leaflet-overlay-pane') as HTMLElement | null;
+    const shadowPane = mapEl?.querySelector('.leaflet-shadow-pane') as HTMLElement | null;
+
+    if (next) {
+      if (markerPane) markerPane.style.display = 'none';
+      if (overlayPane) overlayPane.style.display = 'none';
+      if (shadowPane) shadowPane.style.display = 'none';
+      const targetLat =
+        myLocation && Number.isFinite(myLocation.latitude) && myLocation.latitude !== 0
+          ? myLocation.latitude
+          : 13.0501;
+      const targetLng =
+        myLocation && Number.isFinite(myLocation.longitude) && myLocation.longitude !== 0
+          ? myLocation.longitude
+          : 77.71475;
+      map.stop();
+      map.invalidateSize({ animate: false });
+      map.setView([targetLat, targetLng], 15, { animate: false });
+      setCurrentZoom(15);
+      applyControlledTestLayer(map);
+      toast.info(
+        'Controlled Test Mode active: custom markers & overlays isolated to verify raw street tiles'
+      );
+    } else {
+      if (markerPane) markerPane.style.display = '';
+      if (overlayPane) overlayPane.style.display = '';
+      if (shadowPane) shadowPane.style.display = '';
+      map.invalidateSize({ animate: false });
+      applyMapLayerToInstance(map, mapModeRef.current, providerPrefRef.current);
+      toast.success('Restored complete Beacon Network map with all markers and layers');
+    }
+  };
+
+  const handleSelectMapMode = (nextMode: MapLayerMode, toastMessage?: string) => {
+    setTileFallbackNotice(null);
+    setMapMode(nextMode);
+    mapModeRef.current = nextMode;
+    localStorage.setItem('beacon_map_style', nextMode);
+
+    const map = mapInstanceRef.current;
+    if (map) {
+      const curZoom = map.getZoom();
+      if (nextMode === 'terrain' && providerPref === 'auto' && curZoom > 16) {
+        setCurrentZoom(15);
+        map.setZoom(15, { animate: false });
+      }
+      applyMapLayerToInstance(map, nextMode, providerPref);
+    }
+
+    if (toastMessage) {
+      toast.info(toastMessage);
+    }
+  };
+
+  const handleSelectProviderPref = (nextPref: TileProviderPreference) => {
+    setProviderPref(nextPref);
+    providerPrefRef.current = nextPref;
+    localStorage.setItem('beacon_tile_provider_pref', nextPref);
+    setTileFallbackNotice(null);
+    const map = mapInstanceRef.current;
+    if (map) {
+      applyMapLayerToInstance(map, mapMode, nextPref);
+    }
+    toast.success(
+      nextPref === 'osm'
+        ? 'Switched tile engine to OpenStreetMap Standard'
+        : nextPref === 'esri'
+        ? 'Switched tile engine to Esri ArcGIS HD'
+        : nextPref === 'opentopo'
+        ? 'Switched Terrain engine to OpenTopoMap Contours'
+        : 'Switched tile engine to Auto (Google Maps + OSM/Esri Fallback)'
+    );
+  };
+
+  // Initialize Leaflet Map (uses last known GPS or peer coordinates immediately so tiles pre-render before switching tabs)
   useEffect(() => {
     if (!mapContainerRef.current || mapInstanceRef.current) return;
 
-    const initialCenter: [number, number] = myLocation
-      ? [myLocation.latitude, myLocation.longitude]
-      : [0, 0];
+    let initialCenter: [number, number] = [28.6139, 77.209];
+    let initialZoom = 14;
+
+    if (focusCoords && Number.isFinite(focusCoords.lat) && Number.isFinite(focusCoords.lng)) {
+      initialCenter = [focusCoords.lat, focusCoords.lng];
+      initialZoom = 16;
+    } else if (myLocation && Number.isFinite(myLocation.latitude) && Number.isFinite(myLocation.longitude)) {
+      initialCenter = [myLocation.latitude, myLocation.longitude];
+      initialZoom = 16;
+    } else {
+      try {
+        const cachedRaw = localStorage.getItem('beacon_last_valid_gps_v1');
+        if (cachedRaw) {
+          const cached = JSON.parse(cachedRaw);
+          if (Number.isFinite(cached?.lat) && Number.isFinite(cached?.lng)) {
+            initialCenter = [cached.lat, cached.lng];
+            initialZoom = 16;
+          }
+        } else if (userLocations.length > 0) {
+          const peer = userLocations.find((l) => Number.isFinite(l.latitude) && Number.isFinite(l.longitude));
+          if (peer) {
+            initialCenter = [peer.latitude, peer.longitude];
+            initialZoom = 15;
+          }
+        }
+      } catch {}
+    }
+
+    if (mapMode === 'terrain' && providerPref === 'auto' && initialZoom > 16) {
+      initialZoom = 15;
+    }
 
     const map = L.map(mapContainerRef.current, {
       center: initialCenter,
-      zoom: myLocation ? 16 : 2,
+      zoom: initialZoom,
+      minZoom: 2,
+      maxZoom: 22,
       zoomControl: false,
       preferCanvas: true,
-      zoomSnap: 0.1,
-      zoomDelta: 0.5,
-      touchZoom: false,
+      zoomSnap: 1,
+      zoomDelta: 1,
+      touchZoom: true,
       bounceAtZoomLimits: false,
-      fadeAnimation: !isLiteModeRef.current,
+      wheelPxPerZoomLevel: 120,
+      fadeAnimation: false,
+      zoomAnimation: !isLiteModeRef.current,
       markerZoomAnimation: !isLiteModeRef.current,
     });
 
-    const initialLayer = createGoogleTileLayer(mapMode).addTo(map);
+    // Lightweight proxy LayerGroups for native L.control.layers so Leaflet's control UI stays in sync
+    // without directly removing/corrupting our managed L.TileLayer instances
+    const proxyStandard = L.layerGroup();
+    const proxySatellite = L.layerGroup();
+    const proxyTerrain = L.layerGroup();
+    const proxyTraffic = L.layerGroup();
+    const proxies: Record<MapLayerMode, L.LayerGroup> = {
+      standard: proxyStandard,
+      satellite: proxySatellite,
+      terrain: proxyTerrain,
+      traffic: proxyTraffic,
+    };
+    controlProxyLayersRef.current = proxies;
+    proxies[mapMode].addTo(map);
+
+    mapInstanceRef.current = map;
+    applyMapLayerToInstance(map, mapMode, providerPref);
+
+    const layersControl = L.control
+      .layers(
+        {
+          Standard: proxyStandard,
+          Satellite: proxySatellite,
+          Topography: proxyTerrain,
+          Traffic: proxyTraffic,
+        },
+        {},
+        {
+          position: 'topright',
+          collapsed: true,
+        }
+      )
+      .addTo(map);
+    layersControlRef.current = layersControl;
+
+    map.on('baselayerchange', (e: L.LayersControlEvent) => {
+      if (isSyncingControlRef.current) return;
+      const layerName = (e.name || '').toLowerCase();
+      let nextMode: MapLayerMode = 'standard';
+      if (layerName.includes('satellite')) {
+        nextMode = 'satellite';
+      } else if (layerName.includes('topography') || layerName.includes('terrain')) {
+        nextMode = 'terrain';
+      } else if (layerName.includes('traffic')) {
+        nextMode = 'traffic';
+      } else {
+        nextMode = 'standard';
+      }
+      handleSelectMapMode(nextMode);
+    });
 
     const clusterGroup = L.markerClusterGroup({
       maxClusterRadius: 48,
@@ -1214,12 +3659,14 @@ export const LiveMap: React.FC<LiveMapProps> = ({
     map.addLayer(clusterGroup);
     markerClusterGroupRef.current = clusterGroup;
 
-    tileLayerRef.current = initialLayer;
-    mapInstanceRef.current = map;
-
-    // Track current zoom level for HUD
-    map.on('zoom', () => {
+    // Update currentZoom state and synchronize tile grid after zoom/move completes
+    map.on('zoomend', () => {
       setCurrentZoom(map.getZoom());
+      syncTileLayersView(map);
+    });
+
+    map.on('moveend', () => {
+      syncTileLayersView(map);
     });
 
     // Compensate single-finger dragging when map is rotated
@@ -1276,7 +3723,13 @@ export const LiveMap: React.FC<LiveMapProps> = ({
       });
     });
 
+    setCzMapReadyTick((t) => t + 1);
+
     return () => {
+      if (crowdzoneLayerGroupRef.current) {
+        crowdzoneLayerGroupRef.current.clearLayers();
+        crowdzoneLayerGroupRef.current = null;
+      }
       if (markerClusterGroupRef.current) {
         markerClusterGroupRef.current.clearLayers();
         markerClusterGroupRef.current = null;
@@ -1286,14 +3739,44 @@ export const LiveMap: React.FC<LiveMapProps> = ({
     };
   }, []);
 
-  // Handle active visibility transition and smooth canvas resize
+  // Handle active visibility transition and ensure tiles render when switching from hidden Home tab to Map tab
   useEffect(() => {
-    if (isActive && mapInstanceRef.current) {
-      const timer = setTimeout(() => {
-        mapInstanceRef.current?.invalidateSize();
-      }, 50);
-      return () => clearTimeout(timer);
-    }
+    if (!isActive || !mapInstanceRef.current) return;
+
+    const runResizeAndTileSync = () => {
+      const map = mapInstanceRef.current;
+      if (!map) return;
+      map.invalidateSize({ animate: false });
+      syncTileLayersView(map);
+    };
+
+    const verifyTilesMounted = () => {
+      const map = mapInstanceRef.current;
+      const container = mapContainerRef.current;
+      if (!map || !container) return;
+      map.invalidateSize({ animate: false });
+      const imgs = container.querySelectorAll('img.leaflet-tile');
+      if (imgs.length === 0) {
+        if (isControlledTestModeRef.current) {
+          applyControlledTestLayer(map);
+        } else {
+          applyMapLayerToInstance(map, mapModeRef.current, providerPrefRef.current);
+        }
+      } else {
+        syncTileLayersView(map);
+      }
+    };
+
+    runResizeAndTileSync();
+    const rafId = requestAnimationFrame(runResizeAndTileSync);
+    const t1 = window.setTimeout(runResizeAndTileSync, 100);
+    const t2 = window.setTimeout(verifyTilesMounted, 320);
+
+    return () => {
+      cancelAnimationFrame(rafId);
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+    };
   }, [isActive]);
 
   // Automatically invalidate map size whenever the container dimensions change (e.g., Docked Panel <-> Fullscreen)
@@ -1301,211 +3784,144 @@ export const LiveMap: React.FC<LiveMapProps> = ({
     const el = gestureAreaRef.current || mapContainerRef.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
     const observer = new ResizeObserver(() => {
-      mapInstanceRef.current?.invalidateSize();
+      if (mapInstanceRef.current) {
+        mapInstanceRef.current.invalidateSize({ animate: false });
+        syncTileLayersView(mapInstanceRef.current);
+      }
     });
     observer.observe(el);
     return () => observer.disconnect();
   }, []);
 
-  // Smoothly swoop/fly to focused coordinates when requested from external card/alert/chat
+  // Smoothly pan/fly camera to focused coordinates when requested from Notification or Chat ('Locate on Map')
   useEffect(() => {
-    if (focusCoords && mapInstanceRef.current) {
-      const map = mapInstanceRef.current;
-      map.invalidateSize();
-      map.flyTo([focusCoords.lat, focusCoords.lng], 17, {
-        animate: true,
-        duration: 1.2,
-      });
+    if (
+      !focusCoords ||
+      !Number.isFinite(focusCoords.lat) ||
+      !Number.isFinite(focusCoords.lng) ||
+      !isActive ||
+      !mapInstanceRef.current
+    ) {
+      return;
     }
-  }, [focusCoords]);
 
-  // Pinch-to-zoom and Two-finger Rotate Touch Gesture Handler
-  useEffect(() => {
-    const area = gestureAreaRef.current;
-    if (!area) return;
+    const focusKey = `${focusCoords.lat.toFixed(6)}:${focusCoords.lng.toFixed(6)}:${focusCoords.ts ?? 0}`;
+    if (lastFocusedKeyRef.current === focusKey) return;
+    lastFocusedKeyRef.current = focusKey;
+    setHasCenteredOnce(true);
 
-    let lastDist = 0;
-    let lastAngle = 0;
-    let isPinchingOrRotating = false;
-    let gestureRafId: number | null = null;
+    const map = mapInstanceRef.current;
+    const targetLat = focusCoords.lat;
+    const targetLng = focusCoords.lng;
+    const targetZoom = 17;
 
-    const getTouchDist = (t1: Touch, t2: Touch) => Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
-    const getTouchAngle = (t1: Touch, t2: Touch) => Math.atan2(t2.clientY - t1.clientY, t2.clientX - t1.clientX) * (180 / Math.PI);
+    let raf1: number | null = null;
+    let raf2: number | null = null;
+    let safetyTimer: number | null = null;
 
-    const onTouchStart = (e: TouchEvent) => {
-      if (e.touches.length === 2) {
-        isPinchingOrRotating = true;
-        setIsGesturing(true);
-        lastDist = getTouchDist(e.touches[0], e.touches[1]);
-        lastAngle = getTouchAngle(e.touches[0], e.touches[1]);
+    isCameraTransitioningRef.current = true;
 
-        if (mapInstanceRef.current) {
-          mapInstanceRef.current.dragging.disable();
+    raf1 = requestAnimationFrame(() => {
+      if (!mapInstanceRef.current) return;
+      map.stop();
+      map.invalidateSize({ animate: false });
+
+      // Render animated Target Beacon Lock Ring at the destination coordinates
+      if (focusSpotlightMarkerRef.current) {
+        map.removeLayer(focusSpotlightMarkerRef.current);
+        focusSpotlightMarkerRef.current = null;
+      }
+      if (focusSpotlightTimeoutRef.current !== null) {
+        window.clearTimeout(focusSpotlightTimeoutRef.current);
+        focusSpotlightTimeoutRef.current = null;
+      }
+
+      const spotlightIcon = L.divIcon({
+        className: 'beacon-target-lock-ring',
+        html: `
+          <div style="position:relative;width:84px;height:84px;display:flex;align-items:center;justify-content:center;pointer-events:none;">
+            <div style="position:absolute;inset:0;border-radius:9999px;border:2px solid rgba(0,217,255,0.85);background:radial-gradient(circle, rgba(0,217,255,0.22) 0%, rgba(137,87,255,0.08) 55%, transparent 72%);animation:ping 1.25s cubic-bezier(0,0,0.2,1) infinite;"></div>
+            <div style="position:absolute;inset:12px;border-radius:9999px;border:2px dashed rgba(0,214,160,0.9);box-shadow:0 0 18px rgba(0,217,255,0.65);"></div>
+          </div>
+        `,
+        iconSize: [84, 84],
+        iconAnchor: [42, 42],
+      });
+
+      focusSpotlightMarkerRef.current = L.marker([targetLat, targetLng], {
+        icon: spotlightIcon,
+        interactive: false,
+        zIndexOffset: -100,
+      }).addTo(map);
+
+      focusSpotlightTimeoutRef.current = window.setTimeout(() => {
+        if (focusSpotlightMarkerRef.current && mapInstanceRef.current) {
+          mapInstanceRef.current.removeLayer(focusSpotlightMarkerRef.current);
+          focusSpotlightMarkerRef.current = null;
         }
-      }
-    };
+      }, 4800);
 
-    const onTouchMove = (e: TouchEvent) => {
-      if (!isPinchingOrRotating || e.touches.length < 2) return;
-      e.preventDefault();
-
-      const dist = getTouchDist(e.touches[0], e.touches[1]);
-      const angle = getTouchAngle(e.touches[0], e.touches[1]);
-
-      // 1. Pinch to Zoom
-      let nextZoomVal: number | null = null;
-      if (lastDist > 10 && dist > 10 && mapInstanceRef.current) {
-        const scaleStep = dist / lastDist;
-        const currentZ = mapInstanceRef.current.getZoom();
-        nextZoomVal = Math.max(2, Math.min(21, currentZ + Math.log2(scaleStep)));
-        mapInstanceRef.current.setZoom(nextZoomVal, { animate: false });
-        lastDist = dist;
-      }
-
-      // 2. Two-Finger Rotate
-      let stepDelta = angle - lastAngle;
-      while (stepDelta > 180) stepDelta -= 360;
-      while (stepDelta < -180) stepDelta += 360;
-      lastAngle = angle;
-
-      let newB = (bearingRef.current + stepDelta) % 360;
-      if (newB < 0) newB += 360;
-      newB = Math.round(newB);
-      bearingRef.current = newB;
-
-      // Apply immediate GPU transform on wrapper without waiting for React state commit
-      if (rotatableWrapperRef.current) {
-        rotatableWrapperRef.current.style.transform = `rotate(${newB}deg)`;
+      // Automatically select the target user marker if a peer or self is at these coordinates
+      const matchedPeer = displayedUserLocations.find(
+        (loc) =>
+          Number.isFinite(loc.latitude) &&
+          Number.isFinite(loc.longitude) &&
+          calculateDistanceMeters(loc.latitude, loc.longitude, targetLat, targetLng) <= 80
+      );
+      if (matchedPeer) {
+        setSelectedUser(matchedPeer);
+      } else if (
+        myLocation &&
+        Number.isFinite(myLocation.latitude) &&
+        Number.isFinite(myLocation.longitude) &&
+        calculateDistanceMeters(myLocation.latitude, myLocation.longitude, targetLat, targetLng) <= 80
+      ) {
+        setSelectedUser(myLocation);
       }
 
-      if (gestureRafId === null) {
-        gestureRafId = requestAnimationFrame(() => {
-          gestureRafId = null;
-          setBearing(bearingRef.current);
-          if (nextZoomVal !== null) {
-            setCurrentZoom(nextZoomVal);
+      raf2 = requestAnimationFrame(() => {
+        if (!mapInstanceRef.current) return;
+        recenterMapCleanly(map, targetLat, targetLng, targetZoom, { animate: true });
+        safetyTimer = window.setTimeout(() => {
+          isCameraTransitioningRef.current = false;
+          if (mapInstanceRef.current) {
+            syncTileLayersView(mapInstanceRef.current);
           }
-        });
-      }
-    };
-
-    const onTouchEnd = (e: TouchEvent) => {
-      if (isPinchingOrRotating && e.touches.length < 2) {
-        isPinchingOrRotating = false;
-        if (gestureRafId !== null) {
-          cancelAnimationFrame(gestureRafId);
-          gestureRafId = null;
-        }
-        setIsGesturing(false);
-
-        if (mapInstanceRef.current) {
-          mapInstanceRef.current.dragging.enable();
-        }
-
-        // Auto-snap to North if within +/- 7 degrees
-        const cur = bearingRef.current;
-        if (cur <= 7 || cur >= 353) {
-          bearingRef.current = 0;
-          setBearing(0);
-        } else {
-          setBearing(cur);
-        }
-      }
-    };
-
-    // Trackpad gesture support for Safari / macOS
-    let trackpadStartBearing = 0;
-    let trackpadStartZoom = 16;
-    const onGestureStart = (e: any) => {
-      e.preventDefault();
-      isPinchingOrRotating = true;
-      setIsGesturing(true);
-      trackpadStartBearing = bearingRef.current;
-      trackpadStartZoom = mapInstanceRef.current ? mapInstanceRef.current.getZoom() : 16;
-    };
-
-    const onGestureChange = (e: any) => {
-      e.preventDefault();
-      if (!isPinchingOrRotating || !mapInstanceRef.current) return;
-
-      let nextZoomVal: number | null = null;
-      if (e.scale && e.scale !== 1) {
-        nextZoomVal = Math.max(2, Math.min(21, trackpadStartZoom + Math.log2(e.scale)));
-        mapInstanceRef.current.setZoom(nextZoomVal, { animate: false });
-      }
-
-      if (typeof e.rotation === 'number') {
-        let newB = (trackpadStartBearing + e.rotation) % 360;
-        if (newB < 0) newB += 360;
-        newB = Math.round(newB);
-        bearingRef.current = newB;
-        if (rotatableWrapperRef.current) {
-          rotatableWrapperRef.current.style.transform = `rotate(${newB}deg)`;
-        }
-      }
-
-      if (gestureRafId === null) {
-        gestureRafId = requestAnimationFrame(() => {
-          gestureRafId = null;
-          setBearing(bearingRef.current);
-          if (nextZoomVal !== null) {
-            setCurrentZoom(nextZoomVal);
-          }
-        });
-      }
-    };
-
-    const onGestureEnd = (e: any) => {
-      e.preventDefault();
-      isPinchingOrRotating = false;
-      if (gestureRafId !== null) {
-        cancelAnimationFrame(gestureRafId);
-        gestureRafId = null;
-      }
-      setIsGesturing(false);
-      const cur = bearingRef.current;
-      if (cur <= 7 || cur >= 353) {
-        bearingRef.current = 0;
-        setBearing(0);
-      } else {
-        setBearing(cur);
-      }
-    };
-
-    area.addEventListener('touchstart', onTouchStart, { passive: false });
-    area.addEventListener('touchmove', onTouchMove, { passive: false });
-    area.addEventListener('touchend', onTouchEnd, { passive: false });
-    area.addEventListener('touchcancel', onTouchEnd, { passive: false });
-
-    area.addEventListener('gesturestart', onGestureStart as any, { passive: false });
-    area.addEventListener('gesturechange', onGestureChange as any, { passive: false });
-    area.addEventListener('gestureend', onGestureEnd as any, { passive: false });
+        }, 750);
+      });
+    });
 
     return () => {
-      if (gestureRafId !== null) cancelAnimationFrame(gestureRafId);
-      area.removeEventListener('touchstart', onTouchStart);
-      area.removeEventListener('touchmove', onTouchMove);
-      area.removeEventListener('touchend', onTouchEnd);
-      area.removeEventListener('touchcancel', onTouchEnd);
-
-      area.removeEventListener('gesturestart', onGestureStart as any);
-      area.removeEventListener('gesturechange', onGestureChange as any);
-      area.removeEventListener('gestureend', onGestureEnd as any);
+      if (raf1 !== null) cancelAnimationFrame(raf1);
+      if (raf2 !== null) cancelAnimationFrame(raf2);
+      if (safetyTimer !== null) window.clearTimeout(safetyTimer);
+      isCameraTransitioningRef.current = false;
     };
-  }, []);
+  }, [focusCoords, isActive, displayedUserLocations, myLocation]);
 
-  // Map Mode Switcher (Google Standard, Google Satellite, Google Traffic)
+  const activeLayerModeRef = useRef<string>(`${mapMode}:${providerPref}`);
+
+  // Keep map layer synchronized if mapMode or providerPref changes externally
   useEffect(() => {
     const map = mapInstanceRef.current;
-    if (!map) return;
-
-    if (tileLayerRef.current) {
-      map.removeLayer(tileLayerRef.current);
+    if (!map || isControlledTestModeRef.current) return;
+    const targetKey = `${mapMode}:${providerPref}`;
+    if (tileLayerRef.current && activeLayerModeRef.current === targetKey && map.hasLayer(tileLayerRef.current)) {
+      return;
     }
+    applyMapLayerToInstance(map, mapMode, providerPref);
+  }, [mapMode, providerPref]);
 
-    const nextLayer = createGoogleTileLayer(mapMode).addTo(map);
-    tileLayerRef.current = nextLayer;
-  }, [mapMode, isLiteMode]);
+  // Invalidate Leaflet map size whenever bearing or 3D tilt toggles so rotated/tilted stage wrapper never exposes blank edges
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      if (mapInstanceRef.current) {
+        mapInstanceRef.current.invalidateSize({ animate: false });
+        syncTileLayersView(mapInstanceRef.current);
+      }
+    }, 60);
+    return () => window.clearTimeout(timer);
+  }, [bearing === 0, is3dMode]);
 
   // Listen for real GPS fix events so the map centers on the user's real accurate location
   useEffect(() => {
@@ -1522,12 +3938,28 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         fixAcc < bestCenteredAccuracyRef.current * 0.65 &&
         bestCenteredAccuracyRef.current > 35;
 
+      const movedSinceLastAutoFollow = lastAutoFollowedCoordsRef.current
+        ? calculateDistanceMeters(
+            lastAutoFollowedCoordsRef.current.lat,
+            lastAutoFollowedCoordsRef.current.lng,
+            detail.latitude,
+            detail.longitude
+          )
+        : Infinity;
+
+      const exceedsAutoFollowThreshold =
+        isAutoFollowEnabledRef.current &&
+        !focusCoords &&
+        !isCameraTransitioningRef.current &&
+        movedSinceLastAutoFollow >= autoFollowThresholdMetersRef.current;
+
       const shouldCenter =
         detail.forceCenter ||
         pendingCenterOnNextFixRef.current ||
         (!hasCenteredOnce && !focusCoords) ||
         (isReal && !hasCenteredOnRealGpsRef.current && !focusCoords) ||
-        isSignificantUpgrade;
+        isSignificantUpgrade ||
+        exceedsAutoFollowThreshold;
 
       if (shouldCenter) {
         if (isReal) {
@@ -1535,13 +3967,13 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         }
         bestCenteredAccuracyRef.current = Math.min(bestCenteredAccuracyRef.current, fixAcc);
         pendingCenterOnNextFixRef.current = false;
+        lastAutoFollowedCoordsRef.current = { lat: detail.latitude, lng: detail.longitude };
         setHasCenteredOnce(true);
-        const targetZoom = Math.max(map.getZoom(), fixAcc <= 80 ? 17 : 16);
-        if (isLiteModeRef.current) {
-          map.setView([detail.latitude, detail.longitude], targetZoom, { animate: false });
-        } else {
-          map.flyTo([detail.latitude, detail.longitude], targetZoom, { animate: true, duration: 0.85 });
-        }
+        const curZoom = map.getZoom();
+        const targetZoom = Math.round(Math.max(curZoom, fixAcc <= 80 ? 17 : 16));
+        recenterMapCleanly(map, detail.latitude, detail.longitude, targetZoom, {
+          animate: !detail.forceCenter,
+        });
       }
     };
 
@@ -1632,6 +4064,8 @@ export const LiveMap: React.FC<LiveMapProps> = ({
   const selfIconSignatureRef = useRef<string>('');
   const peerIconHtmlMapRef = useRef<Map<string, string>>(new Map());
 
+  const lastSelfMapRefreshMsRef = useRef<number>(0);
+
   // Update Current User GPS Marker & Accuracy Circle (Steps 3d, 3e, 3g)
   useEffect(() => {
     const map = mapInstanceRef.current;
@@ -1651,28 +4085,67 @@ export const LiveMap: React.FC<LiveMapProps> = ({
       return;
     }
 
+    // In Low Power Mode, throttle existing self-marker DOM refreshes to at most once every 5s
+    const nowMs = Date.now();
+    if (
+      isLiteModeRef.current &&
+      myMarkerRef.current &&
+      hasCenteredOnce &&
+      nowMs - lastSelfMapRefreshMsRef.current < 5000
+    ) {
+      return;
+    }
+    lastSelfMapRefreshMsRef.current = nowMs;
+
     const markerCoords: [number, number] = [myLocation.latitude, myLocation.longitude];
     const latLng = L.latLng(markerCoords[0], markerCoords[1]);
     setDebugMarkerLatLng(markerCoords);
 
     const currentAcc = Number(myLocation.accuracy_m ?? myLocation.accuracy);
 
-    if (!hasCenteredOnce) {
-      map.setView(latLng, currentAcc <= 100 ? 17 : 15);
+    const movedSinceLastAutoFollow = lastAutoFollowedCoordsRef.current
+      ? calculateDistanceMeters(
+          lastAutoFollowedCoordsRef.current.lat,
+          lastAutoFollowedCoordsRef.current.lng,
+          markerCoords[0],
+          markerCoords[1]
+        )
+      : Infinity;
+
+    const shouldAutoFollowMove =
+      isAutoFollowEnabledRef.current &&
+      !focusCoords &&
+      !isCameraTransitioningRef.current &&
+      movedSinceLastAutoFollow >= autoFollowThresholdMetersRef.current;
+
+    const distFromMapCenter = calculateDistanceMeters(
+      map.getCenter().lat,
+      map.getCenter().lng,
+      markerCoords[0],
+      markerCoords[1]
+    );
+
+    if (!hasCenteredOnce && !focusCoords && !isCameraTransitioningRef.current) {
       setHasCenteredOnce(true);
       bestCenteredAccuracyRef.current = currentAcc;
       hasCenteredOnRealGpsRef.current = true;
+      lastAutoFollowedCoordsRef.current = { lat: markerCoords[0], lng: markerCoords[1] };
+      recenterMapCleanly(map, markerCoords[0], markerCoords[1], currentAcc <= 100 ? 17 : 15, {
+        animate: false,
+      });
     } else if (
-      (!hasCenteredOnRealGpsRef.current && currentAcc <= 100 && !focusCoords) ||
-      (!focusCoords && currentAcc < bestCenteredAccuracyRef.current * 0.65 && bestCenteredAccuracyRef.current > 35)
+      !isCameraTransitioningRef.current &&
+      ((!hasCenteredOnRealGpsRef.current && currentAcc <= 100 && !focusCoords) ||
+        (!focusCoords && currentAcc < bestCenteredAccuracyRef.current * 0.65 && bestCenteredAccuracyRef.current > 35) ||
+        (!focusCoords && isAutoFollowEnabledRef.current && distFromMapCenter > 3000))
     ) {
       hasCenteredOnRealGpsRef.current = true;
       bestCenteredAccuracyRef.current = Math.min(bestCenteredAccuracyRef.current, currentAcc);
-      if (isLiteModeRef.current) {
-        map.setView(latLng, 17, { animate: false });
-      } else {
-        map.flyTo(latLng, 17, { animate: true, duration: 0.9 });
-      }
+      lastAutoFollowedCoordsRef.current = { lat: markerCoords[0], lng: markerCoords[1] };
+      recenterMapCleanly(map, markerCoords[0], markerCoords[1], Math.max(map.getZoom(), 16));
+    } else if (shouldAutoFollowMove) {
+      lastAutoFollowedCoordsRef.current = { lat: markerCoords[0], lng: markerCoords[1] };
+      recenterMapCleanly(map, markerCoords[0], markerCoords[1], Math.max(map.getZoom(), 15));
     }
 
     const selfSignalInfo = getGpsSignalInfo(currentAcc);
@@ -1689,7 +4162,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
     const effectiveHeading =
       myLocation.heading != null && !isNaN(myLocation.heading)
         ? myLocation.heading
-        : userHeading;
+        : userHeadingRef.current;
 
     const visualAngle =
       effectiveHeading !== null
@@ -1791,7 +4264,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         }
       }
     }
-  }, [myLocation, user?.avatarUrl, user?.fullName, hasCenteredOnce, userHeading, bearing]);
+  }, [myLocation, user?.avatarUrl, user?.fullName, hasCenteredOnce, bearing]);
 
   // Update Peer Map Markers (Steps 3d, 3g)
   useEffect(() => {
@@ -1848,9 +4321,19 @@ export const LiveMap: React.FC<LiveMapProps> = ({
       const peerRoleEmoji = getMemberIconEmoji(peerIconId);
       const peerDisplayName = peerOverride?.nickname || peerLoc.fullName.split(' ')[0];
 
-      const peerStructuralSignature = `${peerLoc.avatarUrl}|${peerLoc.fullName}|${peerDisplayName}|${peerColor}|${peerIconId}|${peerSignalInfo.isLowSignal}|${isPeerLive}|${Math.round(peerAcc)}|${peerVisualAngle !== null}|${Boolean(distText)}`;
+      const isCompactPeer = lodState.compactPeerMarkers;
+      const peerStructuralSignature = `${peerLoc.avatarUrl}|${peerLoc.fullName}|${peerDisplayName}|${peerColor}|${peerIconId}|${peerSignalInfo.isLowSignal}|${isPeerLive}|${Math.round(peerAcc)}|${peerVisualAngle !== null}|${Boolean(distText)}|${isCompactPeer ? 'compact' : 'full'}`;
 
-      const peerHtml = `
+      const peerHtml = isCompactPeer
+        ? `
+          <div class="relative flex items-center justify-center cursor-pointer" title="${peerLoc.fullName}">
+            <div class="w-8 h-8 rounded-full overflow-hidden bg-slate-900 border-2" style="border-color: ${isPeerLive ? '#00D6A0' : peerColor};">
+              <img src="${peerLoc.avatarUrl}" class="w-full h-full object-cover" alt="${peerLoc.fullName}" decoding="async" />
+            </div>
+            <span class="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border border-slate-950" style="background-color: ${isPeerLive ? '#00D6A0' : '#FF4FA3'};"></span>
+          </div>
+        `
+        : `
           <div class="group relative flex flex-col items-center cursor-pointer hover:scale-105 transition-transform">
             ${peerVisualAngle !== null ? `
               <div class="beacon-peer-heading-cone absolute inset-0 flex items-center justify-center pointer-events-none transition-transform duration-150" style="transform: rotate(${Math.round(peerVisualAngle)}deg);">
@@ -1868,7 +4351,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
                 <span>${peerRoleEmoji}</span>
               </div>
             ` : ''}
-            <div class="mt-1 px-2.5 py-0.5 bg-[#120C29]/95 backdrop-blur-md text-[10px] text-white font-bold rounded-full shadow-lg border border-[#8957FF]/45 flex items-center gap-1 whitespace-nowrap ${peerSignalInfo.isLowSignal ? 'border-amber-400/60' : ''}">
+            <div class="mt-1 px-2.5 py-0.5 bg-[#120C29] text-[10px] text-white font-bold rounded-full shadow-lg border border-[#8957FF]/45 flex items-center gap-1 whitespace-nowrap ${peerSignalInfo.isLowSignal ? 'border-amber-400/60' : ''}">
               <span class="w-1.5 h-1.5 rounded-full" style="background-color: ${isPeerLive ? '#00D6A0' : '#94a3b8'};"></span>
               <span>${peerRoleEmoji !== '👤' ? `${peerRoleEmoji} ` : ''}${peerDisplayName}</span>
               ${isPeerLive ? `<span class="text-[#00D6A0] font-mono text-[9px] font-extrabold">· LIVE</span>` : ''}
@@ -1882,8 +4365,8 @@ export const LiveMap: React.FC<LiveMapProps> = ({
       const peerIcon = L.divIcon({
         className: 'beacon-peer-marker',
         html: peerHtml,
-        iconSize: [40, 56],
-        iconAnchor: [20, 20],
+        iconSize: isCompactPeer ? [32, 32] : [40, 56],
+        iconAnchor: isCompactPeer ? [16, 16] : [20, 20],
       });
 
       const peerTarget: MarkerContextMenuTarget = {
@@ -1977,21 +4460,67 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         currentCircles.delete(userId);
       }
     }
-  }, [displayedUserLocations, onlineUserIds, myLocation, user?.id, bearing, memberOverridesVersion]);
+  }, [
+    displayedUserLocations,
+    onlineUserIds,
+    myLocation,
+    user?.id,
+    bearing,
+    memberOverridesVersion,
+    lodState.compactPeerMarkers,
+  ]);
 
-  // Update Saved Places Markers
+  const [roomGeofencesMapTick, setRoomGeofencesMapTick] = useState<number>(0);
+  useEffect(() => {
+    const onUpdated = () => setRoomGeofencesMapTick((t) => t + 1);
+    window.addEventListener('beacon:room-geofences-updated', onUpdated);
+    return () => window.removeEventListener('beacon:room-geofences-updated', onUpdated);
+  }, []);
+
+  // Update Saved Places Markers & Room Saved-Place Geofence Perimeter Circles (Managed by LOD)
   useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map) return;
 
     savedPlacesMarkersRef.current.forEach((m) => map.removeLayer(m));
     savedPlacesMarkersRef.current = [];
+    savedPlacesCirclesRef.current.forEach((c) => map.removeLayer(c));
+    savedPlacesCirclesRef.current = [];
+
+    if (!lodState.showSavedPlaces) {
+      return;
+    }
+
+    const activeRoomGeofences = loadRoomGeofences().filter((g) => g.enabled);
 
     savedPlaces.forEach((place) => {
       const latLng = L.latLng(place.latitude, place.longitude);
-      const colorHex = place.markerColor || '#f59e0b';
+      const matchingRoomGeofence =
+        activeRoomGeofences.find(
+          (g) =>
+            g.placeId === place.id &&
+            (!effectiveRoom || g.roomId === effectiveRoom.id)
+        ) || activeRoomGeofences.find((g) => g.placeId === place.id);
+
+      const colorHex = matchingRoomGeofence?.color || place.markerColor || '#f59e0b';
+      const effectiveRadius = Number(
+        matchingRoomGeofence?.radiusMeters || place.radiusMeters || 150
+      );
       const iconEmoji = getLocationTypeEmoji(place.markerIcon || place.category);
 
+      if (effectiveRadius > 0) {
+        const geofenceCircle = L.circle(latLng, {
+          radius: effectiveRadius,
+          color: colorHex,
+          weight: matchingRoomGeofence ? 2.5 : 1.5,
+          fillColor: colorHex,
+          fillOpacity: matchingRoomGeofence ? 0.16 : 0.08,
+          dashArray: matchingRoomGeofence ? undefined : '5, 5',
+        }).addTo(map);
+        savedPlacesCirclesRef.current.push(geofenceCircle);
+      }
+
+      const showLabel = lodState.showSavedPlaceLabels;
       const placeIcon = L.divIcon({
         className: 'beacon-place-marker',
         html: `
@@ -1999,13 +4528,17 @@ export const LiveMap: React.FC<LiveMapProps> = ({
             <div class="w-8 h-8 rounded-2xl text-white flex items-center justify-center shadow-lg border-2 border-white text-sm" style="background-color: ${colorHex}">
               <span>${iconEmoji}</span>
             </div>
-            <span class="mt-0.5 px-2 py-0.5 bg-slate-900/90 text-[10px] text-white font-bold rounded shadow-md border border-white/10 whitespace-nowrap max-w-[120px] truncate">
-              ${place.name}
-            </span>
+            ${
+              showLabel
+                ? `<span class="mt-0.5 px-2 py-0.5 bg-slate-900/90 text-[10px] text-white font-bold rounded shadow-md border border-white/10 whitespace-nowrap max-w-[130px] truncate">
+                    ${place.name}${matchingRoomGeofence ? ` · ${effectiveRadius}m` : ''}
+                  </span>`
+                : ''
+            }
           </div>
         `,
-        iconSize: [32, 50],
-        iconAnchor: [16, 25],
+        iconSize: showLabel ? [32, 50] : [32, 32],
+        iconAnchor: showLabel ? [16, 25] : [16, 16],
       });
 
       const marker = L.marker(latLng, { icon: placeIcon }).addTo(map);
@@ -2014,7 +4547,13 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         <div class="p-2">
           <p class="font-bold text-sm text-slate-900">${place.name}</p>
           <p class="text-xs text-slate-600">${place.description || 'Saved location'}</p>
-          <p class="text-[10px] text-slate-400 mt-1">Geofence radius: ${place.radiusMeters} m</p>
+          <p class="text-[10px] text-slate-500 mt-1 font-semibold">
+            Geofence radius: ${effectiveRadius} m ${
+              matchingRoomGeofence
+                ? `· Room Geofence Active (${matchingRoomGeofence.roomName})`
+                : ''
+            }
+          </p>
           <button id="${removeBtnId}" class="mt-2 px-2.5 py-1 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-bold cursor-pointer">
             Remove from Wishlist
           </button>
@@ -2039,14 +4578,20 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         type: 'place',
         placeId: place.id,
         title: place.name,
-        subtitle: place.description || `Radius: ${place.radiusMeters}m`,
+        subtitle: place.description || `Radius: ${effectiveRadius}m`,
         lat: place.latitude,
         lng: place.longitude,
-        radiusMeters: place.radiusMeters,
+        radiusMeters: effectiveRadius,
       });
       savedPlacesMarkersRef.current.push(marker);
     });
-  }, [savedPlaces]);
+  }, [
+    savedPlaces,
+    roomGeofencesMapTick,
+    effectiveRoom?.id,
+    lodState.showSavedPlaces,
+    lodState.showSavedPlaceLabels,
+  ]);
 
   // Location Geocoding Search
   const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -2281,6 +4826,24 @@ export const LiveMap: React.FC<LiveMapProps> = ({
     }
   };
 
+  // Toggle Nearby POI Markers visibility when zooming in/out according to LOD Manager
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map || nearbyPoiMarkersRef.current.length === 0) return;
+
+    nearbyPoiMarkersRef.current.forEach((marker) => {
+      if (lodState.showNearbyPoiPins) {
+        if (!map.hasLayer(marker)) {
+          marker.addTo(map);
+        }
+      } else {
+        if (map.hasLayer(marker)) {
+          map.removeLayer(marker);
+        }
+      }
+    });
+  }, [lodState.showNearbyPoiPins, nearbyPoisOnMap]);
+
   const handleStartRouteOnMap = (route: RouteData, destination: PlaceResult) => {
     setShowPlacesPage(false);
     setActiveRouteData(route);
@@ -2332,14 +4895,14 @@ export const LiveMap: React.FC<LiveMapProps> = ({
     pendingCenterOnNextFixRef.current = true;
     requestLocationUpdate();
     if (mapInstanceRef.current && myLocation) {
-      if (isLiteModeRef.current) {
-        mapInstanceRef.current.setView([myLocation.latitude, myLocation.longitude], 18, { animate: false });
-      } else {
-        mapInstanceRef.current.flyTo([myLocation.latitude, myLocation.longitude], 18, {
-          animate: true,
-          duration: 0.85,
-        });
-      }
+      const map = mapInstanceRef.current;
+      lastAutoFollowedCoordsRef.current = {
+        lat: myLocation.latitude,
+        lng: myLocation.longitude,
+      };
+      recenterMapCleanly(map, myLocation.latitude, myLocation.longitude, 17, {
+        forceLayerRefresh: false,
+      });
       const acc = Math.round(Number(myLocation.accuracy_m ?? myLocation.accuracy));
       toast.success(
         `Centered on your live location (${myLocation.latitude.toFixed(5)}, ${myLocation.longitude.toFixed(5)} · Accuracy ±${acc} m)`
@@ -2356,37 +4919,59 @@ export const LiveMap: React.FC<LiveMapProps> = ({
 
   return (
     <div
-      className="relative w-full h-full flex flex-col overflow-hidden bg-slate-100 select-none touch-manipulation"
+      className="relative w-full h-full flex flex-col overflow-hidden bg-[#cbd5e1] select-none touch-manipulation"
     >
+
       {/* Dedicated Map Gesture Layer - isolates touch-none to the map canvas so floating buttons & popovers work smoothly */}
       <div
         ref={gestureAreaRef}
         className="absolute inset-0 overflow-hidden z-0 touch-none"
         style={{ touchAction: 'none' }}
       >
-        {/* Rotatable Map Container - 150% oversized to seamlessly cover all 360-degree rotation angles */}
+        {/* Map Stage Wrapper — uses exact 100% 1:1 pixel alignment when North-up 2D (zero GPU subpixel blur), and expands when rotated or in 3D Tilt mode */}
         <div
           ref={rotatableWrapperRef}
-          className="absolute origin-center will-change-transform"
-          style={{
-            width: '150%',
-            height: '150%',
-            left: '-25%',
-            top: '-25%',
-            transform: `rotate(${bearing}deg)`,
-            transformOrigin: '50% 50%',
-            transition: isGesturing ? 'none' : 'transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1)',
-          }}
+          className="absolute origin-center"
+          style={
+            bearing === 0 && !is3dMode && !isGesturing
+              ? {
+                  width: '100%',
+                  height: '100%',
+                  left: '0%',
+                  top: '0%',
+                  transform: 'none',
+                  transition: 'transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1)',
+                }
+              : {
+                  width: '166%',
+                  height: '166%',
+                  left: '-33%',
+                  top: '-33%',
+                  transform: is3dMode
+                    ? `perspective(1200px) rotateX(40deg) rotateZ(${bearing}deg) scale(1.12)`
+                    : `rotate(${bearing}deg)`,
+                  transformOrigin: '50% 50%',
+                  transition: isGesturing ? 'none' : 'transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1)',
+                }
+          }
         >
-          {/* Map Canvas with HDR Optical Grading */}
+          {/* Map Canvas with True HD 2x Retina + SVG Unsharp Mask Optical Clarity */}
           <div
             ref={mapContainerRef}
             className={`w-full h-full z-0 ${
-              isHdrEnabled && !isLiteMode ? `beacon-map-hdr beacon-map-hdr-${mapMode}` : ''
+              isHdrEnabled
+                ? `beacon-map-hdr beacon-map-hdr-${mapMode} beacon-hdr-preset-${hdrPreset}`
+                : ''
             }`}
           />
         </div>
+
+        {/* 3D Horizon Sky Depth Gradient when 3D Mode is active */}
+        {is3dMode && (
+          <div className="absolute top-0 left-0 right-0 h-28 beacon-3d-horizon z-10 pointer-events-none" />
+        )}
       </div>
+
 
       {/* STEP 1: Live Geolocation Debug Panel (Temporary, hidden behind ?debug=1) */}
       {isDebugMode && (
@@ -2534,20 +5119,51 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         </div>
       )}
 
-      {/* Floating Gesture & Bearing HUD - clean bottom-right placement above compass cluster */}
-      {(isGesturing || bearing !== 0) && (
-        <div className="absolute bottom-56 right-4 z-20 bg-slate-900/90 backdrop-blur-md text-white px-3 py-1.5 rounded-2xl shadow-xl border border-slate-700/80 flex items-center gap-2 text-xs font-mono animate-in fade-in duration-150">
+      {/* Floating Gesture, Bearing & LOD GPU Culling HUD - clean bottom-right placement above compass cluster */}
+      {(isGesturing || bearing !== 0 || lodState.culledMarkersCount > 0) && (
+        <div
+          data-testid="map-lod-status-pill"
+          className="absolute bottom-56 right-4 z-20 bg-slate-900/90 backdrop-blur-md text-white px-3 py-1.5 rounded-2xl shadow-xl border border-slate-700/80 flex items-center gap-2 text-xs font-mono animate-in fade-in duration-150"
+        >
           <Compass className="w-4 h-4 text-sky-400" style={{ transform: `rotate(${-bearing}deg)` }} />
           <div className="flex items-center gap-1.5">
-            <span className="font-bold text-white">{bearing}° {getCompassHeading(bearing)}</span>
-            <span className="text-slate-400">·</span>
+            {bearing !== 0 && (
+              <>
+                <span className="font-bold text-white">{bearing}° {getCompassHeading(bearing)}</span>
+                <span className="text-slate-400">·</span>
+              </>
+            )}
             <span className="text-sky-300 font-medium">Zoom {currentZoom.toFixed(1)}x</span>
+            {lodState.culledMarkersCount > 0 && (
+              <>
+                <span className="text-slate-400">·</span>
+                <span
+                  className="text-emerald-300 font-sans font-bold text-[10.5px]"
+                  title={`${lodState.tierLabel}: Hiding ${lodState.culledMarkersCount} non-essential markers at Zoom ${currentZoom.toFixed(1)}x to reduce GPU load`}
+                >
+                  LOD: {lodState.culledMarkersCount} hidden
+                </span>
+              </>
+            )}
           </div>
+          {lodState.culledMarkersCount > 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                handleSelectLodMode('off');
+                toast.info('LOD Culling disabled — Showing all map markers at every zoom level');
+              }}
+              title="Disable LOD culling and show all markers when zoomed out"
+              className="ml-0.5 text-[10px] bg-emerald-500/25 hover:bg-emerald-500/40 text-emerald-200 border border-emerald-400/35 px-2 py-0.5 rounded-lg font-sans font-bold cursor-pointer transition-colors"
+            >
+              Show All
+            </button>
+          )}
           {bearing !== 0 && (
             <button
               onClick={resetNorth}
               title="Tap to Reset North"
-              className="ml-1 text-[10px] bg-sky-500/30 hover:bg-sky-500/50 text-sky-200 px-2 py-0.5 rounded-lg font-sans font-bold cursor-pointer transition-colors"
+              className="ml-0.5 text-[10px] bg-sky-500/30 hover:bg-sky-500/50 text-sky-200 px-2 py-0.5 rounded-lg font-sans font-bold cursor-pointer transition-colors"
             >
               Reset North
             </button>
@@ -2555,7 +5171,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         </div>
       )}
 
-      {/* Top Floating Bar: Address Search, Navigation HUD & Quick Pop Button */}
+      {/* Top Floating Bar: Search + Near Me + Map Controls Popover Button */}
       <div className="absolute top-4 left-4 right-4 md:right-auto md:w-[460px] z-30 flex flex-col gap-2">
         {/* Waiting for Location / Geolocation Error Status Banner (No fake/default marker) */}
         {(!myLocation || gpsError || locationStatus !== 'Live') && (
@@ -2643,7 +5259,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
                       } else if (member.location && mapInstanceRef.current) {
                         mapInstanceRef.current.flyTo(
                           [member.location.latitude, member.location.longitude],
-                          18,
+                          17,
                           { animate: true, duration: 0.9 }
                         );
                         setSelectedUser(member.location);
@@ -2856,103 +5472,481 @@ export const LiveMap: React.FC<LiveMapProps> = ({
           </button>
         </div>
 
-        {/* Toggle-able Layer Controller Floating Bar: Instant 1-tap switch between Terrain, Satellite, Street, and Traffic */}
-        {showLayerQuickToggle && (
-          <div className="flex items-center justify-between gap-1 p-1 bg-slate-900/90 backdrop-blur-xl border border-white/15 rounded-2xl shadow-xl z-20 text-white animate-in fade-in slide-in-from-top-1 duration-150">
-            <div className="flex items-center gap-1 overflow-x-auto py-0.5 px-1 scrollbar-none">
-              <button
-                onClick={() => {
-                  setMapMode('terrain');
-                  localStorage.setItem('beacon_map_style', 'terrain');
-                  toast.info('🏔️ Terrain Topo map style enabled');
-                }}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer active:scale-95 shrink-0 ${
-                  mapMode === 'terrain'
-                    ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-md ring-1 ring-white/30'
-                    : 'text-slate-300 hover:text-white hover:bg-white/10'
+        {/* Real-Time Runtime Tile Diagnostics Status Bar (Hidden unless debug mode is active) */}
+        {isDebugMode && (
+          <div
+            data-testid="live-tile-diagnostics-bar"
+            onClick={() => {
+              setShowMapDiagnostics((prev) => {
+                const next = !prev;
+                if (next && probeRows.length === 0) {
+                  runAllProvidersDiagnostic();
+                }
+                return next;
+              });
+            }}
+            title="Tap to toggle full Map Runtime Diagnostics & HTTP Provider Probe Table"
+            className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 px-3 py-1.5 bg-slate-950/88 hover:bg-slate-900/95 backdrop-blur-md border border-white/15 rounded-xl shadow-lg text-[10px] font-mono text-slate-200 cursor-pointer pointer-events-auto transition-colors"
+          >
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 min-w-0">
+              <span className="inline-flex items-center gap-1 font-bold text-emerald-300">
+                <span
+                  className={`w-1.5 h-1.5 rounded-full ${
+                    diagStats.loadedCount > 0
+                      ? 'bg-emerald-400'
+                      : diagStats.failedCount > 0
+                      ? 'bg-rose-400 animate-pulse'
+                      : 'bg-amber-400 animate-pulse'
+                  }`}
+                />
+                <span className="truncate max-w-[140px] sm:max-w-[195px]" title={diagStats.providerName}>
+                  {diagStats.providerName}
+                </span>
+              </span>
+              <span className="text-slate-500">·</span>
+              <span className="text-sky-300 font-semibold uppercase">
+                Layer: {diagStats.mode === 'standard' ? 'Street' : diagStats.mode}
+              </span>
+              <span className="text-slate-500">·</span>
+              <span>
+                Req: <strong className="text-white">{diagStats.requestedCount}</strong>
+              </span>
+              <span>
+                Loaded: <strong className="text-emerald-400">{diagStats.loadedCount}</strong>
+              </span>
+              <span>
+                DOM: <strong className="text-cyan-300">{diagStats.domVisibleTiles}</strong>
+              </span>
+              <span>
+                Failed:{' '}
+                <strong className={diagStats.failedCount > 0 ? 'text-rose-400' : 'text-slate-400'}>
+                  {diagStats.failedCount}
+                </strong>
+              </span>
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <span
+                className={`truncate max-w-[125px] sm:max-w-[165px] ${
+                  diagStats.lastError ? 'text-amber-300' : 'text-emerald-300'
                 }`}
-                title="Terrain Topo: Elevation contours & shaded mountains"
+                title={diagStats.lastError ? `${diagStats.lastHttpStatus} — ${diagStats.lastError}` : diagStats.lastHttpStatus}
               >
-                <Mountain className="w-3.5 h-3.5 text-emerald-300" />
-                <span>Terrain</span>
+                {diagStats.lastHttpStatus}
+              </span>
+              <button
+                type="button"
+                data-testid="controlled-test-mode-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleToggleControlledTestMode();
+                }}
+                className={`px-1.5 py-0.5 rounded text-[9px] font-sans font-bold cursor-pointer transition-colors ${
+                  isControlledTestMode
+                    ? 'bg-amber-400 text-slate-950'
+                    : 'bg-emerald-500/20 hover:bg-emerald-500/35 text-emerald-300 border border-emerald-400/40'
+                }`}
+                title="Toggle Controlled Test Mode (Isolate raw street tile layer without custom markers/UI)"
+              >
+                {isControlledTestMode ? 'Exit Test' : 'Test Map'}
               </button>
+              <span className="px-1.5 py-0.5 rounded bg-white/10 text-[9px] text-sky-300 font-sans font-bold">
+                {showMapDiagnostics ? 'Hide Diag' : 'Diag'}
+              </span>
+            </div>
+          </div>
+        )}
 
-              <button
-                onClick={() => {
-                  setMapMode('satellite');
-                  localStorage.setItem('beacon_map_style', 'satellite');
-                  toast.info('🛰️ Satellite HD imagery enabled');
-                }}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer active:scale-95 shrink-0 ${
-                  mapMode === 'satellite'
-                    ? 'bg-gradient-to-r from-sky-600 to-indigo-600 text-white shadow-md ring-1 ring-white/30'
-                    : 'text-slate-300 hover:text-white hover:bg-white/10'
-                }`}
-                title="Satellite: Aerial hybrid imagery"
-              >
-                <Globe className="w-3.5 h-3.5 text-sky-300" />
-                <span>Satellite</span>
-              </button>
+        {/* Controlled Test Mode Active Banner */}
+        {isControlledTestMode && (
+          <div
+            data-testid="controlled-test-mode-banner"
+            className="flex items-center justify-between gap-2 px-3.5 py-2 bg-amber-950/95 backdrop-blur-xl border border-amber-400/60 rounded-2xl shadow-xl z-30 text-xs text-amber-100 pointer-events-auto"
+          >
+            <div className="min-w-0">
+              <span className="font-extrabold text-amber-300 block">
+                Controlled Test Mode Active (Isolated Default Leaflet TileLayer)
+              </span>
+              <span className="text-[10.5px] text-amber-200/90 block">
+                Custom markers, overlays &amp; bottom controls temporarily isolated to verify raw street tiles.
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={handleToggleControlledTestMode}
+              className="px-3 py-1.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 text-[11px] font-extrabold shrink-0 cursor-pointer"
+            >
+              Restore Full Map
+            </button>
+          </div>
+        )}
 
-              <button
-                onClick={() => {
-                  setMapMode('standard');
-                  localStorage.setItem('beacon_map_style', 'standard');
-                  toast.info('🗺️ Standard street map enabled');
-                }}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer active:scale-95 shrink-0 ${
-                  mapMode === 'standard'
-                    ? 'bg-white/20 text-white shadow-md ring-1 ring-white/30'
-                    : 'text-slate-300 hover:text-white hover:bg-white/10'
-                }`}
-                title="Standard Google street map"
-              >
-                <MapIcon className="w-3.5 h-3.5 text-slate-300" />
-                <span>Street</span>
-              </button>
+        {/* Truthful Status Banner when Live Traffic is unavailable */}
+        {mapMode === 'traffic' && (isLiveTrafficUnavailable || !diagStats.isOnline) && (
+          <div
+            data-testid="live-traffic-unavailable-banner"
+            className="flex items-center gap-2 px-3.5 py-2 bg-slate-950/92 backdrop-blur-xl border border-amber-400/40 rounded-2xl shadow-xl z-20 text-xs text-amber-200 pointer-events-auto"
+          >
+            <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+            <span className="font-semibold">
+              Live traffic unavailable — displaying standard street map without live traffic overlay.
+            </span>
+          </div>
+        )}
 
-              <button
-                onClick={() => {
-                  setMapMode('traffic');
-                  localStorage.setItem('beacon_map_style', 'traffic');
-                  toast.info('🚗 Live Traffic layer enabled');
-                }}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer active:scale-95 shrink-0 ${
-                  mapMode === 'traffic'
-                    ? 'bg-gradient-to-r from-amber-600 to-orange-600 text-white shadow-md ring-1 ring-white/30'
-                    : 'text-slate-300 hover:text-white hover:bg-white/10'
-                }`}
-                title="Live Traffic congestion overlay"
-              >
-                <Car className="w-3.5 h-3.5 text-amber-300" />
-                <span>Traffic</span>
-              </button>
-              <button
-                onClick={() => {
-                  const next = !isHdrEnabled;
-                  setIsHdrEnabled(next);
-                  localStorage.setItem('beacon_map_hdr', next ? '1' : '0');
-                  toast.info(next ? '✨ Ultra HDR map clarity enabled' : 'Standard SDR map contrast enabled');
-                }}
-                className={`px-2.5 py-1.5 rounded-xl text-[11px] font-black tracking-wide flex items-center gap-1 transition-all cursor-pointer active:scale-95 shrink-0 ${
-                  isHdrEnabled
-                    ? 'bg-gradient-to-r from-[#8957FF] via-[#FF4FA3] to-[#FF8066] text-white shadow-[0_0_14px_rgba(255,79,163,0.5)] ring-1 ring-white/40'
-                    : 'bg-white/5 text-slate-400 hover:text-white hover:bg-white/10 border border-white/10'
-                }`}
-                title="Toggle Ultra-Clear HDR Map Optical Grading"
-              >
-                <Sparkles className="w-3 h-3" />
-                <span>HDR</span>
-              </button>
+        {/* STEP 4: DEVELOPER MAP DIAGNOSTIC SCREEN (Reports actual runtime tile telemetry & live HTTP probes) */}
+        {showMapDiagnostics && (
+          <div
+            data-testid="map-diagnostic-panel"
+            className="w-full max-w-[500px] bg-slate-950/95 backdrop-blur-xl border border-emerald-500/50 rounded-3xl shadow-2xl p-4 z-50 text-white font-mono text-[11px] space-y-3 max-h-[80vh] overflow-y-auto pointer-events-auto"
+          >
+            <div className="flex items-center justify-between gap-2 border-b border-slate-800 pb-2">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                  <h4 className="font-extrabold text-xs text-emerald-300 uppercase tracking-wider truncate">
+                    Map Runtime Diagnostics (Dev Tool)
+                  </h4>
+                </div>
+                <p className="text-[10px] text-slate-400 mt-0.5 truncate">
+                  Live tile telemetry, HTTP status codes &amp; multi-provider verification
+                </p>
+              </div>
+              <div className="flex items-center gap-1 shrink-0">
+                <button
+                  type="button"
+                  onClick={handleForceRefreshTiles}
+                  className="px-2 py-1 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/35 border border-emerald-400/40 text-emerald-300 text-[9.5px] font-bold flex items-center gap-1 cursor-pointer"
+                  title="Flush and re-anchor map tile layer at current viewport"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  <span>Refresh Tiles</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCopyDiagnosticReport}
+                  className="px-2 py-1 rounded-lg bg-sky-500/20 hover:bg-sky-500/35 border border-sky-400/40 text-sky-300 text-[9.5px] font-bold flex items-center gap-1 cursor-pointer"
+                  title="Copy full diagnostic report JSON to clipboard"
+                >
+                  <Copy className="w-3 h-3" />
+                  <span>Copy JSON</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowMapDiagnostics(false)}
+                  className="p-1.5 text-slate-400 hover:text-white rounded-xl hover:bg-white/10 cursor-pointer"
+                  title="Close Diagnostics"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
             </div>
 
-            <button
-              onClick={() => setShowMapControlsPop(true)}
-              className="px-2 py-1.5 text-slate-400 hover:text-white rounded-xl hover:bg-white/10 transition-colors shrink-0 mr-1"
-              title="More layer options and controls"
-            >
-              <Layers className="w-3.5 h-3.5" />
-            </button>
+            {/* Runtime Summary Metrics Grid */}
+            <div className="grid grid-cols-2 gap-2 text-[10.5px]">
+              <div className="p-2 rounded-xl bg-slate-900/90 border border-slate-800">
+                <span className="text-slate-400 block text-[9.5px] uppercase">Current Map Mode</span>
+                <span className="font-bold text-white uppercase">{diagStats.mode}</span>
+                <span className="text-[9.5px] text-sky-300 block">
+                  Zoom: {currentZoom.toFixed(1)}x · Container: {diagStats.containerSize}
+                </span>
+              </div>
+
+              <div className="p-2 rounded-xl bg-slate-900/90 border border-slate-800">
+                <span className="text-slate-400 block text-[9.5px] uppercase">Tile Request Status</span>
+                <span
+                  className={`font-extrabold ${
+                    diagStats.loadedCount > 0
+                      ? 'text-emerald-400'
+                      : diagStats.failedCount > 0
+                      ? 'text-rose-400'
+                      : 'text-amber-300'
+                  }`}
+                >
+                  {diagStats.loadedCount > 0
+                    ? `PASS (${diagStats.domVisibleTiles} DOM TILES VISIBLE)`
+                    : diagStats.failedCount > 0
+                    ? 'FAIL / RECOVERING'
+                    : 'LOADING TILES...'}
+                </span>
+                <span className="text-[9.5px] text-slate-300 block truncate">
+                  {diagStats.lastHttpStatus}
+                </span>
+              </div>
+
+              <div className="p-2 rounded-xl bg-slate-900/90 border border-slate-800">
+                <span className="text-slate-400 block text-[9.5px] uppercase">Loaded / Failed Tiles</span>
+                <div className="flex items-center gap-2 mt-0.5">
+                  <span className="text-emerald-400 font-bold">
+                    Loaded: {diagStats.loadedCount}
+                  </span>
+                  <span className="text-slate-600">|</span>
+                  <span className={diagStats.failedCount > 0 ? 'text-amber-400 font-bold' : 'text-slate-400'}>
+                    Failed: {diagStats.failedCount}
+                  </span>
+                </div>
+                <span className="text-[9.5px] text-slate-400 block">
+                  Requested: {diagStats.requestedCount} · Recovered: {diagStats.fallbackRecoveredCount}
+                </span>
+              </div>
+
+              <div className="p-2 rounded-xl bg-slate-900/90 border border-slate-800">
+                <span className="text-slate-400 block text-[9.5px] uppercase">Network &amp; Platform</span>
+                <span className={diagStats.isOnline ? 'text-emerald-400 font-bold' : 'text-rose-400 font-bold'}>
+                  {diagStats.isOnline ? 'ONLINE' : 'OFFLINE'}
+                </span>
+                <span className="text-[9.5px] text-sky-300 block truncate" title={diagStats.platform}>
+                  {diagStats.platform}
+                </span>
+              </div>
+            </div>
+
+            {/* Active Provider & Tile URL Details */}
+            <div className="p-2.5 rounded-xl bg-slate-900/90 border border-slate-800 space-y-1 text-[10px]">
+              <div className="flex items-center justify-between">
+                <span className="text-slate-400 uppercase font-semibold">Current Tile Provider:</span>
+                <span className="text-emerald-300 font-bold">{diagStats.providerName}</span>
+              </div>
+              <div className="text-slate-300 break-all">
+                <span className="text-slate-500">Template: </span>
+                {diagStats.templateUrl}
+              </div>
+              {diagStats.sampleResolvedUrl && (
+                <div className="text-sky-300 break-all">
+                  <span className="text-slate-500">Last Tile URL: </span>
+                  {diagStats.sampleResolvedUrl}
+                </div>
+              )}
+              <div className="text-slate-300 break-all">
+                <span className="text-slate-500">Last Error: </span>
+                <span className={diagStats.lastError ? 'text-amber-300' : 'text-emerald-400'}>
+                  {diagStats.lastError || 'None (0 unresolved errors)'}
+                </span>
+              </div>
+              {mapMode === 'traffic' && (
+                <div className="text-[9.5px] text-emerald-300/90 pt-1 border-t border-slate-800">
+                  {isLiveTrafficUnavailable || !diagStats.isOnline
+                    ? 'Traffic Status: Live traffic unavailable'
+                    : 'Traffic Provider Info: Keyless Google Live Traffic (lyrs=m,traffic)'}
+                </div>
+              )}
+            </div>
+
+            {/* Tile Engine Selector for Instant Runtime Testing */}
+            <div className="p-2 rounded-xl bg-slate-900/90 border border-slate-800 flex flex-wrap items-center justify-between gap-2">
+              <span className="text-[10px] text-slate-300 font-bold">Tile Provider Engine:</span>
+              <div className="flex flex-wrap items-center gap-1">
+                {[
+                  { id: 'auto', label: 'Google + Fallback' },
+                  { id: 'osm', label: 'OpenStreetMap' },
+                  { id: 'esri', label: 'Esri ArcGIS' },
+                  { id: 'opentopo', label: 'OpenTopo' },
+                ].map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    onClick={() => handleSelectProviderPref(p.id as TileProviderPreference)}
+                    className={`px-2 py-1 rounded-lg text-[9.5px] font-bold cursor-pointer transition-colors ${
+                      providerPref === p.id
+                        ? 'bg-emerald-500 text-slate-950'
+                        : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Step 2 Live Independent Provider Probe Table */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-bold text-slate-300 uppercase">
+                  Live Provider Verification Table
+                </span>
+                <button
+                  type="button"
+                  onClick={runAllProvidersDiagnostic}
+                  disabled={isProbingProviders}
+                  className="px-2.5 py-1 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white text-[10px] font-bold cursor-pointer flex items-center gap-1"
+                >
+                  {isProbingProviders && <Loader2 className="w-3 h-3 animate-spin" />}
+                  <span>{isProbingProviders ? 'Testing Tiles...' : 'Test All Providers Now'}</span>
+                </button>
+              </div>
+
+              {probeRows.length > 0 ? (
+                <div className="overflow-x-auto rounded-xl border border-slate-800">
+                  <table className="w-full text-left border-collapse text-[9.5px]">
+                    <thead>
+                      <tr className="bg-slate-900 text-slate-400 border-b border-slate-800">
+                        <th className="p-1.5">Mode</th>
+                        <th className="p-1.5">Provider &amp; Tile URL</th>
+                        <th className="p-1.5">HTTP Status</th>
+                        <th className="p-1.5">Result</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/80 bg-slate-950/80">
+                      {probeRows.map((row, idx) => (
+                        <tr key={idx}>
+                          <td className="p-1.5 font-bold text-white whitespace-nowrap">{row.mode}</td>
+                          <td className="p-1.5 max-w-[190px]">
+                            <div className="text-sky-300 font-semibold truncate">{row.provider}</div>
+                            <div className="text-slate-500 truncate" title={row.url}>
+                              {row.url}
+                            </div>
+                          </td>
+                          <td className="p-1.5 text-slate-300 whitespace-nowrap">
+                            <div>{row.httpStatus}</div>
+                            <div className="text-slate-500">
+                              {row.bytes.toLocaleString()}B · {row.latencyMs}ms
+                            </div>
+                          </td>
+                          <td className="p-1.5 whitespace-nowrap">
+                            <span
+                              className={`px-1.5 py-0.5 rounded font-extrabold ${
+                                row.result === 'PASS'
+                                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                                  : 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                              }`}
+                            >
+                              {row.result}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="p-2.5 rounded-xl bg-slate-900/60 border border-slate-800 text-slate-400 text-center text-[10px]">
+                  Click &ldquo;Test All Providers Now&rdquo; to probe live HTTP status &amp; payload size across Street, Terrain, Satellite, and Traffic endpoints.
+                </div>
+              )}
+            </div>
+
+            {/* Global Network 403 / 404 / 429 Error Monitor & Self-Test */}
+            <div className="space-y-1.5 pt-1 border-t border-slate-800">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-[10px] font-bold text-amber-300 uppercase">
+                  Network 403 / 404 / 429 Error Listener ({networkErrorAlerts.length})
+                </span>
+                <div className="flex items-center gap-1">
+                  {([403, 404, 429] as const).map((code) => (
+                    <button
+                      key={code}
+                      type="button"
+                      data-testid={`test-http-${code}-btn`}
+                      onClick={() => {
+                        const sampleUrl =
+                          diagStats.sampleResolvedUrl ||
+                          `https://tile.openstreetmap.org/15/23456/15123.png?testStatus=${code}`;
+                        emitNetworkHttpStatusError(
+                          code,
+                          sampleUrl,
+                          code === 403
+                            ? 'Forbidden'
+                            : code === 404
+                            ? 'Not Found'
+                            : 'Too Many Requests',
+                          `Diagnostic Self-Test (${diagStats.providerName})`
+                        );
+                      }}
+                      className="px-2 py-0.5 rounded bg-rose-500/20 hover:bg-rose-500/35 border border-rose-400/40 text-rose-300 text-[9px] font-bold cursor-pointer"
+                      title={`Trigger test HTTP ${code} error toast notification`}
+                    >
+                      Test {code}
+                    </button>
+                  ))}
+                  {networkErrorAlerts.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setNetworkErrorAlerts([])}
+                      className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[9px] font-bold cursor-pointer"
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+              </div>
+              {networkErrorAlerts.length > 0 && (
+                <div className="max-h-28 overflow-y-auto rounded-xl bg-rose-950/35 border border-rose-800/50 p-2 space-y-1.5 text-[9.5px]">
+                  {networkErrorAlerts.slice(0, 8).map((alert, idx) => (
+                    <div
+                      key={`${alert.timestamp}-${idx}`}
+                      className="p-1.5 rounded-lg bg-slate-950/90 border border-rose-500/30 space-y-0.5 break-all"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-rose-300 font-extrabold">
+                          HTTP {alert.status} {alert.statusText} · {alert.providerHost}
+                        </span>
+                        <span className="text-slate-500 text-[8.5px]">
+                          {new Date(alert.timestamp).toLocaleTimeString()}
+                        </span>
+                      </div>
+                      <div className="text-amber-200">{alert.reason}</div>
+                      <div className="text-slate-400 truncate" title={alert.url}>
+                        URL: {alert.url}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Live Tile Request Console Stream (Full Tile URL + Full Provider Endpoint) */}
+            <div className="space-y-1.5 pt-1 border-t border-slate-800">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-bold text-emerald-300 uppercase">
+                  Console Tile Request Stream ({tileConsoleLogs.length})
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setTileConsoleLogs([])}
+                  className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[9px] font-bold cursor-pointer"
+                >
+                  Clear Log
+                </button>
+              </div>
+              <div className="max-h-36 overflow-y-auto rounded-xl bg-slate-900/90 border border-slate-800 p-2 space-y-1.5 text-[9.5px]">
+                {tileConsoleLogs.length === 0 ? (
+                  <div className="text-slate-500 text-center py-2">
+                    Pan or zoom map to log tile requests to browser console...
+                  </div>
+                ) : (
+                  tileConsoleLogs.slice(0, 12).map((entry, idx) => (
+                    <div
+                      key={`${entry.timestamp}-${idx}`}
+                      className="p-1.5 rounded-lg bg-slate-950/90 border border-slate-800/90 space-y-0.5 break-all"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-emerald-400 font-bold">
+                          [{entry.stage}] {entry.providerName}
+                        </span>
+                        {entry.httpStatus && (
+                          <span
+                            className={`px-1.5 py-0.2 rounded font-bold ${
+                              entry.httpStatus >= 400
+                                ? 'bg-rose-500/20 text-rose-300'
+                                : 'bg-emerald-500/20 text-emerald-300'
+                            }`}
+                          >
+                            HTTP {entry.httpStatus}
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-slate-400">
+                        <span className="text-slate-500">Endpoint: </span>
+                        {entry.providerEndpoint}
+                      </div>
+                      <div className="text-sky-300">
+                        <span className="text-slate-500">Tile URL: </span>
+                        {entry.tileUrl}
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
           </div>
         )}
 
@@ -2966,8 +5960,8 @@ export const LiveMap: React.FC<LiveMapProps> = ({
                   <Layers className="w-4 h-4" />
                 </div>
                 <div>
-                  <h4 className="font-bold text-xs text-white">Map Views & Layers</h4>
-                  <p className="text-[10px] text-slate-400">High-definition tiles, orientation & trails</p>
+                  <h4 className="font-bold text-xs text-white">Map Views & HDR Visuals</h4>
+                  <p className="text-[10px] text-slate-400">2x Retina HDR optical grading, layers & trails</p>
                 </div>
               </div>
               <button
@@ -2980,15 +5974,30 @@ export const LiveMap: React.FC<LiveMapProps> = ({
 
             {/* Section 1: Map Styles Grid */}
             <div>
-              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-2 font-mono">
-                Select Layer Style
-              </span>
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider font-mono">
+                  Select Layer Style
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowMapControlsPop(false);
+                    setShowMapDiagnostics(true);
+                    if (probeRows.length === 0) {
+                      runAllProvidersDiagnostic();
+                    }
+                  }}
+                  className="px-2 py-0.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/40 text-emerald-300 text-[10px] font-bold cursor-pointer"
+                >
+                  Open Map Diagnostics
+                </button>
+              </div>
               <div className="grid grid-cols-2 gap-2">
                 {[
-                  { id: 'terrain', name: 'Terrain Topo', icon: Mountain, desc: 'Elevation & Contours' },
-                  { id: 'satellite', name: 'Satellite HD', icon: Globe, desc: 'Aerial Hybrid Imagery' },
-                  { id: 'standard', name: 'Standard HD', icon: MapIcon, desc: 'Google Street Retina' },
-                  { id: 'traffic', name: 'Live Traffic', icon: Car, desc: 'Real-time Congestion' },
+                  { id: 'terrain', name: 'Terrain Topo HDR', icon: Mountain, desc: 'Elevation & Contours' },
+                  { id: 'satellite', name: 'Satellite 2x HDR', icon: Globe, desc: 'Aerial Hybrid Imagery' },
+                  { id: 'standard', name: 'Street Retina HDR', icon: MapIcon, desc: 'High-Contrast Roads' },
+                  { id: 'traffic', name: 'Live Traffic HDR', icon: Car, desc: 'Real-time Congestion' },
                 ].map((item) => {
                   const Icon = item.icon;
                   const isSelected = mapMode === item.id;
@@ -2996,9 +6005,7 @@ export const LiveMap: React.FC<LiveMapProps> = ({
                     <button
                       key={item.id}
                       onClick={() => {
-                        setMapMode(item.id as any);
-                        localStorage.setItem('beacon_map_style', item.id);
-                        toast.info(`${item.name} enabled`);
+                        handleSelectMapMode(item.id as MapLayerMode, `${item.name} enabled`);
                       }}
                       className={`p-2.5 rounded-2xl border text-left transition-all flex items-start gap-2.5 cursor-pointer active:scale-95 ${
                         isSelected
@@ -3019,6 +6026,129 @@ export const LiveMap: React.FC<LiveMapProps> = ({
                     </button>
                   );
                 })}
+              </div>
+            </div>
+
+            {/* Section 1B: HDR Optical Tone-Mapping Engine */}
+            <div className="pt-2 border-t border-white/10">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider font-mono flex items-center gap-1">
+                  <Sparkles className="w-3 h-3 text-[#FF4FA3]" />
+                  <span>HDR Tone-Mapping Profile</span>
+                </span>
+                <button
+                  onClick={() => {
+                    const next = !isHdrEnabled;
+                    setIsHdrEnabled(next);
+                    localStorage.setItem('beacon_map_hdr', next ? '1' : '0');
+                    toast.info(next ? '✨ HDR Optical Grading Active' : 'SDR Standard Mode');
+                  }}
+                  className={`px-2 py-0.5 rounded-full text-[10px] font-extrabold cursor-pointer transition-all ${
+                    isHdrEnabled
+                      ? 'bg-[#00D6A0]/20 text-[#00D6A0] border border-[#00D6A0]/40'
+                      : 'bg-white/10 text-slate-400 border border-white/10'
+                  }`}
+                >
+                  {isHdrEnabled ? 'HDR ON (2x Retina)' : 'SDR OFF'}
+                </button>
+              </div>
+              <div className="grid grid-cols-3 gap-1.5">
+                {[
+                  { id: 'ultra', label: 'Ultra HDR', desc: 'Crisp & Pure' },
+                  { id: 'vivid', label: 'Vivid Bloom', desc: 'Cinema Warm' },
+                  { id: 'cyber', label: 'Cyber Neon', desc: 'Deep Contrast' },
+                ].map((preset) => {
+                  const active = isHdrEnabled && hdrPreset === preset.id;
+                  return (
+                    <button
+                      key={preset.id}
+                      onClick={() => {
+                        setIsHdrEnabled(true);
+                        setHdrPreset(preset.id as HdrPresetMode);
+                        localStorage.setItem('beacon_map_hdr', '1');
+                        localStorage.setItem('beacon_map_hdr_preset', preset.id);
+                        toast.info(`✨ ${preset.label} map visuals enabled`);
+                      }}
+                      className={`p-2 rounded-xl border text-center transition-all cursor-pointer active:scale-95 ${
+                        active
+                          ? 'bg-gradient-to-br from-[#8957FF]/35 via-[#FF4FA3]/25 to-[#00D9FF]/25 border-[#FF4FA3]/80 ring-1 ring-[#FF4FA3]/50 text-white shadow-md'
+                          : 'bg-white/5 border-white/10 text-slate-300 hover:bg-white/10'
+                      }`}
+                    >
+                      <span className="font-extrabold text-[11px] block">{preset.label}</span>
+                      <span className="text-[9px] text-slate-400 block">{preset.desc}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Section 1C: Level-of-Detail (LOD) GPU Marker Culling Manager */}
+            <div
+              data-testid="map-lod-manager-section"
+              className="pt-2 border-t border-white/10 space-y-2"
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider font-mono flex items-center gap-1">
+                  <Eye className="w-3 h-3 text-emerald-400" />
+                  <span>Level-of-Detail (LOD) GPU Manager</span>
+                </span>
+                <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 border border-emerald-400/30 text-[9.5px] font-mono font-bold text-emerald-300">
+                  {lodState.culledMarkersCount > 0
+                    ? `${lodState.culledMarkersCount} Culled · ${lodState.visibleNonEssentialCount} Shown`
+                    : `${lodState.tierLabel}`}
+                </span>
+              </div>
+              <div className="grid grid-cols-3 gap-1.5">
+                {[
+                  {
+                    id: 'auto' as MapLodMode,
+                    label: 'Auto LOD',
+                    desc: 'Smart Zoom Culling',
+                  },
+                  {
+                    id: 'aggressive' as MapLodMode,
+                    label: 'Max GPU Saver',
+                    desc: 'Low-End Device Mode',
+                  },
+                  {
+                    id: 'off' as MapLodMode,
+                    label: 'All Visible',
+                    desc: 'Never Hide Pins',
+                  },
+                ].map((opt) => {
+                  const active = lodMode === opt.id;
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      data-testid={`map-lod-mode-${opt.id}`}
+                      onClick={() => {
+                        handleSelectLodMode(opt.id);
+                        toast.info(`Map Level-of-Detail set to ${opt.label}`);
+                      }}
+                      className={`p-2 rounded-xl border text-center transition-all cursor-pointer active:scale-95 ${
+                        active
+                          ? 'bg-emerald-500/25 border-emerald-400/80 ring-1 ring-emerald-400/50 text-white shadow-md'
+                          : 'bg-white/5 border-white/10 text-slate-300 hover:bg-white/10'
+                      }`}
+                    >
+                      <span className="font-extrabold text-[11px] block">{opt.label}</span>
+                      <span className="text-[9px] text-slate-400 block">{opt.desc}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-1 px-2.5 py-1.5 rounded-xl bg-slate-950/60 border border-white/10 text-[10px] text-slate-300">
+                <span>
+                  Zoom <strong className="text-sky-300">{currentZoom.toFixed(1)}x</strong> ·{' '}
+                  <strong className="text-white">{lodState.tierLabel}</strong>
+                </span>
+                <span className="text-slate-400 font-mono text-[9.5px]">
+                  Places ≥{lodState.thresholds.savedPlacesMinZoom}x · Reports ≥
+                  {lodState.thresholds.communityReportsMinZoom}x · POIs ≥
+                  {lodState.thresholds.nearbyPoisMinZoom}x
+                </span>
               </div>
             </div>
 
@@ -3058,6 +6188,52 @@ export const LiveMap: React.FC<LiveMapProps> = ({
                   <RotateCw className="w-3.5 h-3.5 text-sky-400" />
                   <span>+45°</span>
                 </button>
+              </div>
+            </div>
+
+            {/* Section 2B: Persistent Auto-Follow Mode & Movement Threshold */}
+            <div className="pt-2 border-t border-white/10 space-y-2">
+              <div className="flex items-center justify-between">
+                <div>
+                  <span className="font-bold text-xs text-white flex items-center gap-1.5">
+                    <Footprints className="w-3.5 h-3.5 text-[#00D6A0]" />
+                    <span>Persistent Auto-Follow</span>
+                  </span>
+                  <span className="text-[10px] text-slate-400 block">
+                    Centers map when movement exceeds {autoFollowThresholdMeters}m
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={toggleAutoFollowMode}
+                  className={`px-2.5 py-1 rounded-xl text-[10px] font-extrabold cursor-pointer transition-all border ${
+                    isAutoFollowEnabled
+                      ? 'bg-[#00D6A0]/20 text-[#00D6A0] border-[#00D6A0]/50 shadow-xs'
+                      : 'bg-white/10 text-slate-400 border-white/10 hover:text-white'
+                  }`}
+                >
+                  {isAutoFollowEnabled ? 'AUTO ON' : 'PAUSED'}
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between text-xs bg-slate-900/60 p-2 rounded-xl">
+                <span className="text-[10px] text-slate-400 font-mono">Move Threshold:</span>
+                <div className="flex items-center gap-1 bg-slate-800 p-0.5 rounded-lg text-[10px]">
+                  {[5, 10, 25, 50].map((meters) => (
+                    <button
+                      key={meters}
+                      type="button"
+                      onClick={() => updateAutoFollowThreshold(meters)}
+                      className={`px-2 py-0.5 rounded-md font-semibold transition-colors cursor-pointer ${
+                        autoFollowThresholdMeters === meters
+                          ? 'bg-[#00D6A0] text-slate-950 font-extrabold shadow-xs'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      {meters}m
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
 
@@ -3212,53 +6388,61 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         )}
       </div>
 
-      {/* Floating Controls: Zoom, Compass & Location */}
-      <div className={`absolute ${roomOnlyMode ? 'bottom-4' : 'bottom-20'} right-4 md:bottom-6 md:right-6 z-10 flex flex-col items-center gap-2.5`}>
-        {/* Zoom In & Out */}
-        <div className={`${themeConfig.glassPanel} rounded-2xl shadow-xl border ${themeConfig.glassBorder} overflow-hidden flex flex-col`}>
-          <button
-            onClick={zoomIn}
-            title="Zoom In"
-            className="w-11 h-11 text-white hover:bg-white/10 active:scale-95 transition-transform flex items-center justify-center cursor-pointer border-b border-white/10"
-          >
-            <Plus className="w-4 h-4" />
-          </button>
-          <button
-            onClick={zoomOut}
-            title="Zoom Out"
-            className="w-11 h-11 text-white hover:bg-white/10 active:scale-95 transition-transform flex items-center justify-center cursor-pointer"
-          >
-            <Minus className="w-4 h-4" />
-          </button>
-        </div>
+      {/* Bottom-Right Mobile-Ergonomic Floating HUD Controls (Orientation, Location & Custom Dark-Themed Zoom Pod in Thumb Zone) */}
+      <div
+        className={`absolute ${roomOnlyMode ? 'bottom-4' : 'bottom-20'} right-3.5 md:bottom-6 md:right-6 z-20 flex flex-col items-center gap-2`}
+      >
+        {/* 3D / 2D Perspective Toggle Button */}
+        <button
+          onClick={() => {
+            const next3d = !is3dMode;
+            setIs3dMode(next3d);
+            localStorage.setItem('beacon_map_3d', next3d ? '1' : '0');
+            setTimeout(() => {
+              mapInstanceRef.current?.invalidateSize({ pan: false, animate: false });
+            }, 60);
+            toast.info(next3d ? '🧊 3D Map Tilt Enabled' : '🗺️ 2D Crystal-Clear HD View');
+          }}
+          title={is3dMode ? 'Switch to 2D Razor-Sharp HD View' : 'Enable 3D Perspective Tilt'}
+          className={`w-12 h-11 rounded-2xl shadow-xl border flex flex-col items-center justify-center transition-all cursor-pointer active:scale-95 font-mono font-black text-xs ${
+            is3dMode
+              ? 'bg-gradient-to-br from-[#00D6A0] to-[#00D9FF] text-slate-950 border-[#00D6A0] shadow-[#00D6A0]/30 ring-2 ring-[#00D6A0]/40'
+              : 'bg-[#0B081B]/95 border-[#8957FF]/35 text-white hover:bg-[#1B153A] hover:border-[#00D9FF]/50 shadow-[0_8px_24px_rgba(11,8,27,0.85)]'
+          }`}
+        >
+          <span>{is3dMode ? '3D' : '2D'}</span>
+          <span className={`text-[8px] font-bold -mt-0.5 ${is3dMode ? 'text-slate-900' : 'text-[#00D9FF]'}`}>
+            {is3dMode ? 'TILT' : 'HD'}
+          </span>
+        </button>
 
         {/* Compass Rose Widget (Oriented to True North with Tap-to-Reset) */}
         <div className="relative group">
           <button
             onClick={resetNorth}
             title={bearing !== 0 ? `Reset to North (Current: ${bearing}° ${getCompassHeading(bearing)})` : 'Oriented North (0°)'}
-            className={`w-12 h-12 rounded-2xl shadow-xl border flex flex-col items-center justify-center transition-all cursor-pointer active:scale-95 ${
+            className={`w-12 h-11 rounded-2xl shadow-xl border flex flex-col items-center justify-center transition-all cursor-pointer active:scale-95 ${
               bearing !== 0
                 ? 'bg-sky-600 text-white border-sky-400 shadow-sky-500/30 ring-2 ring-sky-400/40'
-                : `${themeConfig.glassPanel} text-white hover:bg-white/10 ${themeConfig.glassBorder}`
+                : 'bg-[#0B081B]/95 border-[#8957FF]/35 text-white hover:bg-[#1B153A] hover:border-[#00D9FF]/50 shadow-[0_8px_24px_rgba(11,8,27,0.85)]'
             }`}
           >
             {/* Rotating Compass Needle */}
             <div
-              className="relative w-6 h-6 flex items-center justify-center transition-transform"
+              className="relative w-5 h-5 flex items-center justify-center transition-transform"
               style={{
                 transform: `rotate(${-bearing}deg)`,
                 transition: isGesturing ? 'none' : 'transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1)',
               }}
             >
               {/* North Pointer (Red) */}
-              <div className="absolute top-0 w-0 h-0 border-x-[3.5px] border-x-transparent border-b-[10px] border-b-rose-500" />
+              <div className="absolute top-0 w-0 h-0 border-x-[3px] border-x-transparent border-b-[9px] border-b-rose-500" />
               {/* Pivot */}
               <div className="w-1.5 h-1.5 rounded-full bg-slate-400 z-10" />
               {/* South Pointer (Silver) */}
-              <div className="absolute bottom-0 w-0 h-0 border-x-[3.5px] border-x-transparent border-t-[10px] border-t-slate-400" />
+              <div className="absolute bottom-0 w-0 h-0 border-x-[3px] border-x-transparent border-t-[9px] border-t-slate-400" />
             </div>
-            <span className={`text-[8.5px] font-bold tracking-tight font-mono -mt-0.5 ${bearing !== 0 ? 'text-sky-300' : 'text-slate-400'}`}>
+            <span className={`text-[8px] font-bold tracking-tight font-mono -mt-0.5 ${bearing !== 0 ? 'text-sky-300' : 'text-slate-400'}`}>
               {bearing !== 0 ? `${bearing}°` : 'N'}
             </span>
           </button>
@@ -3295,14 +6479,14 @@ export const LiveMap: React.FC<LiveMapProps> = ({
         <button
           onClick={toggleHeadingUpMode}
           title={isHeadingUpMode ? 'Heading-Up Follow Active (Tap to return to North-Up)' : 'Enable Heading-Up Direction Follow'}
-          className={`w-12 h-12 rounded-2xl shadow-xl border flex flex-col items-center justify-center transition-all cursor-pointer active:scale-95 ${
+          className={`w-12 h-11 rounded-2xl shadow-xl border flex flex-col items-center justify-center transition-all cursor-pointer active:scale-95 ${
             isHeadingUpMode
               ? 'bg-gradient-to-br from-cyan-500 to-blue-600 text-white border-cyan-300 shadow-cyan-500/30 ring-2 ring-cyan-400/50'
-              : `${themeConfig.glassPanel} text-white hover:bg-white/10 ${themeConfig.glassBorder}`
+              : 'bg-[#0B081B]/95 border-[#8957FF]/35 text-white hover:bg-[#1B153A] hover:border-[#00D9FF]/50 shadow-[0_8px_24px_rgba(11,8,27,0.85)]'
           }`}
         >
           <Navigation
-            className={`w-5 h-5 transition-transform duration-200 ${
+            className={`w-4 h-4 transition-transform duration-200 ${
               isHeadingUpMode ? 'text-white fill-current scale-110' : 'text-cyan-400'
             }`}
           />
@@ -3311,14 +6495,85 @@ export const LiveMap: React.FC<LiveMapProps> = ({
           </span>
         </button>
 
+        {/* Persistent Auto-Follow Mode Toggle Button */}
+        <button
+          type="button"
+          onClick={toggleAutoFollowMode}
+          data-testid="auto-follow-toggle"
+          title={
+            isAutoFollowEnabled
+              ? `Auto-Follow Active (Centers when moving ≥${autoFollowThresholdMeters}m — Tap to Pause)`
+              : `Enable Persistent Auto-Follow (≥${autoFollowThresholdMeters}m threshold)`
+          }
+          aria-label="Toggle persistent auto-follow mode"
+          aria-pressed={isAutoFollowEnabled}
+          className={`w-12 h-11 rounded-2xl shadow-xl border flex flex-col items-center justify-center transition-all cursor-pointer active:scale-95 ${
+            isAutoFollowEnabled
+              ? 'bg-gradient-to-br from-[#00D6A0] to-[#00D9FF] text-slate-950 border-[#00D6A0] shadow-[#00D6A0]/30 ring-2 ring-[#00D6A0]/45'
+              : 'bg-[#0B081B]/95 border-[#8957FF]/35 text-white hover:bg-[#1B153A] hover:border-[#00D9FF]/50 shadow-[0_8px_24px_rgba(11,8,27,0.85)]'
+          }`}
+        >
+          <Footprints
+            className={`w-4 h-4 ${isAutoFollowEnabled ? 'text-slate-950' : 'text-[#00D6A0]'}`}
+          />
+          <span
+            className={`text-[8px] font-bold tracking-tight font-mono mt-0.5 ${
+              isAutoFollowEnabled ? 'text-slate-950 font-black' : 'text-slate-400'
+            }`}
+          >
+            {isAutoFollowEnabled ? `≥${autoFollowThresholdMeters}m` : 'AUTO'}
+          </span>
+        </button>
+
         {/* Center on My Location Button */}
         <button
           onClick={centerOnMyLocation}
           title="Center on my location"
-          className={`w-12 h-12 ${themeConfig.glassPanel} text-white hover:bg-white/10 active:scale-95 transition-transform rounded-2xl shadow-xl border ${themeConfig.glassBorder} flex items-center justify-center cursor-pointer`}
+          aria-label="Center on my location"
+          className="w-12 h-11 bg-[#0B081B]/95 border border-[#8957FF]/35 text-white hover:bg-[#1B153A] hover:border-[#00D9FF]/50 active:scale-95 transition-all rounded-2xl shadow-[0_8px_24px_rgba(11,8,27,0.85)] flex items-center justify-center cursor-pointer"
         >
-          <Crosshair className="w-5 h-5 text-sky-400" />
+          <Crosshair className="w-5 h-5 text-[#00D9FF]" />
         </button>
+
+        {/* Custom Dark-Themed Leaflet Map Zoom Controls (Positioned at Bottom-Right Thumb Zone for Mobile Ergonomics) */}
+        <div
+          role="group"
+          aria-label="Map zoom controls"
+          data-testid="custom-zoom-controls"
+          className="bg-[#0B081B]/95 border border-[#8957FF]/45 rounded-2xl shadow-[0_12px_30px_rgba(11,8,27,0.9),0_0_18px_rgba(137,87,255,0.2)] overflow-hidden flex flex-col items-center backdrop-blur-md"
+        >
+          <button
+            type="button"
+            onClick={zoomIn}
+            disabled={currentZoom >= 22}
+            title="Zoom in (+)"
+            aria-label="Zoom in"
+            className="w-12 h-11 text-[#F8F7FF] hover:bg-[#8957FF]/25 hover:text-[#00D9FF] active:bg-[#8957FF]/40 active:scale-95 disabled:opacity-35 disabled:pointer-events-none transition-all flex items-center justify-center cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00D9FF]"
+          >
+            <Plus className="w-5 h-5 stroke-[2.5]" />
+          </button>
+
+          <button
+            type="button"
+            onClick={resetOptimalZoom}
+            title="Current zoom level (Tap to reset to 17x HD street zoom)"
+            aria-label={`Current zoom level ${Math.round(currentZoom)}x, tap to reset zoom`}
+            className="w-12 py-1 bg-[#130F2B] border-y border-[#8957FF]/30 text-[10px] font-mono font-extrabold text-[#00D9FF] hover:text-white hover:bg-[#1B153A] transition-colors flex items-center justify-center cursor-pointer select-none"
+          >
+            {Math.round(currentZoom)}x
+          </button>
+
+          <button
+            type="button"
+            onClick={zoomOut}
+            disabled={currentZoom <= 2}
+            title="Zoom out (-)"
+            aria-label="Zoom out"
+            className="w-12 h-11 text-[#F8F7FF] hover:bg-[#8957FF]/25 hover:text-[#00D9FF] active:bg-[#8957FF]/40 active:scale-95 disabled:opacity-35 disabled:pointer-events-none transition-all flex items-center justify-center cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00D9FF]"
+          >
+            <Minus className="w-5 h-5 stroke-[2.5]" />
+          </button>
+        </div>
       </div>
     
 
@@ -4234,6 +7489,380 @@ export const LiveMap: React.FC<LiveMapProps> = ({
           </div>
         </div>
       )}
+
+      {/* CrowdZone Community Reports, Queues, Crowd Heatmap & Issue Composer Overlay */}
+      <CrowdZoneOverlay
+        roomOnlyMode={roomOnlyMode}
+        reports={czReports}
+        filteredReports={filteredCzReports}
+        activeLayers={czActiveLayers}
+        onToggleLayer={handleToggleCzLayer}
+        timeFilter={czTimeFilter}
+        onChangeTimeFilter={setCzTimeFilter}
+        crowdWindow={czCrowdWindow}
+        onChangeCrowdWindow={setCzCrowdWindow}
+        showLayersMenu={showCzLayersMenu}
+        onToggleLayersMenu={() => setShowCzLayersMenu((v) => !v)}
+        onCloseLayersMenu={() => setShowCzLayersMenu(false)}
+        isSearchingEmergency={isSearchingCzEmergency}
+        onSearchEmergencyFacilities={searchCzEmergencyFacilities}
+        onClearEmergencyFacilities={() => {
+          setCzEmergencyPins([]);
+          toast.info('Cleared emergency facility pins');
+        }}
+        emergencyCount={czEmergencyPins.length}
+        isPickingPin={isPickingCzPin}
+        onCancelPickPin={() => {
+          setIsPickingCzPin(false);
+          setCzComposerState((prev) => ({ ...prev, open: true }));
+        }}
+        onUseMyLocationForPin={() => {
+          if (myLocation && Number.isFinite(myLocation.latitude) && Number.isFinite(myLocation.longitude)) {
+            mapInstanceRef.current?.setView([myLocation.latitude, myLocation.longitude], 17);
+          } else {
+            requestLocationUpdate();
+          }
+        }}
+        onConfirmCenterPin={() => {
+          const center = mapInstanceRef.current?.getCenter();
+          setIsPickingCzPin(false);
+          setCzComposerState((prev) => ({
+            ...prev,
+            open: true,
+            step: 'details',
+            loc: center
+              ? { lat: center.lat, lng: center.lng }
+              : prev.loc,
+          }));
+        }}
+        composerState={czComposerState}
+        setComposerState={setCzComposerState}
+        onOpenComposer={(initialCategory?: CrowdZoneCategoryId) => {
+          const center = mapInstanceRef.current?.getCenter();
+          const defaultLoc =
+            myLocation && Number.isFinite(myLocation.latitude) && myLocation.latitude !== 0
+              ? { lat: myLocation.latitude, lng: myLocation.longitude }
+              : center
+              ? { lat: center.lat, lng: center.lng }
+              : { lat: 28.6139, lng: 77.209 };
+          const catObj = initialCategory
+            ? getCrowdZoneCategory(initialCategory)
+            : getCrowdZoneCategory('queue');
+          setCzComposerState({
+            open: true,
+            step: initialCategory ? 'details' : 'category',
+            category: catObj.id,
+            subcategory: catObj.subs[0],
+            loc: defaultLoc,
+          });
+        }}
+        onRequestMapPinPick={() => {
+          setCzComposerState((prev) => ({ ...prev, open: false }));
+          setIsPickingCzPin(true);
+        }}
+        onSubmitReport={(newReport) => {
+          const next = [newReport, ...czReports];
+          persistCzReports(next);
+          const cat = getCrowdZoneCategory(newReport.category);
+          setCzActiveLayers((prev) => {
+            const copy = new Set(prev);
+            copy.add(cat.layer);
+            return copy;
+          });
+          setCzComposerState((prev) => ({ ...prev, open: false }));
+          mapInstanceRef.current?.panTo([newReport.lat, newReport.lng]);
+          setSelectedCzReportId(newReport.id);
+          toast.success(`Reported: ${newReport.subcategory}`);
+        }}
+        selectedReportId={selectedCzReportId}
+        onSelectReport={setSelectedCzReportId}
+        onDeleteReport={handleDeleteCzReport}
+        onDeleteReportUpdate={handleDeleteCzReportUpdate}
+        onDeleteAllReports={handleDeleteAllCzReports}
+        onResetSeedReports={handleResetSeedCzReports}
+        onVoteReport={handleVoteCzReport}
+        onAddReportUpdate={handleAddCzReportUpdate}
+        onRouteToReport={(lat, lng, label) => {
+          startNavigation(lat, lng, label);
+        }}
+        onFocusReportOnMap={(lat, lng) => {
+          mapInstanceRef.current?.setView([lat, lng], Math.max(16, currentZoom));
+        }}
+        onShareReportToRoom={handleShareCzReportToRoom}
+        rooms={rooms}
+        currentUserId={user?.id || 'guest-user'}
+        currentUserName={user?.fullName || user?.username || 'Community Member'}
+        myCoords={
+          myLocation && Number.isFinite(myLocation.latitude) && myLocation.latitude !== 0
+            ? { lat: myLocation.latitude, lng: myLocation.longitude }
+            : null
+        }
+        geofencesCount={customGeofences.length}
+        geofenceAlertsCount={geofenceEvents.length}
+        isDrawingGeofence={geofenceDraft.active || isControlledTestMode}
+        onOpenGeofenceManager={() => setOpenGeofenceManagerSignal((n) => n + 1)}
+        onStartDrawGeofence={(shape) => {
+          const center = mapInstanceRef.current?.getCenter();
+          const defaultCenter =
+            center
+              ? { lat: center.lat, lng: center.lng }
+              : myLocation && Number.isFinite(myLocation.latitude) && myLocation.latitude !== 0
+              ? { lat: myLocation.latitude, lng: myLocation.longitude }
+              : { lat: 28.6139, lng: 77.209 };
+          setGeofenceDraft({
+            active: true,
+            shape,
+            name: `Zone ${customGeofences.length + 1}`,
+            color: '#00D6A0',
+            points: [],
+            center: shape === 'circle' ? defaultCenter : null,
+            radiusMeters: 250,
+            notifyOnEnter: true,
+            notifyOnExit: true,
+            watchedUserIds: [],
+          });
+          toast.info(
+            shape === 'polygon'
+              ? 'Tap on the map (or tap "+ Add Point") to draw at least 3 polygon corners'
+              : 'Tap on the map to place the circle center and adjust the radius slider'
+          );
+        }}
+        onDeleteAllGeofences={() => {
+          persistCustomGeofences([]);
+          toast.info('Cleared all custom geofence zones');
+        }}
+      />
+
+      {/* Custom Map Geofence Drawing & Friend Enter/Leave Push Notification Overlay */}
+      <CustomGeofenceOverlay
+        roomOnlyMode={roomOnlyMode}
+        hideFloatingButtons={true}
+        externalOpenManagerSignal={openGeofenceManagerSignal}
+        geofences={customGeofences}
+        events={geofenceEvents}
+        draft={geofenceDraft}
+        setDraft={setGeofenceDraft}
+        onStartDrawing={(shape: CustomGeofenceShape) => {
+          const center = mapInstanceRef.current?.getCenter();
+          const defaultCenter =
+            center
+              ? { lat: center.lat, lng: center.lng }
+              : myLocation && Number.isFinite(myLocation.latitude) && myLocation.latitude !== 0
+              ? { lat: myLocation.latitude, lng: myLocation.longitude }
+              : { lat: 28.6139, lng: 77.209 };
+          setGeofenceDraft({
+            active: true,
+            shape,
+            name: `Zone ${customGeofences.length + 1}`,
+            color: '#00D6A0',
+            points: [],
+            center: shape === 'circle' ? defaultCenter : null,
+            radiusMeters: 250,
+            notifyOnEnter: true,
+            notifyOnExit: true,
+            watchedUserIds: [],
+          });
+          toast.info(
+            shape === 'polygon'
+              ? 'Tap on the map (or tap "+ Add Point") to draw at least 3 polygon corners'
+              : 'Tap on the map to place the circle center and adjust the radius slider'
+          );
+        }}
+        onAddMapCenterVertex={() => {
+          const center = mapInstanceRef.current?.getCenter();
+          if (!center) return;
+          if (geofenceDraft.shape === 'polygon') {
+            setGeofenceDraft((prev) => ({
+              ...prev,
+              points: [...prev.points, { lat: center.lat, lng: center.lng }],
+            }));
+          } else {
+            setGeofenceDraft((prev) => ({
+              ...prev,
+              center: { lat: center.lat, lng: center.lng },
+            }));
+          }
+        }}
+        onUndoVertex={() => {
+          setGeofenceDraft((prev) => ({
+            ...prev,
+            points: prev.points.slice(0, -1),
+          }));
+        }}
+        onClearDraftVertices={() => {
+          setGeofenceDraft((prev) => ({
+            ...prev,
+            points: [],
+          }));
+        }}
+        onCancelDrawing={() => {
+          setGeofenceDraft((prev) => ({
+            ...prev,
+            active: false,
+            points: [],
+          }));
+        }}
+        onSaveDraftGeofence={() => {
+          const center =
+            geofenceDraft.shape === 'circle' && geofenceDraft.center
+              ? geofenceDraft.center
+              : geofenceDraft.points.length > 0
+              ? {
+                  lat:
+                    geofenceDraft.points.reduce((s, p) => s + p.lat, 0) /
+                    geofenceDraft.points.length,
+                  lng:
+                    geofenceDraft.points.reduce((s, p) => s + p.lng, 0) /
+                    geofenceDraft.points.length,
+                }
+              : { lat: 28.6139, lng: 77.209 };
+
+          const newZone: CustomGeofenceZone = {
+            id: `gf-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            name: geofenceDraft.name.trim() || `Custom Zone ${customGeofences.length + 1}`,
+            shape: geofenceDraft.shape,
+            color: geofenceDraft.color,
+            points: geofenceDraft.points,
+            center,
+            radiusMeters: geofenceDraft.radiusMeters,
+            notifyOnEnter: geofenceDraft.notifyOnEnter,
+            notifyOnExit: geofenceDraft.notifyOnExit,
+            enabled: true,
+            watchedUserIds: geofenceDraft.watchedUserIds,
+            createdAt: new Date().toISOString(),
+          };
+          persistCustomGeofences([newZone, ...customGeofences]);
+          setGeofenceDraft((prev) => ({
+            ...prev,
+            active: false,
+            points: [],
+          }));
+          notifications.requestPermission().catch(() => {});
+          toast.success(
+            `Saved geofence "${newZone.name}" — push alerts enabled for friend entry/exit`
+          );
+        }}
+        onToggleGeofenceEnabled={(zoneId: string) => {
+          const updated = customGeofences.map((z) =>
+            z.id === zoneId ? { ...z, enabled: !z.enabled } : z
+          );
+          persistCustomGeofences(updated);
+        }}
+        onDeleteGeofence={(zoneId: string) => {
+          const target = customGeofences.find((z) => z.id === zoneId);
+          persistCustomGeofences(customGeofences.filter((z) => z.id !== zoneId));
+          toast.info(target ? `Deleted geofence "${target.name}"` : 'Deleted geofence');
+        }}
+        onDeleteAllGeofences={() => {
+          persistCustomGeofences([]);
+          toast.info('Cleared all custom geofence zones');
+        }}
+        onClearEvents={() => {
+          setGeofenceEvents([]);
+          try {
+            localStorage.removeItem(CUSTOM_GEOFENCE_EVENTS_STORAGE_KEY);
+          } catch {}
+          toast.info('Cleared geofence push event history');
+        }}
+        onFocusGeofence={(zone: CustomGeofenceZone) => {
+          const c = getGeofenceCenter(zone);
+          mapInstanceRef.current?.setView([c.lat, c.lng], 16);
+        }}
+        onSimulateTransition={(zone: CustomGeofenceZone, action: 'entered' | 'left') => {
+          const otherFriends = userLocations.filter((u) => u.userId !== user?.id);
+          const sampleFriend = otherFriends[0];
+          const c = getGeofenceCenter(zone);
+          recordGeofencePushEvent(
+            zone,
+            sampleFriend?.userId || 'friend-sim',
+            sampleFriend?.fullName || 'Reddy (Friend)',
+            action,
+            c.lat,
+            c.lng
+          );
+        }}
+        friendsLocations={userLocations}
+        currentUserId={user?.id}
+      />
     </div>
   );
 };
+
+function areLiveMapPropsEqual(prev: LiveMapProps, next: LiveMapProps): boolean {
+  if (Boolean(prev.isActive ?? true) !== Boolean(next.isActive ?? true)) return false;
+  if (Boolean(prev.roomOnlyMode) !== Boolean(next.roomOnlyMode)) return false;
+  if ((prev.selectedRoomId ?? null) !== (next.selectedRoomId ?? null)) return false;
+
+  const prevLat = prev.focusCoords?.lat ?? null;
+  const prevLng = prev.focusCoords?.lng ?? null;
+  const prevTs = prev.focusCoords?.ts ?? null;
+  const nextLat = next.focusCoords?.lat ?? null;
+  const nextLng = next.focusCoords?.lng ?? null;
+  const nextTs = next.focusCoords?.ts ?? null;
+  if (prevLat !== nextLat || prevLng !== nextLng || prevTs !== nextTs) return false;
+
+  const prevPlaces = prev.savedPlaces ?? [];
+  const nextPlaces = next.savedPlaces ?? [];
+  if (prevPlaces !== nextPlaces) {
+    if (prevPlaces.length !== nextPlaces.length) return false;
+    for (let i = 0; i < prevPlaces.length; i++) {
+      const a = prevPlaces[i];
+      const b = nextPlaces[i];
+      if (
+        a.id !== b.id ||
+        a.name !== b.name ||
+        a.latitude !== b.latitude ||
+        a.longitude !== b.longitude ||
+        a.radiusMeters !== b.radiusMeters ||
+        a.category !== b.category ||
+        a.markerIcon !== b.markerIcon ||
+        a.markerColor !== b.markerColor
+      ) {
+        return false;
+      }
+    }
+  }
+
+  const prevRooms = prev.rooms ?? [];
+  const nextRooms = next.rooms ?? [];
+  if (prevRooms !== nextRooms) {
+    if (prevRooms.length !== nextRooms.length) return false;
+    for (let i = 0; i < prevRooms.length; i++) {
+      const a = prevRooms[i];
+      const b = nextRooms[i];
+      if (a.id !== b.id || a.name !== b.name || a.memberCount !== b.memberCount) {
+        return false;
+      }
+    }
+  }
+
+  const prevDetails = prev.activeRoomDetails ?? null;
+  const nextDetails = next.activeRoomDetails ?? null;
+  if (prevDetails !== nextDetails) {
+    if (!prevDetails || !nextDetails) return false;
+    if (
+      prevDetails.id !== nextDetails.id ||
+      prevDetails.name !== nextDetails.name ||
+      prevDetails.memberCount !== nextDetails.memberCount
+    ) {
+      return false;
+    }
+    const prevMembers = prevDetails.members ?? [];
+    const nextMembers = nextDetails.members ?? [];
+    if (prevMembers.length !== nextMembers.length) return false;
+    for (let i = 0; i < prevMembers.length; i++) {
+      if (
+        prevMembers[i].userId !== nextMembers[i].userId ||
+        prevMembers[i].role !== nextMembers[i].role
+      ) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
+export const LiveMap = React.memo(LiveMapComponent, areLiveMapPropsEqual);
+LiveMap.displayName = 'LiveMap';
+

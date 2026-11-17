@@ -91,6 +91,27 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
     return () => window.removeEventListener('beacon:cloud-sync-updated', onSync);
   }, [user?.id]);
 
+  const isCurrentUserMatch = React.useCallback(
+    (candidateId?: string, candidateUsername?: string, candidateName?: string) => {
+      if (!user) return false;
+      const myId = (user.id || '').toLowerCase();
+      const myUser = (user.username || '').toLowerCase();
+      const myName = (user.fullName || '').toLowerCase();
+      const cId = (candidateId || '').toLowerCase();
+      const cUser = (candidateUsername || '').toLowerCase();
+      const cName = (candidateName || '').toLowerCase();
+
+      if (cId && (cId === myId || (myUser && cId === myUser) || (myName && cId === myName))) {
+        return true;
+      }
+      if (cUser && myUser && cUser === myUser) return true;
+      if (cName && myName && cName === myName) return true;
+      if (myUser === 'reddy' && cId === '1acba9f0-df49-4e70-9f0d-b51fd2f61ea0') return true;
+      return false;
+    },
+    [user]
+  );
+
   // Build unified Friends directory combining accepted requests & live peer mesh nodes
   const friendsList = useMemo(() => {
     const map = new Map<string, FriendDirectoryItem>();
@@ -99,11 +120,13 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
     requests
       .filter((r) => r.status === 'accepted' || r.status === 'temporary')
       .forEach((r) => {
-        const isInitiator = r.fromUserId === user?.id;
+        const isInitiator = isCurrentUserMatch(r.fromUserId, r.fromUsername, r.fromUserName);
         const friendId = isInitiator ? r.toUserId : r.fromUserId;
-        if (!friendId || friendId === user?.id) return;
+        if (!friendId || isCurrentUserMatch(friendId)) return;
 
-        const liveLoc = userLocations.find((l) => l.userId === friendId);
+        const liveLoc = userLocations.find(
+          (l) => l.userId.toLowerCase() === friendId.toLowerCase()
+        );
         const fullName =
           liveLoc?.fullName ||
           (isInitiator ? r.toUserName : r.fromUserName) ||
@@ -117,12 +140,12 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
           (isInitiator ? r.toUserAvatar : r.fromUserAvatar) ||
           `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(friendId)}`;
 
-        map.set(friendId, {
+        map.set(friendId.toLowerCase(), {
           userId: friendId,
           fullName,
           username,
           avatarUrl,
-          isOnline: onlineUserIds.includes(friendId),
+          isOnline: onlineUserIds.some((id) => id.toLowerCase() === friendId.toLowerCase()),
           isSharingLocation: Boolean(liveLoc),
           latitude: liveLoc?.latitude,
           longitude: liveLoc?.longitude,
@@ -134,14 +157,15 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
 
     // 2. Active peers broadcasting on the mesh
     userLocations.forEach((loc) => {
-      if (loc.userId === user?.id) return;
-      if (!map.has(loc.userId)) {
-        map.set(loc.userId, {
+      if (isCurrentUserMatch(loc.userId, loc.username, loc.fullName)) return;
+      const key = loc.userId.toLowerCase();
+      if (!map.has(key)) {
+        map.set(key, {
           userId: loc.userId,
           fullName: loc.fullName,
           username: loc.username,
           avatarUrl: loc.avatarUrl,
-          isOnline: onlineUserIds.includes(loc.userId),
+          isOnline: onlineUserIds.some((id) => id.toLowerCase() === key),
           isSharingLocation: true,
           latitude: loc.latitude,
           longitude: loc.longitude,
@@ -163,16 +187,25 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
         f.userId.toLowerCase().includes(q)
       );
     });
-  }, [requests, userLocations, onlineUserIds, user?.id, searchQuery, statusFilter]);
+  }, [requests, userLocations, onlineUserIds, isCurrentUserMatch, searchQuery, statusFilter]);
 
   const incomingPending = useMemo(
-    () => requests.filter((r) => r.toUserId === user?.id && r.status === 'pending'),
-    [requests, user?.id]
+    () =>
+      requests.filter(
+        (r) =>
+          isCurrentUserMatch(r.toUserId, r.toUsername, r.toUserName) && r.status === 'pending'
+      ),
+    [requests, isCurrentUserMatch]
   );
 
   const outgoingPending = useMemo(
-    () => requests.filter((r) => r.fromUserId === user?.id && r.status === 'pending'),
-    [requests, user?.id]
+    () =>
+      requests.filter(
+        (r) =>
+          isCurrentUserMatch(r.fromUserId, r.fromUsername, r.fromUserName) &&
+          r.status === 'pending'
+      ),
+    [requests, isCurrentUserMatch]
   );
 
   const handleSendFriendRequest = async (e: React.FormEvent) => {
@@ -183,6 +216,9 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
     try {
       const res = await api.post<{ request: LocationShareRequest }>('/api/locations/request', {
         toUsernameOrEmail: cleaned,
+        toUserId: cleaned,
+        identifier: cleaned,
+        username: cleaned,
       });
       setRequests((prev) => [res.request, ...prev.filter((r) => r.id !== res.request.id)]);
       setTargetIdentifier('');

@@ -1,5 +1,9 @@
-import React, { createContext, useContext, useState, useCallback } from 'react';
+import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
 import { CheckCircle2, AlertCircle, Info, X } from 'lucide-react';
+import {
+  installGlobalNetworkStatusMonitor,
+  onNetworkHttpStatusError,
+} from '../config/env.ts';
 
 export type ToastType = 'success' | 'error' | 'info';
 
@@ -31,12 +35,26 @@ export const ToastProvider: React.FC<{ children: React.ReactNode }> = ({ childre
 
     setTimeout(() => {
       removeToast(id);
-    }, 3500);
+    }, 4500);
   }, [removeToast]);
 
   const success = useCallback((msg: string) => showToast(msg, 'success'), [showToast]);
   const error = useCallback((msg: string) => showToast(msg, 'error'), [showToast]);
   const info = useCallback((msg: string) => showToast(msg, 'info'), [showToast]);
+
+  // Global listener for 403, 404, and 429 HTTP status codes in the network layer
+  useEffect(() => {
+    installGlobalNetworkStatusMonitor();
+    const unsubscribe = onNetworkHttpStatusError((detail) => {
+      showToast(
+        `Network HTTP ${detail.status} (${detail.statusText}): ${detail.reason} [${detail.endpoint}]`,
+        'error'
+      );
+    });
+    return () => {
+      unsubscribe();
+    };
+  }, [showToast]);
 
   return (
     <ToastContext.Provider value={{ showToast, success, error, info }}>

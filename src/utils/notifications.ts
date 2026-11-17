@@ -170,16 +170,47 @@ export class NotificationService {
     memberName: string,
     action: 'entered' | 'left',
     placeName: string,
-    distanceMeters?: number
+    distanceMeters?: number,
+    context?: {
+      roomId?: string;
+      roomName?: string;
+      latitude?: number;
+      longitude?: number;
+      radiusMeters?: number;
+    }
   ) {
     const verb = action === 'entered' ? 'entered' : 'left';
+    const roomPrefix = context?.roomName ? `[${context.roomName}] ` : '';
+    const radiusInfo =
+      typeof context?.radiusMeters === 'number' ? ` (${context.radiusMeters}m zone` : '';
     const distInfo =
-      typeof distanceMeters === 'number' ? ` (${Math.round(distanceMeters)}m from center)` : '';
-    this.send(`📍 Geofence Alert: ${memberName} ${verb} ${placeName}`, {
-      body: `${memberName} has just ${verb} the "${placeName}" saved location geofence${distInfo}.`,
-      tag: `geofence-${memberName}-${placeName}-${action}`,
+      typeof distanceMeters === 'number'
+        ? radiusInfo
+          ? `${radiusInfo} · ${Math.round(distanceMeters)}m from pin)`
+          : ` (${Math.round(distanceMeters)}m from center)`
+        : radiusInfo
+        ? `${radiusInfo})`
+        : '';
+
+    this.send(`📍 ${roomPrefix}Geofence Alert: ${memberName} ${verb} ${placeName}`, {
+      body: `${memberName} has just ${verb} the "${placeName}" saved place geofence${distInfo}.`,
+      tag: `geofence-${context?.roomId || 'room'}-${memberName}-${placeName}-${action}-${Date.now()}`,
       requireInteraction: false,
       icon: '/pwa-192x192.png',
+      data:
+        context &&
+        typeof context.latitude === 'number' &&
+        typeof context.longitude === 'number'
+          ? {
+              latitude: context.latitude,
+              longitude: context.longitude,
+              distanceMeters: distanceMeters ?? null,
+              roomId: context.roomId,
+              roomName: context.roomName,
+              placeName,
+              action,
+            }
+          : null,
     });
   }
 }

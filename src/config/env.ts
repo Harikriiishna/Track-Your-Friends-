@@ -50,6 +50,7 @@ export const GOOGLE_MAPS_CONFIG = {
   apiKey: getEnvVar('VITE_GOOGLE_MAPS_API_KEY') || '',
 };
 
+
 export const FIRESTORE_BASE_DOCS_URL = `https://firestore.googleapis.com/v1/projects/${FIREBASE_PRODUCTION_CONFIG.projectId}/databases/${FIREBASE_PRODUCTION_CONFIG.firestoreDatabaseId}/documents`;
 
 export const FIRESTORE_SYNC_DOC_URL = `${FIRESTORE_BASE_DOCS_URL}/beacon_sync/global_state?key=${FIREBASE_PRODUCTION_CONFIG.apiKey}`;
@@ -295,6 +296,240 @@ export const syncLogger = {
   },
 };
 
+export type MonitoredHttpErrorStatus = 403 | 404 | 429;
+
+export interface NetworkHttpErrorEventDetail {
+  status: MonitoredHttpErrorStatus;
+  statusText: string;
+  url: string;
+  endpoint: string;
+  providerHost: string;
+  source: string;
+  reason: string;
+  timestamp: string;
+}
+
+export const NETWORK_HTTP_ERROR_EVENT = 'beacon:network-http-error';
+
+const networkHttpErrorListeners = new Set<(detail: NetworkHttpErrorEventDetail) => void>();
+const recentErrorToastThrottle = new Map<string, number>();
+
+function describeHttpErrorReason(status: MonitoredHttpErrorStatus, providerHost: string): string {
+  if (status === 403) {
+    return `403 Forbidden from ${providerHost} (access denied, Referer/User-Agent policy, or API key restriction)`;
+  }
+  if (status === 404) {
+    return `404 Not Found from ${providerHost} (missing tile at zoom/coord or invalid provider endpoint)`;
+  }
+  return `429 Too Many Requests from ${providerHost} (tile server or API rate-limit / quota exceeded)`;
+}
+
+/**
+ * Registers a global listener for 403, 404, and 429 HTTP status errors emitted in the network layer.
+ */
+export function onNetworkHttpStatusError(
+  listener: (detail: NetworkHttpErrorEventDetail) => void
+): () => void {
+  networkHttpErrorListeners.add(listener);
+  return () => {
+    networkHttpErrorListeners.delete(listener);
+  };
+}
+
+function isSilentBackgroundSyncUrl(urlOrEndpoint: string): boolean {
+  const lower = (urlOrEndpoint || '').toLowerCase();
+  return (
+    lower.includes('ntfy.sh') ||
+    lower.includes('firestore.googleapis.com') ||
+    lower.includes('/api/sync/state') ||
+    lower.includes('/api/auth/session-restore')
+  );
+}
+
+/**
+ * Emits a structured 403, 404, or 429 network error event to all registered listeners and window CustomEvent.
+ */
+export function emitNetworkHttpStatusError(
+  status: number,
+  rawUrl: string,
+  statusText = '',
+  source = 'network'
+): NetworkHttpErrorEventDetail | null {
+  if (status !== 403 && status !== 404 && status !== 429) {
+    return null;
+  }
+
+  const monitoredStatus = status as MonitoredHttpErrorStatus;
+  const maskedUrl = getMaskedBackendUrl(rawUrl || 'unknown-url');
+  let providerHost = 'unknown-host';
+  let endpoint = maskedUrl;
+  try {
+    const parsed = new URL(
+      maskedUrl,
+      typeof window !== 'undefined' ? window.location.origin : DEFAULT_PRODUCTION_BACKEND_ORIGIN
+    );
+    providerHost = parsed.host || 'unknown-host';
+    endpoint = `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    // keep raw fallback
+  }
+
+  const defaultStatusText =
+    monitoredStatus === 403
+      ? 'Forbidden'
+      : monitoredStatus === 404
+      ? 'Not Found'
+      : 'Too Many Requests';
+
+  const detail: NetworkHttpErrorEventDetail = {
+    status: monitoredStatus,
+    statusText: statusText || defaultStatusText,
+    url: maskedUrl,
+    endpoint,
+    providerHost,
+    source,
+    reason: describeHttpErrorReason(monitoredStatus, providerHost),
+    timestamp: new Date().toISOString(),
+  };
+
+  console.warn(
+    `[Beacon Network Monitor] HTTP ${detail.status} ${detail.statusText} | Source: ${detail.source} | Endpoint: ${detail.endpoint} | Full URL: ${detail.url}`
+  );
+
+  syncLogger.log('api', 'error', `http_${detail.status}_detected`, {
+    status: detail.status,
+    statusText: detail.statusText,
+    providerHost: detail.providerHost,
+    endpoint: detail.endpoint,
+    url: detail.url,
+    source: detail.source,
+    reason: detail.reason,
+  });
+
+  // Do not pop up intrusive UI error toasts for background cloud-sync bridges (ntfy.sh / Firestore sync)
+  // which automatically fall back to local/WebSocket sync
+  if (isSilentBackgroundSyncUrl(detail.url) || isSilentBackgroundSyncUrl(detail.endpoint)) {
+    return detail;
+  }
+
+  // Throttle identical (status + providerHost) toast bursts within 3.5 seconds so simultaneous tile requests don't flood the UI
+  const throttleKey = `${detail.status}:${detail.providerHost}`;
+  const now = Date.now();
+  const lastEmitted = recentErrorToastThrottle.get(throttleKey) || 0;
+  if (now - lastEmitted < 3500) {
+    return detail;
+  }
+  recentErrorToastThrottle.set(throttleKey, now);
+
+  for (const listener of networkHttpErrorListeners) {
+    try {
+      listener(detail);
+    } catch {
+      // ignore listener error
+    }
+  }
+
+  if (typeof window !== 'undefined') {
+    try {
+      window.dispatchEvent(new CustomEvent<NetworkHttpErrorEventDetail>(NETWORK_HTTP_ERROR_EVENT, { detail }));
+    } catch {
+      // ignore event dispatch error
+    }
+  }
+
+  return detail;
+}
+
+/**
+ * Installs a global network monitor on window.fetch and XMLHttpRequest so any 403, 404, or 429
+ * response across tile probes, geocoding, or API requests is automatically captured and surfaced.
+ */
+export function installGlobalNetworkStatusMonitor(): void {
+  if (typeof window === 'undefined') return;
+  const w = window as any;
+  if (w.__beaconGlobalNetworkMonitorInstalled) return;
+  w.__beaconGlobalNetworkMonitorInstalled = true;
+
+  try {
+    if (typeof window.fetch === 'function') {
+      const originalFetch = window.fetch.bind(window);
+      const wrappedFetch = async (
+        input: RequestInfo | URL,
+        init?: RequestInit
+      ): Promise<Response> => {
+        const requestUrl =
+          typeof input === 'string'
+            ? input
+            : input instanceof URL
+            ? input.toString()
+            : (input as Request)?.url || '';
+        const response = await originalFetch(input, init);
+        if (response.status === 403 || response.status === 404 || response.status === 429) {
+          emitNetworkHttpStatusError(
+            response.status,
+            response.url || requestUrl,
+            response.statusText,
+            'fetch'
+          );
+        }
+        return response;
+      };
+
+      const desc =
+        Object.getOwnPropertyDescriptor(window, 'fetch') ||
+        Object.getOwnPropertyDescriptor(Object.getPrototypeOf(window) || {}, 'fetch');
+
+      if (!desc || desc.writable || typeof desc.set === 'function') {
+        window.fetch = wrappedFetch;
+      } else if (desc.configurable) {
+        Object.defineProperty(window, 'fetch', {
+          value: wrappedFetch,
+          configurable: true,
+          writable: true,
+        });
+      }
+    }
+  } catch {
+    // Environment has a locked getter-only window.fetch (e.g. sandboxed preview iframe);
+    // nativeAwareFetch and tile error probes still emit 403/404/429 events directly.
+  }
+
+  try {
+    if (typeof XMLHttpRequest !== 'undefined') {
+      const origOpen = XMLHttpRequest.prototype.open;
+      const origSend = XMLHttpRequest.prototype.send;
+
+      XMLHttpRequest.prototype.open = function (
+        method: string,
+        url: string | URL,
+        async?: boolean,
+        username?: string | null,
+        password?: string | null
+      ) {
+        (this as any).__beaconReqUrl = typeof url === 'string' ? url : url.toString();
+        return origOpen.call(this, method, url, async ?? true, username, password);
+      };
+
+      XMLHttpRequest.prototype.send = function (body?: Document | XMLHttpRequestBodyInit | null) {
+        this.addEventListener('loadend', () => {
+          if (this.status === 403 || this.status === 404 || this.status === 429) {
+            const reqUrl = this.responseURL || (this as any).__beaconReqUrl || '';
+            emitNetworkHttpStatusError(this.status, reqUrl, this.statusText, 'xhr');
+          }
+        });
+        return origSend.call(this, body);
+      };
+    }
+  } catch {
+    // Ignore if XMLHttpRequest prototype is frozen in sandboxed runtime
+  }
+}
+
+// Auto-install global network monitor in browser runtime
+if (typeof window !== 'undefined') {
+  installGlobalNetworkStatusMonitor();
+}
+
 /**
  * Executes an HTTP/HTTPS request asynchronously without blocking the main UI thread.
  * Avoids calling synchronous @JavascriptInterface network methods on the UI thread,
@@ -309,13 +544,23 @@ export async function nativeAwareFetch(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(fullUrl, {
+    const response = await fetch(fullUrl, {
       ...options,
       signal: options.signal || controller.signal,
     });
+    if (response.status === 403 || response.status === 404 || response.status === 429) {
+      emitNetworkHttpStatusError(
+        response.status,
+        response.url || fullUrl,
+        response.statusText,
+        'nativeAwareFetch'
+      );
+    }
+    return response;
   } finally {
     clearTimeout(timer);
   }
 }
+
 
 

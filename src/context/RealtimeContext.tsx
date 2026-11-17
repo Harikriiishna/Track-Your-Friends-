@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, useRef, useCallback } from 'react';
 import { useAuth } from './AuthContext.tsx';
+import { useTheme } from './ThemeContext.tsx';
 import type {
   UserLocation,
   ChatMessage,
@@ -108,6 +109,9 @@ const RTC_CONFIG: RTCConfiguration = {
 
 export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user, token } = useAuth();
+  const { isLowPowerMode } = useTheme();
+  const isLowPowerModeRef = useRef<boolean>(isLowPowerMode);
+  isLowPowerModeRef.current = isLowPowerMode;
 
   const [isConnected, setIsConnected] = useState(false);
   const [wsConnected, setWsConnected] = useState(false);
@@ -132,7 +136,12 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     lastGeoError: null,
   });
 
+  const isDebugTelemetryEnabledRef = useRef<boolean>(
+    typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('debug') === '1'
+  );
+
   const setDebugMarkerLatLng = useCallback((coords: [number, number] | null) => {
+    if (!isDebugTelemetryEnabledRef.current) return;
     setDebugTelemetry((prev) => {
       if (
         prev.markerLatLng?.[0] === coords?.[0] &&
@@ -446,11 +455,18 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       syncFromRemoteApi();
     });
 
-    // Listen to immediate Cloud Firestore sync updates (only fires when remote state actually changed)
+    // Listen to immediate Cloud Firestore sync updates (coalesced; longer window in Low Power Mode)
+    let syncCoalesceTimer: any = null;
     const onCloudSyncUpdated = () => {
       if (!isMounted) return;
-      setRealtimeState('REALTIME_CONNECTED');
-      syncFromLocalSnapshot();
+      if (syncCoalesceTimer) return;
+      const coalesceDelayMs = isLowPowerModeRef.current ? 1500 : 150;
+      syncCoalesceTimer = setTimeout(() => {
+        syncCoalesceTimer = null;
+        if (!isMounted) return;
+        setRealtimeState('REALTIME_CONNECTED');
+        syncFromLocalSnapshot();
+      }, coalesceDelayMs);
     };
     window.addEventListener('beacon:cloud-sync-updated', onCloudSyncUpdated);
 
@@ -607,6 +623,7 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
     return () => {
       isMounted = false;
+      if (syncCoalesceTimer) clearTimeout(syncCoalesceTimer);
       if (heartbeatTimer) clearInterval(heartbeatTimer);
       window.removeEventListener('beacon:cloud-sync-updated', onCloudSyncUpdated);
       window.removeEventListener('online', handleLifecycleResume);
@@ -837,25 +854,27 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       if (!user) return;
       const { latitude, longitude, accuracy } = pos.coords;
 
-      // Always record raw fix in debug telemetry (Step 1) before filtering, deduplicated by coordinates
-      setDebugTelemetry((prev) => {
-        if (
-          prev.rawFix?.latitude === latitude &&
-          prev.rawFix?.longitude === longitude &&
-          prev.rawFix?.accuracy === (accuracy ?? null)
-        ) {
-          return prev;
-        }
-        return {
-          ...prev,
-          rawFix: {
-            latitude,
-            longitude,
-            accuracy: accuracy ?? null,
-            timestamp: pos.timestamp,
-          },
-        };
-      });
+      // Record raw fix in debug telemetry only when ?debug=1 is active so normal users have zero 1Hz re-renders
+      if (isDebugTelemetryEnabledRef.current) {
+        setDebugTelemetry((prev) => {
+          if (
+            prev.rawFix?.latitude === latitude &&
+            prev.rawFix?.longitude === longitude &&
+            prev.rawFix?.accuracy === (accuracy ?? null)
+          ) {
+            return prev;
+          }
+          return {
+            ...prev,
+            rawFix: {
+              latitude,
+              longitude,
+              accuracy: accuracy ?? null,
+              timestamp: pos.timestamp,
+            },
+          };
+        });
+      }
 
       // Step 3b: Reject poor or invalid fixes EVERY time, including the FIRST one
       if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return;
@@ -872,7 +891,7 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       const heading = pos.coords.heading ?? null;
       const speed = pos.coords.speed ?? null;
 
-      setGpsAccuracy((prev) => (prev !== null && Math.abs(prev - accuracy) < 0.2 ? prev : accuracy));
+      setGpsAccuracy((prev) => (prev !== null && Math.abs(prev - accuracy) < 2 ? prev : Math.round(accuracy)));
       setIsGpsActive(true);
       setGpsPermissionState('granted');
       setGpsError(null);
@@ -883,41 +902,49 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       const geog = `SRID=4326;POINT(${longitude} ${latitude})`;
       const accuracy_m = accuracy;
 
-      setDebugTelemetry((prev) => {
-        if (
-          prev.sentToDb?.latitude === latitude &&
-          prev.sentToDb?.longitude === longitude &&
-          prev.sentToDb?.accuracy_m === accuracy_m
-        ) {
-          return prev;
-        }
-        return {
-          ...prev,
-          sentToDb: {
-            geog,
-            accuracy_m,
-            latitude,
-            longitude,
-          },
-        };
-      });
+      if (isDebugTelemetryEnabledRef.current) {
+        setDebugTelemetry((prev) => {
+          if (
+            prev.sentToDb?.latitude === latitude &&
+            prev.sentToDb?.longitude === longitude &&
+            prev.sentToDb?.accuracy_m === accuracy_m
+          ) {
+            return prev;
+          }
+          return {
+            ...prev,
+            sentToDb: {
+              geog,
+              accuracy_m,
+              latitude,
+              longitude,
+            },
+          };
+        });
+      }
 
       const now = Date.now();
       const last = lastLocationSentRef.current;
       const movedMeters = last ? calculateDistanceMeters(last.lat, last.lng, latitude, longitude) : Infinity;
+      const lowPower = isLowPowerModeRef.current;
+      const minBroadcastIntervalMs = lowPower ? 20000 : 6000;
+      const minMovementMeters = lowPower ? 12.0 : 2.2;
+
       const shouldSend =
         forceBroadcast ||
         !last ||
-        now - last.time > 5000 ||
-        movedMeters >= 1;
+        now - last.time > minBroadcastIntervalMs ||
+        movedMeters >= minMovementMeters;
 
       const prevSelf = myLocationRef.current;
+      const uiShiftDistanceThreshold = lowPower ? 8.0 : 1.8;
+      const uiShiftHeadingThreshold = lowPower ? 20 : 6;
       const isNegligibleUiShift =
         !forceBroadcast &&
         prevSelf &&
-        calculateDistanceMeters(prevSelf.latitude, prevSelf.longitude, latitude, longitude) < 0.35 &&
-        Math.abs((prevSelf.accuracy || 0) - accuracy) < 1 &&
-        Math.abs((prevSelf.heading || 0) - (heading || 0)) < 3;
+        calculateDistanceMeters(prevSelf.latitude, prevSelf.longitude, latitude, longitude) < uiShiftDistanceThreshold &&
+        Math.abs((prevSelf.accuracy || 0) - accuracy) < (lowPower ? 8 : 3) &&
+        Math.abs((prevSelf.heading || 0) - (heading || 0)) < uiShiftHeadingThreshold;
 
       // Optimistically update local state until server responds with server-generated updated_at
       const existingServerTs = prevSelf?.updated_at || prevSelf?.timestamp || new Date().toISOString();
@@ -958,6 +985,10 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }
 
       try {
+        localStorage.setItem(
+          'beacon_last_valid_gps_v1',
+          JSON.stringify({ lat: latitude, lng: longitude, acc: accuracy, ts: Date.now() })
+        );
         window.dispatchEvent(
           new CustomEvent('beacon:gps-fix', {
             detail: {
@@ -988,29 +1019,31 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           .then((res) => {
             if (res?.location) {
               const saved = res.location;
-              setDebugTelemetry((prev) => {
-                const nextLat = saved.lat ?? saved.latitude;
-                const nextLng = saved.lng ?? saved.longitude;
-                const nextAcc = saved.accuracy_m ?? saved.accuracy;
-                const nextUpd = saved.updated_at ?? saved.timestamp;
-                if (
-                  prev.readFromDb?.lat === nextLat &&
-                  prev.readFromDb?.lng === nextLng &&
-                  prev.readFromDb?.accuracy_m === nextAcc &&
-                  prev.readFromDb?.updated_at === nextUpd
-                ) {
-                  return prev;
-                }
-                return {
-                  ...prev,
-                  readFromDb: {
-                    lat: nextLat,
-                    lng: nextLng,
-                    accuracy_m: nextAcc,
-                    updated_at: nextUpd,
-                  },
-                };
-              });
+              if (isDebugTelemetryEnabledRef.current) {
+                setDebugTelemetry((prev) => {
+                  const nextLat = saved.lat ?? saved.latitude;
+                  const nextLng = saved.lng ?? saved.longitude;
+                  const nextAcc = saved.accuracy_m ?? saved.accuracy;
+                  const nextUpd = saved.updated_at ?? saved.timestamp;
+                  if (
+                    prev.readFromDb?.lat === nextLat &&
+                    prev.readFromDb?.lng === nextLng &&
+                    prev.readFromDb?.accuracy_m === nextAcc &&
+                    prev.readFromDb?.updated_at === nextUpd
+                  ) {
+                    return prev;
+                  }
+                  return {
+                    ...prev,
+                    readFromDb: {
+                      lat: nextLat,
+                      lng: nextLng,
+                      accuracy_m: nextAcc,
+                      updated_at: nextUpd,
+                    },
+                  };
+                });
+              }
               myLocationRef.current = saved;
             }
           })
@@ -1120,15 +1153,22 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     let watchId: number | null = null;
     let preciseTimeoutId: any = null;
     let isCancelled = false;
+    let lastProcessedFixMs = 0;
 
+    // In Low Power Mode, allow cached hardware fixes up to 20s and throttle watch callbacks to 15s
     const opts: PositionOptions = {
-      enableHighAccuracy: true,
-      maximumAge: 0,
-      timeout: 15000,
+      enableHighAccuracy: !isLowPowerMode,
+      maximumAge: isLowPowerMode ? 20000 : 0,
+      timeout: isLowPowerMode ? 25000 : 15000,
     };
 
     const onFix = (pos: GeolocationPosition) => {
       if (isCancelled) return;
+      const nowMs = Date.now();
+      if (isLowPowerModeRef.current && hasPreciseFixRef.current && nowMs - lastProcessedFixMs < 15000) {
+        return;
+      }
+      lastProcessedFixMs = nowMs;
       processPositionFix(pos, false);
     };
 
@@ -1148,6 +1188,12 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }, 30000);
 
     if (navigator.geolocation) {
+      // Request an immediate initial fix alongside continuous watchPosition for faster initial map lock
+      navigator.geolocation.getCurrentPosition(onFix, () => {}, {
+        enableHighAccuracy: true,
+        maximumAge: isLowPowerMode ? 25000 : 15000,
+        timeout: 6000,
+      });
       watchId = navigator.geolocation.watchPosition(onFix, onError, opts);
     } else {
       handleGeolocationError({
@@ -1160,6 +1206,11 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     const onNativeLocation = (e: Event) => {
       const customEvent = e as CustomEvent;
       if (customEvent.detail && typeof customEvent.detail.latitude === 'number') {
+        const nowMs = Date.now();
+        if (isLowPowerModeRef.current && hasPreciseFixRef.current && nowMs - lastProcessedFixMs < 15000) {
+          return;
+        }
+        lastProcessedFixMs = nowMs;
         processPositionFix(
           {
             coords: {
@@ -1194,7 +1245,7 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         clearTimeout(preciseTimeoutId);
       }
     };
-  }, [user?.id, processPositionFix, handleGeolocationError]);
+  }, [user?.id, isLowPowerMode, processPositionFix, handleGeolocationError]);
 
   // Manual GPS refresh & permission trigger (invoked directly from user click gestures)
   const requestLocationUpdate = useCallback(() => {

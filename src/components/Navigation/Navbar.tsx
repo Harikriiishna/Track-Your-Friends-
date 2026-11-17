@@ -1,22 +1,19 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import { useAuth } from '../../context/AuthContext.tsx';
 import { useRealtime } from '../../context/RealtimeContext.tsx';
 import { useTheme } from '../../context/ThemeContext.tsx';
-import { notifications } from '../../utils/notifications.ts';
 import { sound, triggerHaptic } from '../../utils/audio.ts';
 import { useToast } from '../../context/ToastContext.tsx';
 import {
   Compass,
-  Siren,
-  Volume2,
-  VolumeX,
-  Bell,
   Layers,
   Bookmark,
-  Radio,
   Sun,
   Moon,
-  Sparkles,
+  Bell,
+  Siren,
+  LogOut,
+  X,
 } from 'lucide-react';
 import { DesktopNavRail } from './BottomNav.tsx';
 
@@ -34,6 +31,8 @@ export interface NavbarProps {
   unreadNotificationsCount?: number;
   unreadChatCount?: number;
   pendingFriendsCount?: number;
+  onClearNotifications?: () => void;
+  onClearChatBadge?: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -41,217 +40,193 @@ export const Navbar: React.FC<NavbarProps> = ({
   currentTab,
   setActiveTab: setActiveTabProp,
   onSelectTab,
-  onTriggerEmergency: onTriggerEmergencyProp,
+  onTriggerEmergency,
   onOpenSos,
   unreadNotificationsCount = 0,
+  onClearNotifications,
 }) => {
   const activeTab = currentTab ?? activeTabProp ?? 'home';
   const setActiveTab = onSelectTab ?? setActiveTabProp ?? (() => {});
-  const onTriggerEmergency = onOpenSos ?? onTriggerEmergencyProp ?? (() => {});
-  const { user } = useAuth();
-  const { isConnected, onlineUserIds } = useRealtime();
+  const { user, logout } = useAuth();
+  const { isConnected } = useRealtime();
   const { themeConfig, toggleDarkLight } = useTheme();
   const toast = useToast();
-  const isDark = themeConfig.isDark;
+  const isLight = !themeConfig.isDark;
 
-  const [isMuted, setIsMuted] = useState<boolean>(() => sound.isMuted());
-
-  useEffect(() => {
-    notifications.getPermission();
-  }, []);
-
-  const handleToggleSound = () => {
-    const nextMuted = sound.toggleMute();
-    setIsMuted(nextMuted);
-    if (!nextMuted) {
-      sound.playChime();
-      toast.info('Beacon Network audio & chimes enabled');
-    } else {
-      toast.info('Audio effects muted');
-    }
+  const handleLogout = async () => {
+    triggerHaptic('medium');
+    await logout();
+    toast.info('Logged out of Beacon Network');
   };
+
+  const initials = (user?.fullName || user?.username || 'BN')
+    .split(' ')
+    .map((n) => n[0])
+    .join('')
+    .slice(0, 2)
+    .toUpperCase();
 
   return (
     <header
-      className={`h-16 border-b px-3 sm:px-5 flex items-center justify-between z-40 shrink-0 select-none backdrop-blur-2xl transition-colors duration-300 ${
-        isDark
-          ? 'bg-[#0B081B]/90 border-[#8957FF]/25 text-[#F8F7FF]'
-          : 'bg-white/92 border-[#8957FF]/15 text-slate-900 shadow-xs'
+      className={`h-15 px-3 sm:px-5 flex items-center justify-between gap-2 border-b z-40 shrink-0 select-none backdrop-blur-xl transition-colors ${
+        isLight
+          ? 'bg-white/95 border-[#8957FF]/20 text-[#161032]'
+          : 'bg-[#0B081B]/95 border-[#8957FF]/25 text-[#F8F7FF]'
       }`}
     >
-      {/* Left: Brand Identity */}
-      <div className="flex items-center gap-3 min-w-0">
-        <button
-          type="button"
-          onClick={() => {
-            sound.playTabSwitch();
-            setActiveTab('home');
-          }}
-          className="flex items-center gap-2.5 text-left cursor-pointer group focus:outline-none"
-        >
-          <div className="relative w-10 h-10 rounded-2xl bg-gradient-to-tr from-[#8957FF] via-[#FF4FA3] to-[#FF8066] p-[2px] flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform shadow-[0_6px_20px_rgba(255,79,163,0.35)]">
-            <div
-              className={`w-full h-full rounded-[14px] flex items-center justify-center ${
-                isDark ? 'bg-[#130F2B]' : 'bg-white'
-              }`}
-            >
-              <Compass className="w-5 h-5 text-[#FF4FA3] group-hover:rotate-45 transition-transform duration-300" />
+      {/* Left: Beacon Network Brand Logo & Tagline */}
+      <button
+        type="button"
+        onClick={() => {
+          sound.playTabSwitch();
+          setActiveTab('home');
+        }}
+        className="flex items-center gap-2.5 text-left cursor-pointer group min-w-0"
+      >
+        <div className="relative shrink-0">
+          <div className="w-10 h-10 rounded-2xl social-story-ring flex items-center justify-center shadow-lg">
+            <div className="w-full h-full rounded-[13px] bg-[#0B081B] flex items-center justify-center text-[#FF4FA3]">
+              <Compass className="w-5 h-5 stroke-[2.3] group-hover:rotate-45 transition-transform duration-300" />
             </div>
-            <span
-              className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 ${
-                isDark ? 'border-[#0B081B]' : 'border-white'
-              } ${
-                isConnected
-                  ? 'bg-[#00D6A0] shadow-[0_0_8px_#00D6A0]'
-                  : 'bg-[#FFD166] animate-pulse'
-              }`}
-            />
           </div>
+          <span
+            className={`absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full border-2 border-[#0B081B] ${
+              isConnected ? 'bg-[#00D6A0]' : 'bg-amber-400'
+            }`}
+            title={isConnected ? 'Live Cloud Sync Connected' : 'Offline Resilience Active'}
+          />
+        </div>
 
-          <div className="truncate">
-            <div className="flex items-center gap-2">
-              <span className="font-extrabold text-sm sm:text-base tracking-tight bg-gradient-to-r from-[#8957FF] via-[#FF4FA3] to-[#397BFF] bg-clip-text text-transparent">
-                BEACON
-              </span>
-              <span
-                className={`font-extrabold text-sm sm:text-base tracking-tight ${
-                  isDark ? 'text-white' : 'text-slate-900'
-                }`}
-              >
-                NETWORK
-              </span>
-              <span className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-gradient-to-r from-[#00D6A0]/20 to-[#00D9FF]/20 border border-[#00D6A0]/40 text-[10px] font-extrabold text-[#00D6A0]">
-                <Radio className="w-2.5 h-2.5 animate-pulse" />
-                {onlineUserIds.length} LIVE
-              </span>
-            </div>
-            <span
-              className={`text-[10px] block truncate font-medium ${
-                isDark ? 'text-[#A9A2D0]' : 'text-slate-500'
-              }`}
-            >
-              Stay Connected · Stay Together
+        <div className="min-w-0">
+          <div className="flex items-center gap-1.5">
+            <span className="font-black text-sm sm:text-base tracking-wider bg-gradient-to-r from-[#8957FF] via-[#FF4FA3] to-[#00D9FF] bg-clip-text text-transparent">
+              BEACON
+            </span>
+            <span className={`font-black text-sm sm:text-base tracking-wider ${isLight ? 'text-[#161032]' : 'text-white'}`}>
+              NETWORK
             </span>
           </div>
-        </button>
-      </div>
+          <span className="text-[10px] text-[#A6A1C8] block truncate leading-tight">
+            Stay Connected · Stay Together
+          </span>
+        </div>
+      </button>
 
-      {/* Right: Quick Action Controls */}
-      <div className="flex items-center gap-1.5 sm:gap-2">
-        {/* Rooms Quick Pill */}
+      {/* Right: Quick Action Controls (Rooms/Layers, Saved, Theme, Notifications, SOS, Profile, Logout) */}
+      <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+        {/* Rooms / Layers Shortcut */}
         <button
           type="button"
           onClick={() => {
             sound.playTabSwitch();
             setActiveTab('rooms');
           }}
-          className={`px-2.5 py-1.5 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer border active:scale-95 ${
-            activeTab === 'rooms'
-              ? 'bg-gradient-to-r from-[#8957FF] to-[#FF4FA3] border-transparent text-white shadow-[0_4px_14px_rgba(137,87,255,0.4)]'
-              : isDark
-                ? 'bg-[#1B153A]/90 hover:bg-[#251D4D] border-[#8957FF]/30 text-[#E9DFFF]'
-                : 'bg-[#F3EEFF] hover:bg-[#E9DFFF] border-[#8957FF]/20 text-[#8957FF]'
+          title="Beacon Rooms & Channels"
+          className={`w-9 h-9 rounded-full flex items-center justify-center border transition-all cursor-pointer ${
+            activeTab === 'rooms' || activeTab === 'universal'
+              ? 'bg-gradient-to-r from-[#8957FF] to-[#FF4FA3] text-white border-transparent shadow-[0_0_16px_rgba(137,87,255,0.5)]'
+              : isLight
+                ? 'bg-[#F5F3FF] border-[#8957FF]/25 text-[#8957FF] hover:bg-[#8957FF]/15'
+                : 'bg-[#130F2B] border-[#8957FF]/35 text-[#FF4FA3] hover:bg-[#8957FF]/20'
           }`}
-          title="Rooms & Group Spaces"
         >
-          <Layers className="w-3.5 h-3.5 text-[#FF4FA3]" />
-          <span className="hidden sm:inline">Rooms</span>
+          <Layers className="w-4 h-4" />
         </button>
 
-        {/* Saved Places Pill */}
+        {/* Saved Places Shortcut */}
         <button
           type="button"
           onClick={() => {
             sound.playTabSwitch();
             setActiveTab('saved');
           }}
-          className={`p-2 sm:px-2.5 sm:py-1.5 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer border active:scale-95 ${
+          title="Saved Places & Geofences"
+          className={`hidden xs:flex w-9 h-9 rounded-full items-center justify-center border transition-all cursor-pointer ${
             activeTab === 'saved'
-              ? 'bg-gradient-to-r from-[#00D6A0] to-[#00D9FF] border-transparent text-slate-950 shadow-[0_4px_14px_rgba(0,214,160,0.35)]'
-              : isDark
-                ? 'bg-[#1B153A]/90 hover:bg-[#251D4D] border-[#00D9FF]/30 text-[#00D9FF]'
-                : 'bg-[#E6FAFF] hover:bg-[#CCF5FF] border-[#00D9FF]/30 text-[#0099B8]'
+              ? 'bg-gradient-to-r from-[#00D6A0] to-[#00D9FF] text-slate-950 border-transparent shadow-md'
+              : isLight
+                ? 'bg-[#F5F3FF] border-[#00D9FF]/30 text-[#0099CC] hover:bg-[#00D9FF]/15'
+                : 'bg-[#130F2B] border-[#00D9FF]/30 text-[#00D9FF] hover:bg-[#00D9FF]/20'
           }`}
-          title="Saved Places & Hotspots"
         >
-          <Bookmark className="w-3.5 h-3.5" />
-          <span className="hidden lg:inline">Places</span>
+          <Bookmark className="w-4 h-4" />
         </button>
 
-        {/* Light / Dark Theme Quick Switcher */}
+        {/* Light / Dark Theme Toggle */}
         <button
           type="button"
           onClick={() => {
-            sound.playTap();
-            triggerHaptic('light');
+            triggerHaptic('selection');
             toggleDarkLight();
           }}
-          className={`p-2 rounded-xl border transition-all cursor-pointer active:scale-95 ${
-            isDark
-              ? 'bg-[#1B153A]/90 hover:bg-[#251D4D] border-[#FFD166]/35 text-[#FFD166]'
-              : 'bg-[#FFF6E0] hover:bg-[#FFECB8] border-[#FFD166]/60 text-amber-600'
+          title={themeConfig.isDark ? 'Switch to Daylight Mode' : 'Switch to Neon Dark Mode'}
+          className={`w-9 h-9 rounded-full flex items-center justify-center border transition-all cursor-pointer ${
+            isLight
+              ? 'bg-[#F5F3FF] border-amber-400/40 text-amber-600 hover:bg-amber-500/15'
+              : 'bg-[#130F2B] border-[#FFD166]/35 text-[#FFD166] hover:bg-[#FFD166]/15'
           }`}
-          title={isDark ? 'Switch to Light Theme' : 'Switch to Dark Theme'}
-          aria-label="Toggle Light or Dark Theme"
         >
-          {isDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+          {themeConfig.isDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
         </button>
 
-        {/* Notifications Center Button */}
-        <button
-          type="button"
-          onClick={() => {
-            sound.playTabSwitch();
-            setActiveTab('notifications');
-          }}
-          className={`relative p-2 rounded-xl border transition-all cursor-pointer active:scale-95 ${
-            activeTab === 'notifications'
-              ? 'bg-gradient-to-r from-[#FF4FA3] to-[#FF8066] border-transparent text-white shadow-md'
-              : isDark
-                ? 'bg-[#1B153A]/90 hover:bg-[#251D4D] border-white/10 text-[#F8F7FF]'
-                : 'bg-slate-100 hover:bg-slate-200 border-slate-200 text-slate-700'
-          }`}
-          title="Notification Center"
-        >
-          <Bell className="w-4 h-4" />
+        {/* Notifications Center + Instant Clear Badge Button */}
+        <div className="relative flex items-center">
+          <button
+            type="button"
+            onClick={() => {
+              sound.playTabSwitch();
+              setActiveTab('notifications');
+            }}
+            title="Notifications & Activity"
+            className={`relative w-9 h-9 rounded-full flex items-center justify-center border transition-all cursor-pointer ${
+              activeTab === 'notifications'
+                ? 'bg-gradient-to-r from-[#8957FF] to-[#397BFF] text-white border-transparent shadow-md'
+                : isLight
+                  ? 'bg-[#F5F3FF] border-[#8957FF]/25 text-[#161032] hover:bg-[#8957FF]/10'
+                  : 'bg-[#130F2B] border-[#8957FF]/30 text-white hover:bg-white/10'
+            }`}
+          >
+            <Bell className="w-4 h-4" />
+          </button>
           {unreadNotificationsCount > 0 && (
-            <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-gradient-to-r from-[#FF4FA3] to-[#FF8066] text-white text-[9px] font-extrabold flex items-center justify-center border border-[#0B081B]">
-              {unreadNotificationsCount > 99 ? '99+' : unreadNotificationsCount}
-            </span>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                triggerHaptic('selection');
+                if (onClearNotifications) {
+                  onClearNotifications();
+                } else {
+                  setActiveTab('notifications');
+                }
+              }}
+              title="Tap to clear notification badge"
+              aria-label="Clear notifications badge"
+              className="absolute -top-1.5 -right-1.5 min-w-[20px] h-[18px] px-1 rounded-full bg-[#FF3B6B] hover:bg-rose-600 text-white text-[9px] font-black inline-flex items-center justify-center gap-0.5 border border-[#0B081B] shadow-md cursor-pointer active:scale-90 transition-transform z-10"
+            >
+              <span>{unreadNotificationsCount > 99 ? '99+' : unreadNotificationsCount}</span>
+              <X className="w-2.5 h-2.5 stroke-[3]" />
+            </button>
           )}
-        </button>
+        </div>
 
-        {/* Sound Effects Toggle */}
-        <button
-          type="button"
-          onClick={handleToggleSound}
-          className={`hidden sm:flex p-2 rounded-xl border transition-all cursor-pointer ${
-            !isMuted
-              ? 'bg-[#00D6A0]/15 border-[#00D6A0]/35 text-[#00D6A0]'
-              : isDark
-                ? 'bg-[#1B153A]/90 border-white/10 text-[#A9A2D0]'
-                : 'bg-slate-100 border-slate-200 text-slate-500'
-          }`}
-          title={isMuted ? 'Unmute UI Sounds' : 'Mute UI Sounds'}
-        >
-          {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
-        </button>
-
-        {/* Emergency SOS Broadcast Button */}
+        {/* SOS Emergency Button */}
         <button
           type="button"
           onClick={() => {
             triggerHaptic('heavy');
-            onTriggerEmergency();
+            if (onOpenSos) onOpenSos();
+            else if (onTriggerEmergency) onTriggerEmergency();
+            else setActiveTab('alerts');
           }}
-          className="px-2.5 sm:px-3 py-1.5 bg-gradient-to-r from-[#FF4FA3] to-[#FF8066] hover:opacity-95 text-white rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition-all cursor-pointer active:scale-95 shadow-[0_6px_18px_rgba(255,79,163,0.4)]"
-          title="Broadcast Emergency SOS"
+          title="Emergency SOS Broadcast"
+          className="px-3 py-1.5 rounded-full bg-gradient-to-r from-[#FF4FA3] to-[#FF8066] hover:opacity-95 text-white font-black text-xs inline-flex items-center gap-1.5 shadow-[0_0_18px_rgba(255,79,163,0.45)] cursor-pointer active:scale-95 transition-all"
         >
-          <Siren className="w-3.5 h-3.5 animate-bounce" />
+          <Siren className="w-3.5 h-3.5" />
           <span>SOS</span>
         </button>
 
-        {/* User Avatar Pill with Story Gradient Ring */}
+        {/* User Profile Avatar Pill */}
         {user && (
           <button
             type="button"
@@ -259,23 +234,30 @@ export const Navbar: React.FC<NavbarProps> = ({
               sound.playTabSwitch();
               setActiveTab('profile');
             }}
-            className="flex items-center gap-2 pl-1 pr-1 sm:pr-2.5 py-0.5 rounded-full hover:bg-[#8957FF]/10 transition-all cursor-pointer"
             title={`${user.fullName} (@${user.username})`}
+            className="w-9 h-9 rounded-full social-story-ring flex items-center justify-center shrink-0 cursor-pointer"
           >
-            <div className="social-story-ring rounded-full">
-              <img
-                src={user.avatarUrl}
-                alt={user.fullName}
-                className="w-7 h-7 rounded-full object-cover border border-[#0B081B]"
-              />
+            <div className="w-full h-full rounded-full bg-[#130F2B] flex items-center justify-center text-white text-xs font-black overflow-hidden">
+              {user.avatarUrl && !user.avatarUrl.includes('dicebear.com/7.x/initials') ? (
+                <img src={user.avatarUrl} alt={user.fullName} className="w-full h-full object-cover" />
+              ) : (
+                <span>{initials}</span>
+              )}
             </div>
-            <span
-              className={`hidden xl:inline text-xs font-extrabold max-w-[95px] truncate ${
-                isDark ? 'text-[#F8F7FF]' : 'text-slate-800'
-              }`}
-            >
-              {user.fullName.split(' ')[0]}
-            </span>
+          </button>
+        )}
+
+        {/* Account Logout Button */}
+        {user && (
+          <button
+            type="button"
+            onClick={handleLogout}
+            title="Log Out of Account"
+            aria-label="Log Out"
+            className="w-9 h-9 sm:w-auto sm:px-2.5 rounded-full bg-[#FF3B6B]/15 hover:bg-[#FF3B6B]/25 border border-[#FF3B6B]/40 text-[#FF3B6B] text-xs font-bold inline-flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+          >
+            <LogOut className="w-4 h-4 shrink-0" />
+            <span className="hidden lg:inline">Log Out</span>
           </button>
         )}
       </div>

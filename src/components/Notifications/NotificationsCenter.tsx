@@ -7,6 +7,7 @@ import { notifications } from '../../utils/notifications.ts';
 import { sound } from '../../utils/audio.ts';
 import { useToast } from '../../context/ToastContext.tsx';
 import { formatTimeAgo } from '../../utils/geo.ts';
+import { loadRoomGeofenceEvents, type RoomGeofenceAlertEvent } from '../../utils/roomGeofences.ts';
 import type {
   LocationShareRequest,
   ChatMessage,
@@ -75,6 +76,9 @@ export const NotificationsCenter: React.FC<NotificationsCenterProps> = ({
   const [requests, setRequests] = useState<LocationShareRequest[]>([]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [alerts, setAlerts] = useState<EmergencyAlert[]>([]);
+  const [roomGeofenceEvents, setRoomGeofenceEvents] = useState<RoomGeofenceAlertEvent[]>(() =>
+    loadRoomGeofenceEvents()
+  );
   const [isLoading, setIsLoading] = useState(false);
 
   const [readIds, setReadIds] = useState<Set<string>>(() => {
@@ -142,8 +146,13 @@ export const NotificationsCenter: React.FC<NotificationsCenterProps> = ({
   useEffect(() => {
     void loadNotificationsData();
     const onSync = () => void loadNotificationsData();
+    const onGeofenceEvents = () => setRoomGeofenceEvents(loadRoomGeofenceEvents());
     window.addEventListener('beacon:cloud-sync-updated', onSync);
-    return () => window.removeEventListener('beacon:cloud-sync-updated', onSync);
+    window.addEventListener('beacon:room-geofence-events-updated', onGeofenceEvents);
+    return () => {
+      window.removeEventListener('beacon:cloud-sync-updated', onSync);
+      window.removeEventListener('beacon:room-geofence-events-updated', onGeofenceEvents);
+    };
   }, [user?.id]);
 
   const allNotifications = useMemo(() => {
@@ -190,6 +199,8 @@ export const NotificationsCenter: React.FC<NotificationsCenterProps> = ({
         });
       } else if (req.status === 'accepted' || req.status === 'temporary') {
         const partnerName = isIncoming ? req.fromUserName : req.toUserName || 'Friend';
+        const partnerId = isIncoming ? req.fromUserId : req.toUserId;
+        const partnerLoc = userLocations.find((l) => l.userId === partnerId);
         items.push({
           id,
           category: 'location',
@@ -201,6 +212,8 @@ export const NotificationsCenter: React.FC<NotificationsCenterProps> = ({
           timestamp: req.createdAt,
           accentColor: '#00D6A0',
           unread: !readIds.has(id),
+          latitude: partnerLoc?.latitude,
+          longitude: partnerLoc?.longitude,
         });
       }
     });
@@ -216,6 +229,12 @@ export const NotificationsCenter: React.FC<NotificationsCenterProps> = ({
         const isReadByMe = readIds.has(id);
         const voiceAtt = m.attachments?.find((a) => a.type === 'voice');
         const firstAtt = m.attachments?.[0];
+        const coordMatch = m.text?.match(
+          /([-+]?\d+(?:\.\d+)?)\s*°?\s*[NS]?\s*,\s*([-+]?\d+(?:\.\d+)?)\s*°?\s*[EW]?/i
+        );
+        const senderLoc = userLocations.find((l) => l.userId === m.senderId);
+        const msgLat = coordMatch ? parseFloat(coordMatch[1]) : senderLoc?.latitude;
+        const msgLng = coordMatch ? parseFloat(coordMatch[2]) : senderLoc?.longitude;
         items.push({
           id,
           category: 'message',
@@ -232,6 +251,8 @@ export const NotificationsCenter: React.FC<NotificationsCenterProps> = ({
           senderName: m.senderName,
           senderAvatar: m.senderAvatar,
           roomId: m.roomId,
+          latitude: Number.isFinite(msgLat) ? msgLat : undefined,
+          longitude: Number.isFinite(msgLng) ? msgLng : undefined,
         });
       });
 
@@ -251,7 +272,28 @@ export const NotificationsCenter: React.FC<NotificationsCenterProps> = ({
       });
     });
 
-    // 5. Live Peer Location-Sharing Events
+    // 5. Room Saved-Place Geofence Enter / Leave Push Notifications
+    roomGeofenceEvents.slice(0, 25).forEach((ev) => {
+      const id = `room-gf-${ev.id}`;
+      if (clearedIds.has(id)) return;
+      const verb = ev.action === 'entered' ? 'entered' : 'left';
+      items.push({
+        id,
+        category: 'location',
+        title: `📍 [${ev.roomName}] ${ev.memberName} ${verb} ${ev.placeName}`,
+        body: `${ev.memberName} ${verb} saved place "${ev.placeName}" (${Math.round(
+          ev.distanceMeters
+        )}m from center · ${ev.radiusMeters}m geofence).`,
+        timestamp: ev.timestamp,
+        accentColor: ev.action === 'entered' ? '#00D6A0' : '#F59E0B',
+        unread: !readIds.has(id),
+        latitude: ev.latitude,
+        longitude: ev.longitude,
+        roomId: ev.roomId,
+      });
+    });
+
+    // 6. Live Peer Location-Sharing Events
     userLocations
       .filter((loc) => loc.userId !== user?.id)
       .forEach((loc) => {
@@ -274,7 +316,18 @@ export const NotificationsCenter: React.FC<NotificationsCenterProps> = ({
     return items.sort(
       (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
     );
-  }, [activeAlerts, alerts, requests, messages, rooms, userLocations, user?.id, readIds, clearedIds]);
+  }, [
+    activeAlerts,
+    alerts,
+    requests,
+    messages,
+    rooms,
+    roomGeofenceEvents,
+    userLocations,
+    user?.id,
+    readIds,
+    clearedIds,
+  ]);
 
   const filteredNotifications = useMemo(() => {
     if (filter === 'all') return allNotifications;
@@ -290,20 +343,48 @@ export const NotificationsCenter: React.FC<NotificationsCenterProps> = ({
     const next = new Set(readIds);
     next.add(id);
     persistReadIds(next);
+    window.dispatchEvent(new CustomEvent('beacon:badges-updated'));
   };
 
   const handleMarkAllAsRead = async () => {
     const next = new Set(readIds);
     allNotifications.forEach((n) => next.add(n.id));
+    messages.forEach((m) => next.add(`msg-${m.id}`));
+    requests.forEach((r) => next.add(`req-${r.id}-${r.status}`));
     persistReadIds(next);
-    toast.success('All notifications marked as read');
+    try {
+      localStorage.setItem(`beacon_badges_cleared_at_${user?.id || 'guest'}`, String(Date.now()));
+    } catch {}
+    window.dispatchEvent(new CustomEvent('beacon:badges-updated'));
+    toast.success('All notifications & badges marked as read');
   };
 
   const handleClearNotifications = () => {
-    const next = new Set(clearedIds);
-    filteredNotifications.forEach((n) => next.add(n.id));
-    persistClearedIds(next);
-    toast.info('Cleared notifications from view');
+    const nextCleared = new Set(clearedIds);
+    const nextRead = new Set(readIds);
+    filteredNotifications.forEach((n) => {
+      nextCleared.add(n.id);
+      nextRead.add(n.id);
+    });
+    if (filter === 'all' || filter === 'message') {
+      messages.forEach((m) => {
+        nextCleared.add(`msg-${m.id}`);
+        nextRead.add(`msg-${m.id}`);
+      });
+    }
+    if (filter === 'all' || filter === 'friend_request') {
+      requests.forEach((r) => {
+        nextCleared.add(`req-${r.id}-${r.status}`);
+        nextRead.add(`req-${r.id}-${r.status}`);
+      });
+    }
+    persistClearedIds(nextCleared);
+    persistReadIds(nextRead);
+    try {
+      localStorage.setItem(`beacon_badges_cleared_at_${user?.id || 'guest'}`, String(Date.now()));
+    } catch {}
+    window.dispatchEvent(new CustomEvent('beacon:badges-updated'));
+    toast.info('Cleared notifications & badges');
   };
 
   const handleRespondFriendRequest = async (
@@ -666,9 +747,10 @@ export const NotificationsCenter: React.FC<NotificationsCenterProps> = ({
                       </button>
                     )}
 
-                    {(item.category === 'emergency' || item.category === 'location') &&
-                      item.latitude != null &&
-                      item.longitude != null && (
+                    {item.latitude != null &&
+                      item.longitude != null &&
+                      Number.isFinite(item.latitude) &&
+                      Number.isFinite(item.longitude) && (
                         <button
                           type="button"
                           onClick={(e) => {
@@ -676,10 +758,10 @@ export const NotificationsCenter: React.FC<NotificationsCenterProps> = ({
                             handleMarkAsRead(item.id);
                             onFocusMapLocation(item.latitude!, item.longitude!);
                           }}
-                          className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-[#00D6A0] to-[#00D9FF] text-slate-950 text-xs font-extrabold flex items-center gap-1 cursor-pointer"
+                          className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-[#00D6A0] to-[#00D9FF] text-slate-950 text-xs font-extrabold flex items-center gap-1 cursor-pointer active:scale-95 transition-transform"
                         >
                           <MapPin className="w-3.5 h-3.5" />
-                          <span>Locate</span>
+                          <span>Locate on Map</span>
                         </button>
                       )}
                   </div>

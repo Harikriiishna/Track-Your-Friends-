@@ -24,9 +24,16 @@ export interface UserProfile {
     phoneVisibility: PhoneVisibility;
     profileVisibility: ProfileVisibility;
     showOnlineStatus: boolean;
-    locationSharingEnabled?: boolean; // Master opt-in location toggle
+    locationSharingEnabled?: boolean; // Master opt-in location toggle (OFF by default)
+    approximateSharing?: boolean; // Round shared coordinates to ~500m when enabled
+    sharingDurationMode?: 'off' | '15m' | '1h' | 'until_stopped';
     temporarySharingExpiry?: string | null; // ISO timestamp when location sharing auto-expires
     blockedUserIds?: string[]; // Array of blocked user IDs
+    notificationPreferences?: {
+      incidents: boolean;
+      community: boolean;
+      mentions: boolean;
+    };
   };
   isAdmin?: boolean;
   markerColor?: string; // Custom hex color for live map marker

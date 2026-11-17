@@ -10,6 +10,9 @@ import {
   nativeAwareFetch,
   resolveApiUrl,
   syncLogger,
+  emitNetworkHttpStatusError,
+  onNetworkHttpStatusError,
+  type NetworkHttpErrorEventDetail,
 } from '../config/env.ts';
 
 export interface BackendDiagnosticReport {
@@ -95,6 +98,10 @@ class ApiClient {
     return () => {
       this.diagnosticListeners.delete(listener);
     };
+  }
+
+  public onHttpStatusError(listener: (detail: NetworkHttpErrorEventDetail) => void): () => void {
+    return onNetworkHttpStatusError(listener);
   }
 
   public onUnauthorized(
@@ -596,8 +603,9 @@ class ApiClient {
     const targetUrl = resolveApiUrl(endpoint);
     const method = (options.method || 'GET').toUpperCase();
 
-    // Fast path: if remote endpoint is in cooldown (e.g. Android APK blocked by Cloud Run HTML proxy or offline),
-    // execute immediately via localBackend (<5ms latency) so buttons never lag or fail!
+    // Fast path: if running inside the installed Android APK where the AI Studio Cloud Run origin
+    // is behind a browser cookie wall, or if remote endpoint is in cooldown, execute immediately via localBackend (<5ms)
+    // while real-time WebSocket relay (ntfy.sh) & Cloud Firestore synchronize across all devices in the background!
     if (Date.now() < this.remoteCooldownUntil) {
       return this.fallbackToLocal<T>(endpoint, options, token);
     }
@@ -631,7 +639,7 @@ class ApiClient {
 
     let response: Response;
     try {
-      const timeoutMs = isAndroidNativeApp() ? 2500 : 3200;
+      const timeoutMs = isAndroidNativeApp() ? 1400 : 2800;
       response = await nativeAwareFetch(
         targetUrl,
         {
@@ -644,7 +652,7 @@ class ApiClient {
       );
     } catch {
       this.lastDirectApiConnected = false;
-      this.remoteCooldownUntil = Date.now() + 25000;
+      this.remoteCooldownUntil = Date.now() + (isAndroidNativeApp() ? 300000 : 45000);
       return this.fallbackToLocal<T>(endpoint, options, token);
     }
 
@@ -661,7 +669,7 @@ class ApiClient {
 
     if (isHtmlResponse) {
       this.lastDirectApiConnected = false;
-      this.remoteCooldownUntil = Date.now() + 30000;
+      this.remoteCooldownUntil = Date.now() + (isAndroidNativeApp() ? 600000 : 60000);
       return this.fallbackToLocal<T>(endpoint, options, token);
     }
 
@@ -670,13 +678,22 @@ class ApiClient {
       data = trimmed ? JSON.parse(trimmed) : {};
     } catch {
       this.lastDirectApiConnected = false;
-      this.remoteCooldownUntil = Date.now() + 25000;
+      this.remoteCooldownUntil = Date.now() + (isAndroidNativeApp() ? 300000 : 45000);
       return this.fallbackToLocal<T>(endpoint, options, token);
     }
 
     this.lastDirectApiConnected = true;
 
     if (!response.ok) {
+      if (response.status === 403 || response.status === 404 || response.status === 429) {
+        emitNetworkHttpStatusError(
+          response.status,
+          response.url || targetUrl,
+          response.statusText,
+          'api.request'
+        );
+      }
+
       const isAuthCredentialEndpoint =
         endpoint.startsWith('/api/auth/login') ||
         endpoint.startsWith('/api/auth/register') ||

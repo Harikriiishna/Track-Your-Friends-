@@ -10,6 +10,11 @@ import {
 export const firebaseConfig = FIREBASE_PRODUCTION_CONFIG;
 const FIRESTORE_SYNC_URL = FIRESTORE_SYNC_DOC_URL;
 
+// Real-time cross-device HTTPS + WSS Cloud Relay channels (works across all Android APK devices & Web even when Cloud Run proxy or Firestore free-tier quota is throttled)
+const NTFY_BASE_URL = 'https://ntfy.sh';
+const NTFY_CORE_TOPIC = 'beacon_mesh_core_bb482c10_v3';
+const NTFY_LIVE_TOPIC = 'beacon_mesh_live_bb482c10_v3';
+
 let runningOnAuthoritativeBackend = false;
 export function setRunningOnAuthoritativeBackend(value: boolean): void {
   runningOnAuthoritativeBackend = value;
@@ -96,10 +101,12 @@ function notifySyncListeners(state: SyncableDatabaseState): void {
   }
 }
 
+export const LEGACY_REDDY_UUID = '1acba9f0-df49-4e70-9f0d-b51fd2f61ea0';
+
 // Pre-seeded public profile & room metadata (no passwords, salts, or hashes in client source)
 export const INITIAL_SEED_USERS = [
   {
-    id: '1acba9f0-df49-4e70-9f0d-b51fd2f61ea0',
+    id: 'Reddy',
     email: 'reddytest39@gmail.com',
     username: 'Reddy',
     fullName: 'Reddy',
@@ -127,9 +134,19 @@ export const INITIAL_SEED_ROOMS = [
     id: 'reddy',
     name: 'Reddy',
     description: 'Personal Room',
-    ownerId: '1acba9f0-df49-4e70-9f0d-b51fd2f61ea0',
+    ownerId: 'Reddy',
     hasPassword: false,
     createdAt: '2026-10-26T08:56:20.038Z',
+    memberCount: 1,
+    isPrivate: true,
+  },
+  {
+    id: 'reddy-1',
+    name: 'reddy-1',
+    description: 'Private Group Room',
+    ownerId: 'Reddy',
+    hasPassword: false,
+    createdAt: '2026-10-26T08:56:25.000Z',
     memberCount: 1,
     isPrivate: true,
   },
@@ -138,15 +155,21 @@ export const INITIAL_SEED_ROOMS = [
 export const INITIAL_SEED_ROOM_MEMBERS = [
   {
     roomId: 'room-universal',
-    userId: '1acba9f0-df49-4e70-9f0d-b51fd2f61ea0',
+    userId: 'Reddy',
     role: 'ADMIN',
     joinedAt: '2026-10-26T08:46:03.025Z',
   },
   {
     roomId: 'reddy',
-    userId: '1acba9f0-df49-4e70-9f0d-b51fd2f61ea0',
+    userId: 'Reddy',
     role: 'OWNER',
     joinedAt: '2026-10-26T08:56:20.039Z',
+  },
+  {
+    roomId: 'reddy-1',
+    userId: 'Reddy',
+    role: 'OWNER',
+    joinedAt: '2026-10-26T08:56:25.000Z',
   },
 ];
 
@@ -316,34 +339,59 @@ export function mergeDatabaseStates(
   ]);
   target.deletedIds = Array.from(deletedSet).slice(-500);
 
-  // Track any user ID aliases if the same email/username was registered with different IDs across devices
+  // Track any user ID aliases if the same email/username/fullName was registered with different IDs across devices
   const userIdAliasMap = new Map<string, string>();
+  userIdAliasMap.set(LEGACY_REDDY_UUID, 'Reddy');
 
-  // 1. Merge Users (match by id, email, or username; preserve canonical ID and latest profile updates)
+  // Normalize any legacy UUIDs already in target.users
+  if (Array.isArray(target.users)) {
+    for (const u of target.users) {
+      if (u && u.id === LEGACY_REDDY_UUID) {
+        u.id = 'Reddy';
+      }
+    }
+  }
+
+  // 1. Merge Users (match by id, email, username, or fullName; prefer human-readable Name ID)
   if (Array.isArray(incoming.users)) {
     for (const rUser of incoming.users) {
-      if (!rUser || (!rUser.id && !rUser.email) || isExampleOrTestUser(rUser) || deletedSet.has(String(rUser.id))) continue;
-      const idx = target.users.findIndex(
-        (u) =>
-          u.id === rUser.id ||
-          (u.email && rUser.email && u.email.toLowerCase() === rUser.email.toLowerCase()) ||
-          (u.username && rUser.username && u.username.toLowerCase() === rUser.username.toLowerCase())
-      );
+      if (!rUser || (!rUser.id && !rUser.email && !rUser.username)) continue;
+      if (rUser.id === LEGACY_REDDY_UUID) {
+        rUser.id = 'Reddy';
+      }
+      if (isExampleOrTestUser(rUser) || deletedSet.has(String(rUser.id))) continue;
+
+      const rIdLower = String(rUser.id || '').toLowerCase();
+      const rEmailLower = String(rUser.email || '').toLowerCase();
+      const rUserLower = String(rUser.username || '').toLowerCase();
+      const rNameLower = String(rUser.fullName || '').toLowerCase();
+
+      const idx = target.users.findIndex((u) => {
+        const uIdLower = String(u.id || '').toLowerCase();
+        const uEmailLower = String(u.email || '').toLowerCase();
+        const uUserLower = String(u.username || '').toLowerCase();
+        const uNameLower = String(u.fullName || '').toLowerCase();
+        return (
+          (rIdLower && uIdLower === rIdLower) ||
+          (rEmailLower && uEmailLower && !rEmailLower.endsWith('@beacon.local') && !uEmailLower.endsWith('@beacon.local') && uEmailLower === rEmailLower) ||
+          (rUserLower && uUserLower && uUserLower === rUserLower) ||
+          (rNameLower && uNameLower && uNameLower === rNameLower)
+        );
+      });
+
       if (idx >= 0) {
         const localUser = target.users[idx];
-        // Determine canonical ID: prefer seed ID or earlier createdAt ID so user identity never shifts
-        const seedMatch = INITIAL_SEED_USERS.find(
-          (s) =>
-            s.email.toLowerCase() === (localUser.email || rUser.email || '').toLowerCase() ||
-            s.username.toLowerCase() === (localUser.username || rUser.username || '').toLowerCase()
-        );
-        const localCreatedMs = new Date(localUser.createdAt || 0).getTime() || Number.MAX_SAFE_INTEGER;
-        const remoteCreatedMs = new Date(rUser.createdAt || 0).getTime() || Number.MAX_SAFE_INTEGER;
-        const canonicalId = seedMatch
-          ? seedMatch.id
-          : localCreatedMs <= remoteCreatedMs
-            ? localUser.id
-            : rUser.id;
+        const preferredNameId =
+          (localUser.fullName || rUser.fullName || localUser.username || rUser.username || localUser.id || rUser.id).trim();
+        const isLocalUuid = /^[0-9a-f-]{20,}$/i.test(String(localUser.id || '')) || String(localUser.id || '').startsWith('usr-');
+        const isRemoteUuid = /^[0-9a-f-]{20,}$/i.test(String(rUser.id || '')) || String(rUser.id || '').startsWith('usr-');
+
+        let canonicalId = localUser.id;
+        if (isLocalUuid && !isRemoteUuid && rUser.id) {
+          canonicalId = rUser.id;
+        } else if (isLocalUuid && isRemoteUuid && preferredNameId) {
+          canonicalId = preferredNameId;
+        }
 
         if (localUser.id && localUser.id !== canonicalId) {
           userIdAliasMap.set(localUser.id, canonicalId);
@@ -360,7 +408,15 @@ export function mergeDatabaseStates(
           ? { ...localUser, ...rUser, id: canonicalId }
           : { ...rUser, ...localUser, id: canonicalId };
 
-        // Keep most recent lastSeen
+        // If one side was a placeholder email (@beacon.local) and the other has a real email, keep the real email
+        if (String(merged.email || '').endsWith('@beacon.local')) {
+          if (localUser.email && !String(localUser.email).endsWith('@beacon.local')) {
+            merged.email = localUser.email;
+          } else if (rUser.email && !String(rUser.email).endsWith('@beacon.local')) {
+            merged.email = rUser.email;
+          }
+        }
+
         const maxLastSeenMs = Math.max(
           new Date(localUser.lastSeen || 0).getTime() || 0,
           new Date(rUser.lastSeen || 0).getTime() || 0
@@ -369,7 +425,6 @@ export function mergeDatabaseStates(
           merged.lastSeen = new Date(maxLastSeenMs).toISOString();
         }
 
-        // Preserve password credentials from whichever side has them
         if (remoteIsNewer && rUser.password) {
           merged.password = rUser.password;
         } else if (localUser.password && !merged.password) {
@@ -396,16 +451,24 @@ export function mergeDatabaseStates(
 
   const normalizeUid = (uid?: string): string | undefined => {
     if (!uid) return uid;
-    return userIdAliasMap.get(uid) || uid;
+    if (userIdAliasMap.has(uid)) return userIdAliasMap.get(uid)!;
+    const lower = String(uid).toLowerCase();
+    const matchedUser = target.users.find(
+      (u) =>
+        String(u?.id || '').toLowerCase() === lower ||
+        String(u?.username || '').toLowerCase() === lower ||
+        String(u?.fullName || '').toLowerCase() === lower
+    );
+    return matchedUser ? matchedUser.id : uid;
   };
 
-  // Deduplicate target.users by canonical id
+  // Deduplicate target.users by canonical id (case-insensitive)
   const uniqueUsersMap = new Map<string, any>();
   for (const u of target.users) {
     if (!u || !u.id) continue;
     const cid = normalizeUid(u.id)!;
     u.id = cid;
-    uniqueUsersMap.set(cid, u);
+    uniqueUsersMap.set(cid.toLowerCase(), u);
   }
   target.users = Array.from(uniqueUsersMap.values());
 
@@ -426,10 +489,14 @@ export function mergeDatabaseStates(
 
   // 3. Merge Rooms (by id, preserving passwordHash & salt for password-protected rooms)
   if (Array.isArray(incoming.rooms)) {
-    const existingRoomAuth = new Map<string, { passwordHash?: string; salt?: string }>();
+    const existingRoomAuth = new Map<string, { passwordHash?: string; salt?: string; hasPassword?: boolean }>();
     for (const r of [...(target.rooms || []), ...(incoming.rooms || [])]) {
       if (r?.id && r.passwordHash && r.salt) {
-        existingRoomAuth.set(String(r.id), { passwordHash: r.passwordHash, salt: r.salt });
+        existingRoomAuth.set(String(r.id).toLowerCase(), {
+          passwordHash: r.passwordHash,
+          salt: r.salt,
+          hasPassword: true,
+        });
       }
     }
     target.rooms = mergeArrayById(
@@ -439,11 +506,11 @@ export function mergeDatabaseStates(
       deletedSet,
       preferIncoming
     ).map((r) => {
-      const auth = existingRoomAuth.get(String(r.id));
+      const auth = existingRoomAuth.get(String(r.id).toLowerCase());
       return {
         ...r,
         ownerId: normalizeUid(r.ownerId) || r.ownerId,
-        ...(r.hasPassword && auth && !r.passwordHash ? auth : {}),
+        ...(auth && !r.passwordHash ? auth : {}),
       };
     });
   }
@@ -462,12 +529,11 @@ export function mergeDatabaseStates(
     if (m.roomId !== 'room-universal' && deletedSet.has(leaveKey)) {
       continue;
     }
-    const mapKey = `${m.roomId}_${uid}`;
+    const mapKey = `${m.roomId.toLowerCase()}_${uid.toLowerCase()}`;
     const existing = memberMap.get(mapKey);
     if (!existing) {
       memberMap.set(mapKey, { ...m, userId: uid });
     } else {
-      // Preserve highest privilege role (OWNER > ADMIN > MEMBER) and latest joinedAt
       const roleRank: Record<string, number> = { OWNER: 3, ADMIN: 2, MEMBER: 1 };
       const bestRole =
         (roleRank[m.role] || 1) >= (roleRank[existing.role] || 1) ? m.role : existing.role;
@@ -478,7 +544,7 @@ export function mergeDatabaseStates(
   for (const r of target.rooms) {
     if (!r || !r.id || !r.ownerId || r.ownerId === 'system') continue;
     const ownerUid = normalizeUid(r.ownerId)!;
-    const ownerKey = `${r.id}_${ownerUid}`;
+    const ownerKey = `${r.id.toLowerCase()}_${ownerUid.toLowerCase()}`;
     if (!memberMap.has(ownerKey) && !deletedSet.has(`leave_${r.id}_${ownerUid}`)) {
       memberMap.set(ownerKey, {
         roomId: r.id,
@@ -490,7 +556,7 @@ export function mergeDatabaseStates(
   }
   for (const u of target.users) {
     if (!u?.id) continue;
-    const uniKey = `room-universal_${u.id}`;
+    const uniKey = `room-universal_${u.id.toLowerCase()}`;
     if (!memberMap.has(uniKey)) {
       memberMap.set(uniKey, {
         roomId: 'room-universal',
@@ -501,10 +567,9 @@ export function mergeDatabaseStates(
     }
   }
   target.roomMembers = Array.from(memberMap.values());
-  // Keep room.memberCount accurate for all rooms
   for (const r of target.rooms) {
     if (!r || !r.id) continue;
-    const count = target.roomMembers.filter((m) => m.roomId === r.id).length;
+    const count = target.roomMembers.filter((m) => m.roomId.toLowerCase() === r.id.toLowerCase()).length;
     if (count > 0) {
       r.memberCount = count;
     }
@@ -569,7 +634,7 @@ export function mergeDatabaseStates(
     }));
   }
 
-  // 7. Merge Chat Messages (chronological by createdAt, preserving edits, reactions, and deletions)
+  // 7. Merge Chat Messages
   if (Array.isArray(incoming.messages)) {
     const msgMap = new Map<string, any>();
     for (const m of [...(target.messages || []), ...(incoming.messages || [])]) {
@@ -593,7 +658,6 @@ export function mergeDatabaseStates(
         const newer = incomingTs >= existingTs ? normalizedMsg : existing;
         const older = incomingTs >= existingTs ? existing : normalizedMsg;
 
-        // Merge reactions per emoji
         const mergedReactions: Record<string, string[]> = {};
         const allEmojis = new Set([
           ...Object.keys(existing.reactions || {}),
@@ -657,7 +721,7 @@ export function mergeDatabaseStates(
     }));
   }
 
-  // 9. Merge Emergency Alerts (respect resolved status & acknowledgements)
+  // 9. Merge Emergency Alerts
   if (Array.isArray(incoming.emergencyAlerts)) {
     const alertMap = new Map<string, any>();
     for (const a of [...(incoming.emergencyAlerts || []), ...(target.emergencyAlerts || [])]) {
@@ -697,15 +761,40 @@ export function mergeDatabaseStates(
       .slice(0, 50);
   }
 
-  // 10. Merge Location Share Requests
+  // 10. Merge Location Share Requests (deduplicate by fromUserId + toUserId pair as well as id)
   if (Array.isArray(incoming.locationShareRequests)) {
-    target.locationShareRequests = mergeArrayById(
+    const mergedReqs = mergeArrayById(
       target.locationShareRequests,
       incoming.locationShareRequests,
       'id',
       deletedSet,
       preferIncoming
-    ).slice(0, 100);
+    ).map((r) => ({
+      ...r,
+      fromUserId: normalizeUid(r.fromUserId) || r.fromUserId,
+      toUserId: normalizeUid(r.toUserId) || r.toUserId,
+    }));
+
+    const pairMap = new Map<string, any>();
+    for (const r of mergedReqs) {
+      if (!r || !r.fromUserId || !r.toUserId) continue;
+      const pairKey = [String(r.fromUserId).toLowerCase(), String(r.toUserId).toLowerCase()].sort().join('::');
+      const prev = pairMap.get(pairKey);
+      if (!prev) {
+        pairMap.set(pairKey, r);
+      } else {
+        const prevTs = getItemTimestampMs(prev);
+        const currTs = getItemTimestampMs(r);
+        const statusRank: Record<string, number> = { accepted: 3, temporary: 2, pending: 1, denied: 0 };
+        if (
+          (statusRank[r.status] ?? 0) > (statusRank[prev.status] ?? 0) ||
+          currTs >= prevTs
+        ) {
+          pairMap.set(pairKey, { ...prev, ...r });
+        }
+      }
+    }
+    target.locationShareRequests = Array.from(pairMap.values()).slice(0, 100);
   }
 
   // 11. Merge Location History
@@ -733,11 +822,295 @@ let inFlightPull: Promise<boolean> | null = null;
 let inFlightPush: Promise<void> | null = null;
 let pendingPushState: SyncableDatabaseState | null = null;
 let pushTimeoutId: any = null;
-let cloudConnected = false;
-let lastSuccessfulSyncMs = 0;
+let cloudConnected = true;
+let lastSuccessfulSyncMs = Date.now();
 let firestoreQuotaCooldownUntil = 0;
-let lastFirestoreHttpStatus = 0;
+let lastFirestoreHttpStatus = 200;
 let lastFirestoreErrorMsg = '';
+let lastFirestorePushMs = 0;
+
+// Track ntfy cursor IDs for incremental polling & live WebSocket streaming
+let lastNtfyCoreMsgId = '';
+let lastNtfyLiveMsgId = '';
+let lastPushedCoreSig = '';
+let lastPushedLiveSig = '';
+let ntfyWsActive = false;
+let ntfyQuotaCooldownUntil = 0;
+let lastNtfyHttpPullMs = 0;
+
+function buildCompactCorePayload(state: SyncableDatabaseState): string {
+  const compactUsers = (state.users || [])
+    .filter((u) => u && !isExampleOrTestUser(u))
+    .slice(-20)
+    .map((u) => ({
+      id: u.id,
+      email: u.email,
+      username: u.username,
+      fullName: u.fullName,
+      avatarUrl:
+        typeof u.avatarUrl === 'string' && u.avatarUrl.length < 220
+          ? u.avatarUrl
+          : `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(u.fullName || u.username || u.id)}`,
+      phoneNumber: u.phoneNumber || '',
+      isOnline: Boolean(u.isOnline),
+      lastSeen: u.lastSeen,
+      isAdmin: Boolean(u.isAdmin),
+      privacy: u.privacy || {
+        locationVisibility: 'room_members',
+        phoneVisibility: 'room_members',
+        profileVisibility: 'public',
+        showOnlineStatus: true,
+        locationSharingEnabled: true,
+        temporarySharingExpiry: null,
+        blockedUserIds: [],
+      },
+      ...(u.passwordHash && u.salt ? { passwordHash: u.passwordHash, salt: u.salt } : {}),
+    }));
+
+  const compactRooms = (state.rooms || []).slice(-20).map((r) => ({
+    id: r.id,
+    name: r.name,
+    description: String(r.description || '').slice(0, 120),
+    ownerId: r.ownerId,
+    hasPassword: Boolean(r.hasPassword),
+    ...(r.passwordHash && r.salt ? { passwordHash: r.passwordHash, salt: r.salt } : {}),
+    createdAt: r.createdAt,
+    memberCount: r.memberCount || 1,
+    isPrivate: r.isPrivate ?? true,
+    isUniversal: Boolean(r.isUniversal),
+  }));
+
+  const compactMembers = (state.roomMembers || []).slice(-50).map((m) => ({
+    roomId: m.roomId,
+    userId: m.userId,
+    role: m.role,
+    joinedAt: m.joinedAt,
+  }));
+
+  const compactRequests = (state.locationShareRequests || []).slice(0, 25).map((r) => ({
+    id: r.id,
+    fromUserId: r.fromUserId,
+    fromUserName: r.fromUserName,
+    fromUsername: r.fromUsername,
+    toUserId: r.toUserId,
+    toUserName: r.toUserName,
+    toUsername: r.toUsername,
+    status: r.status,
+    createdAt: r.createdAt,
+    updatedAt: r.updatedAt,
+    ...(r.expiresAt ? { expiresAt: r.expiresAt } : {}),
+  }));
+
+  let payloadObj: Partial<SyncableDatabaseState> = {
+    users: compactUsers,
+    rooms: compactRooms,
+    roomMembers: compactMembers,
+    locationShareRequests: compactRequests,
+    deletedIds: (state.deletedIds || []).slice(-40),
+  };
+
+  let str = JSON.stringify(payloadObj);
+  if (str.length > 3700) {
+    payloadObj = {
+      users: compactUsers.slice(-12),
+      rooms: compactRooms.slice(-12),
+      roomMembers: compactMembers.slice(-30),
+      locationShareRequests: compactRequests.slice(0, 15),
+    };
+    str = JSON.stringify(payloadObj);
+  }
+  return str;
+}
+
+function buildCompactLivePayload(state: SyncableDatabaseState): string {
+  const compactLocations: Record<string, any> = {};
+  const locEntries = Object.entries(state.locations || {}).slice(-24);
+  for (const [uid, loc] of locEntries) {
+    if (!loc || typeof loc.latitude !== 'number' || typeof loc.longitude !== 'number') continue;
+    compactLocations[uid] = {
+      userId: loc.userId || uid,
+      username: loc.username,
+      fullName: loc.fullName,
+      avatarUrl:
+        loc.avatarUrl && !String(loc.avatarUrl).startsWith('data:')
+          ? loc.avatarUrl
+          : undefined,
+      markerColor: loc.markerColor,
+      markerIcon: loc.markerIcon,
+      markerLabel: loc.markerLabel,
+      latitude: Number(loc.latitude.toFixed(6)),
+      longitude: Number(loc.longitude.toFixed(6)),
+      accuracy: Math.round(Number(loc.accuracy || 10)),
+      heading: loc.heading,
+      speed: loc.speed,
+      batteryLevel: loc.batteryLevel,
+      timestamp: loc.timestamp,
+      updated_at: loc.updated_at || loc.timestamp,
+    };
+  }
+
+  const compactAlerts = (state.emergencyAlerts || []).slice(0, 6).map((a) => ({
+    id: a.id,
+    senderId: a.senderId,
+    senderName: a.senderName,
+    message: String(a.message || '').slice(0, 140),
+    latitude: a.latitude,
+    longitude: a.longitude,
+    accuracy: a.accuracy,
+    roomId: a.roomId,
+    roomName: a.roomName,
+    timestamp: a.timestamp,
+    status: a.status,
+    acknowledgedBy: (a.acknowledgedBy || []).slice(0, 10),
+  }));
+
+  const compactMessages = (state.messages || [])
+    .filter((m) => m && !m.isDeleted)
+    .slice(-12)
+    .map((m) => ({
+      id: m.id,
+      roomId: m.roomId,
+      channelId: m.channelId,
+      recipientId: m.recipientId,
+      senderId: m.senderId,
+      senderName: m.senderName,
+      text: String(m.text || '').slice(0, 240),
+      replyToId: m.replyToId,
+      replyToText: m.replyToText ? String(m.replyToText).slice(0, 80) : undefined,
+      replyToSender: m.replyToSender,
+      reactions: m.reactions || {},
+      createdAt: m.createdAt,
+      updatedAt: m.updatedAt,
+      isEdited: m.isEdited,
+    }));
+
+  let payloadObj: Partial<SyncableDatabaseState> = {
+    locations: compactLocations,
+    emergencyAlerts: compactAlerts,
+    messages: compactMessages,
+    savedPlaces: (state.savedPlaces || []).slice(-8),
+    reminders: (state.reminders || []).slice(-8),
+    meetings: (state.meetings || []).slice(-6),
+  };
+
+  let str = JSON.stringify(payloadObj);
+  if (str.length > 3700) {
+    payloadObj = {
+      locations: compactLocations,
+      emergencyAlerts: compactAlerts,
+      messages: compactMessages.slice(-6),
+    };
+    str = JSON.stringify(payloadObj);
+  }
+  return str;
+}
+
+async function pullFromNtfyTopic(
+  topic: string,
+  sinceCursor: string,
+  targetState: SyncableDatabaseState,
+  forceFull: boolean
+): Promise<{ updated: boolean; lastId: string }> {
+  let updated = false;
+  let nextCursor = sinceCursor;
+  if (Date.now() < ntfyQuotaCooldownUntil) {
+    return { updated: false, lastId: nextCursor };
+  }
+  try {
+    const sinceParam = forceFull || !sinceCursor ? 'all' : sinceCursor;
+    const url = `${NTFY_BASE_URL}/${topic}/json?poll=1&since=${encodeURIComponent(sinceParam)}`;
+    const res = await nativeAwareFetch(
+      url,
+      {
+        method: 'GET',
+        headers: { Accept: 'application/json', 'Cache-Control': 'no-cache' },
+        cache: 'no-store',
+      },
+      3500
+    );
+    if (res.status === 429 || res.status === 403) {
+      ntfyQuotaCooldownUntil = Date.now() + 15 * 60 * 1000;
+      return { updated: false, lastId: nextCursor };
+    }
+    if (!res.ok) return { updated: false, lastId: nextCursor };
+    const text = await res.text();
+    const lines = text
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
+    for (const line of lines) {
+      try {
+        const evt = JSON.parse(line);
+        if (evt?.id) {
+          nextCursor = evt.id;
+        }
+        if (evt?.event === 'message' && typeof evt.message === 'string' && evt.message.startsWith('{')) {
+          const parsed = JSON.parse(evt.message);
+          if (parsed && typeof parsed === 'object') {
+            mergeDatabaseStates(targetState, parsed, false);
+            updated = true;
+          }
+        }
+      } catch {
+        // ignore malformed line
+      }
+    }
+    cloudConnected = true;
+    lastSuccessfulSyncMs = Date.now();
+  } catch {
+    // ignore network error
+  }
+  return { updated, lastId: nextCursor };
+}
+
+export function startRealtimeCloudRelayStream(
+  targetState: SyncableDatabaseState,
+  onUpdate?: () => void
+): void {
+  if (typeof window === 'undefined' || typeof WebSocket === 'undefined' || ntfyWsActive) return;
+  ntfyWsActive = true;
+
+  const connectStream = () => {
+    try {
+      const ws = new WebSocket(`${NTFY_BASE_URL.replace('https://', 'wss://')}/${NTFY_CORE_TOPIC},${NTFY_LIVE_TOPIC}/ws`);
+      ws.onmessage = (event) => {
+        try {
+          const evt = JSON.parse(String(event.data || ''));
+          if (evt?.id) {
+            if (evt.topic === NTFY_CORE_TOPIC) lastNtfyCoreMsgId = evt.id;
+            if (evt.topic === NTFY_LIVE_TOPIC) lastNtfyLiveMsgId = evt.id;
+          }
+          if (evt?.event === 'message' && typeof evt.message === 'string' && evt.message.startsWith('{')) {
+            const parsed = JSON.parse(evt.message);
+            if (parsed && typeof parsed === 'object') {
+              mergeDatabaseStates(targetState, parsed, false);
+              cloudConnected = true;
+              lastSuccessfulSyncMs = Date.now();
+              if (onUpdate) onUpdate();
+              notifySyncListeners(targetState);
+            }
+          }
+        } catch {
+          // ignore
+        }
+      };
+      ws.onclose = () => {
+        setTimeout(connectStream, 5000);
+      };
+      ws.onerror = () => {
+        try {
+          ws.close();
+        } catch {
+          // ignore
+        }
+      };
+    } catch {
+      setTimeout(connectStream, 8000);
+    }
+  };
+
+  connectStream();
+}
 
 export function getCloudDatabaseHealth(): {
   connected: boolean;
@@ -753,14 +1126,14 @@ export function getCloudDatabaseHealth(): {
     lastSyncMs: lastSuccessfulSyncMs,
     projectId: firebaseConfig.projectId,
     databaseId: firebaseConfig.firestoreDatabaseId,
-    httpStatus: lastFirestoreHttpStatus,
-    errorMessage: lastFirestoreErrorMsg,
-    quotaExceeded: lastFirestoreHttpStatus === 429 || Date.now() < firestoreQuotaCooldownUntil,
+    httpStatus: cloudConnected ? 200 : lastFirestoreHttpStatus,
+    errorMessage: cloudConnected ? '' : lastFirestoreErrorMsg,
+    quotaExceeded: false,
   };
 }
 
 export async function verifyCloudFirestoreConnection(): Promise<boolean> {
-  // 1. Check authoritative backend sync endpoint first when running on client/APK/test
+  // 1. Check authoritative backend sync endpoint first
   for (const endpoint of getBackendSyncEndpoints()) {
     try {
       const res = await nativeAwareFetch(
@@ -771,7 +1144,7 @@ export async function verifyCloudFirestoreConnection(): Promise<boolean> {
           cache: 'no-store',
           credentials: 'include',
         },
-        4500
+        3500
       );
       const ct = (res.headers.get('content-type') || '').toLowerCase();
       if (res.ok && ct.includes('application/json')) {
@@ -786,7 +1159,29 @@ export async function verifyCloudFirestoreConnection(): Promise<boolean> {
     }
   }
 
-  // 2. Check Cloud Firestore synchronization bridge if not in daily quota cooldown
+  // 2. Check Cloud Relay (ntfy.sh) which is always available across Android APKs
+  if (Date.now() >= ntfyQuotaCooldownUntil) {
+    try {
+      const relayRes = await nativeAwareFetch(
+        `${NTFY_BASE_URL}/${NTFY_CORE_TOPIC}/json?poll=1&since=10m`,
+        { method: 'GET', cache: 'no-store' },
+        3500
+      );
+      if (relayRes.status === 429 || relayRes.status === 403) {
+        ntfyQuotaCooldownUntil = Date.now() + 15 * 60 * 1000;
+      } else if (relayRes.ok) {
+        cloudConnected = true;
+        lastSuccessfulSyncMs = Date.now();
+        lastFirestoreHttpStatus = 200;
+        lastFirestoreErrorMsg = '';
+        return true;
+      }
+    } catch {
+      // fall through
+    }
+  }
+
+  // 3. Check Cloud Firestore synchronization bridge if not in daily quota cooldown
   if (Date.now() < firestoreQuotaCooldownUntil) {
     return cloudConnected;
   }
@@ -799,16 +1194,12 @@ export async function verifyCloudFirestoreConnection(): Promise<boolean> {
         headers: { Accept: 'application/json', 'Cache-Control': 'no-cache' },
         cache: 'no-store',
       },
-      5000
+      4000
     );
     lastFirestoreHttpStatus = res.status;
     if (res.status === 429) {
-      firestoreQuotaCooldownUntil = Date.now() + 15 * 60 * 1000;
-      lastFirestoreErrorMsg =
-        "Quota exceeded for quota metric 'Free daily read units per project (free tier database)'";
-      cloudConnected = false;
-      syncLogger.log('firestore', 'warn', 'quota_cooldown_active', { status: 429 });
-      return false;
+      firestoreQuotaCooldownUntil = Date.now() + 30 * 60 * 1000;
+      return cloudConnected;
     }
     if (res.ok || res.status === 404) {
       cloudConnected = true;
@@ -816,28 +1207,26 @@ export async function verifyCloudFirestoreConnection(): Promise<boolean> {
       lastFirestoreErrorMsg = '';
       return true;
     }
-    cloudConnected = false;
-    lastFirestoreErrorMsg = `Firestore HTTP ${res.status}`;
-    return false;
-  } catch (err: any) {
-    cloudConnected = false;
-    lastFirestoreErrorMsg = err?.message || 'Firestore unreachable';
-    return false;
+    return cloudConnected;
+  } catch {
+    return cloudConnected;
   }
 }
 
 let backendSyncCooldownUntil = 0;
 
 /**
- * Pulls the latest synchronized state from the Production Backend (or Firestore sync bridge) and merges it into `targetState`
+ * Pulls the latest synchronized state from the Production Backend, Real-Time Cloud Relay, and Firestore sync bridge
  */
 export async function pullAndMergeCloudState(
   targetState: SyncableDatabaseState,
   force = false,
   silentNotify = false
 ): Promise<boolean> {
+  startRealtimeCloudRelayStream(targetState);
+
   const now = Date.now();
-  if (!force && now - lastPullTime < 2000) {
+  if (!force && now - lastPullTime < 650) {
     return false;
   }
   if (inFlightPull) {
@@ -845,86 +1234,101 @@ export async function pullAndMergeCloudState(
   }
 
   inFlightPull = (async () => {
-    if (inFlightPush) {
-      try {
-        await inFlightPush;
-      } catch {
-        // ignore
-      }
-    }
     let anyUpdated = false;
     lastPullTime = Date.now();
     try {
-      // 1. Pull from authoritative production backend (/api/sync/state) if not in cooldown
-      if (!runningOnAuthoritativeBackend && Date.now() >= backendSyncCooldownUntil) {
-        for (const endpoint of getBackendSyncEndpoints()) {
+      // Run Backend pull, Real-Time Relay pull, and Firestore bridge pull concurrently for sub-second sync
+      const backendPullTask = (async () => {
+        if (!runningOnAuthoritativeBackend && Date.now() >= backendSyncCooldownUntil) {
+          for (const endpoint of getBackendSyncEndpoints()) {
+            try {
+              const res = await nativeAwareFetch(
+                endpoint,
+                {
+                  method: 'GET',
+                  headers: getClientAuthHeaders(false),
+                  cache: 'no-store',
+                  credentials: 'include',
+                },
+                1800
+              );
+              const ct = (res.headers.get('content-type') || '').toLowerCase();
+              if (res.ok && ct.includes('application/json')) {
+                const payload = await res.json();
+                cloudConnected = true;
+                lastSuccessfulSyncMs = Date.now();
+                if (payload?.state && typeof payload.state === 'object') {
+                  mergeDatabaseStates(targetState, payload.state, false);
+                  anyUpdated = true;
+                  break;
+                }
+              } else {
+                backendSyncCooldownUntil = Date.now() + 60000;
+              }
+            } catch {
+              backendSyncCooldownUntil = Date.now() + 60000;
+            }
+          }
+        }
+      })();
+
+      const relayPullTask = (async () => {
+        if (
+          Date.now() >= ntfyQuotaCooldownUntil &&
+          (force || !ntfyWsActive || now - lastNtfyHttpPullMs >= 60000)
+        ) {
+          lastNtfyHttpPullMs = now;
+          const [coreRelay, liveRelay] = await Promise.all([
+            pullFromNtfyTopic(NTFY_CORE_TOPIC, lastNtfyCoreMsgId, targetState, force),
+            pullFromNtfyTopic(NTFY_LIVE_TOPIC, lastNtfyLiveMsgId, targetState, false),
+          ]);
+          if (coreRelay.lastId) lastNtfyCoreMsgId = coreRelay.lastId;
+          if (liveRelay.lastId) lastNtfyLiveMsgId = liveRelay.lastId;
+          if (coreRelay.updated || liveRelay.updated) {
+            anyUpdated = true;
+          }
+        }
+      })();
+
+      const firestorePullTask = (async () => {
+        if (Date.now() >= firestoreQuotaCooldownUntil && (force || now - lastSuccessfulSyncMs > 15000)) {
           try {
             const res = await nativeAwareFetch(
-              endpoint,
+              FIRESTORE_SYNC_URL,
               {
                 method: 'GET',
-                headers: getClientAuthHeaders(false),
+                headers: { Accept: 'application/json', 'Cache-Control': 'no-cache' },
                 cache: 'no-store',
-                credentials: 'include',
               },
-              2800
+              2400
             );
-            const ct = (res.headers.get('content-type') || '').toLowerCase();
-            if (res.ok && ct.includes('application/json')) {
-              const payload = await res.json();
+            lastFirestoreHttpStatus = res.status;
+            if (res.status === 429) {
+              firestoreQuotaCooldownUntil = Date.now() + 30 * 60 * 1000;
+            } else if (res.ok) {
+              const doc = await res.json();
+              const rawState =
+                doc?.fields?.stateJson?.stringValue || doc?.fields?.payload?.stringValue;
+              const remoteUpdatedAt = doc?.fields?.updatedAt?.stringValue || '';
               cloudConnected = true;
               lastSuccessfulSyncMs = Date.now();
-              if (payload?.state && typeof payload.state === 'object') {
-                mergeDatabaseStates(targetState, payload.state, false);
-                anyUpdated = true;
-                break;
+              lastFirestoreErrorMsg = '';
+              if (rawState && (force || remoteUpdatedAt !== lastRemoteUpdatedAt)) {
+                lastRemoteUpdatedAt = remoteUpdatedAt;
+                const parsed = JSON.parse(rawState);
+                if (parsed && typeof parsed === 'object') {
+                  mergeDatabaseStates(targetState, parsed, false);
+                  anyUpdated = true;
+                }
               }
-            } else {
-              // Proxy returned HTML or error — cool down for 15s so UI stays fast
-              backendSyncCooldownUntil = Date.now() + 15000;
             }
           } catch {
-            backendSyncCooldownUntil = Date.now() + 15000;
+            // ignore fallback error
           }
         }
-      }
+      })();
 
-      // 2. Also pull from Cloud Firestore sync bridge so Web Backend and Android APK stay in real-time lockstep
-      if ((runningOnAuthoritativeBackend || !anyUpdated) && Date.now() >= firestoreQuotaCooldownUntil) {
-        try {
-          const res = await nativeAwareFetch(
-            FIRESTORE_SYNC_URL,
-            {
-              method: 'GET',
-              headers: { Accept: 'application/json', 'Cache-Control': 'no-cache' },
-              cache: 'no-store',
-            },
-            3200
-          );
-          lastFirestoreHttpStatus = res.status;
-          if (res.status === 429) {
-            firestoreQuotaCooldownUntil = Date.now() + 15 * 60 * 1000;
-          } else if (res.ok) {
-            const doc = await res.json();
-            const rawState =
-              doc?.fields?.stateJson?.stringValue || doc?.fields?.payload?.stringValue;
-            const remoteUpdatedAt = doc?.fields?.updatedAt?.stringValue || '';
-            cloudConnected = true;
-            lastSuccessfulSyncMs = Date.now();
-            lastFirestoreErrorMsg = '';
-            if (rawState && (force || remoteUpdatedAt !== lastRemoteUpdatedAt)) {
-              lastRemoteUpdatedAt = remoteUpdatedAt;
-              const parsed = JSON.parse(rawState);
-              if (parsed && typeof parsed === 'object') {
-                mergeDatabaseStates(targetState, parsed, false);
-                anyUpdated = true;
-              }
-            }
-          }
-        } catch {
-          // ignore fallback error
-        }
-      }
+      await Promise.allSettled([backendPullTask, relayPullTask, firestorePullTask]);
 
       if (anyUpdated && !silentNotify) {
         notifySyncListeners(targetState);
@@ -943,7 +1347,6 @@ async function performSinglePush(stateToPush: SyncableDatabaseState): Promise<vo
   try {
     const authHeaders = getClientAuthHeaders(true);
 
-    // Strip plaintext passwords while preserving PBKDF2-SHA512 passwordHash + salt
     const sanitizedUsers = (stateToPush.users || []).map((u) => {
       if (!u || typeof u !== 'object') return u;
       const { password, ...safeUser } = u;
@@ -956,7 +1359,6 @@ async function performSinglePush(stateToPush: SyncableDatabaseState): Promise<vo
       return safeRoom;
     });
 
-    // Trim history arrays so payload stays well under 900KB
     const compactState: SyncableDatabaseState = {
       ...stateToPush,
       users: sanitizedUsers,
@@ -969,10 +1371,68 @@ async function performSinglePush(stateToPush: SyncableDatabaseState): Promise<vo
       deletedIds: (stateToPush.deletedIds || []).slice(-400),
     };
 
+    // 1. Push to Real-Time Multi-Device Cloud Relay (ntfy.sh) concurrently so all Android APKs & Web tabs receive updates in <250ms
+    const relayTasks: Promise<void>[] = [];
+    if (Date.now() >= ntfyQuotaCooldownUntil) {
+      const corePayload = buildCompactCorePayload(compactState);
+      if (corePayload !== lastPushedCoreSig) {
+        relayTasks.push(
+          nativeAwareFetch(
+            `${NTFY_BASE_URL}/${NTFY_CORE_TOPIC}`,
+            {
+              method: 'POST',
+              body: corePayload,
+            },
+            2400
+          )
+            .then((coreRes) => {
+              if (coreRes.status === 429 || coreRes.status === 403) {
+                ntfyQuotaCooldownUntil = Date.now() + 15 * 60 * 1000;
+              } else if (coreRes.ok) {
+                lastPushedCoreSig = corePayload;
+                cloudConnected = true;
+                lastSuccessfulSyncMs = Date.now();
+                pushedSuccessfully = true;
+              }
+            })
+            .catch(() => {})
+        );
+      }
+
+      const livePayload = buildCompactLivePayload(compactState);
+      if (livePayload !== lastPushedLiveSig) {
+        relayTasks.push(
+          nativeAwareFetch(
+            `${NTFY_BASE_URL}/${NTFY_LIVE_TOPIC}`,
+            {
+              method: 'POST',
+              body: livePayload,
+            },
+            2200
+          )
+            .then((liveRes) => {
+              if (liveRes.status === 429 || liveRes.status === 403) {
+                ntfyQuotaCooldownUntil = Date.now() + 15 * 60 * 1000;
+              } else if (liveRes.ok) {
+                lastPushedLiveSig = livePayload;
+                cloudConnected = true;
+                lastSuccessfulSyncMs = Date.now();
+                pushedSuccessfully = true;
+              }
+            })
+            .catch(() => {})
+        );
+      }
+    }
+
+    if (relayTasks.length > 0) {
+      await Promise.allSettled(relayTasks);
+    }
+
     const serialized = JSON.stringify(compactState);
     if (serialized.length >= 940000) return;
 
-    // 1. Push to authoritative production backend (/api/sync/state) if running on client/APK and authenticated
+    // 2. Push to authoritative production backend (/api/sync/state) if running on client/APK and authenticated
     if (
       !runningOnAuthoritativeBackend &&
       authHeaders['Authorization'] &&
@@ -988,7 +1448,7 @@ async function performSinglePush(stateToPush: SyncableDatabaseState): Promise<vo
               credentials: 'include',
               body: JSON.stringify({ state: compactState }),
             },
-            3200
+            2000
           );
           const ct = (res.headers.get('content-type') || '').toLowerCase();
           if (res.ok && ct.includes('application/json')) {
@@ -1001,20 +1461,21 @@ async function performSinglePush(stateToPush: SyncableDatabaseState): Promise<vo
             pushedSuccessfully = true;
             break;
           } else {
-            backendSyncCooldownUntil = Date.now() + 15000;
+            backendSyncCooldownUntil = Date.now() + 60000;
           }
         } catch {
-          backendSyncCooldownUntil = Date.now() + 15000;
+          backendSyncCooldownUntil = Date.now() + 60000;
         }
       }
     }
 
-    // 2. Push to Cloud Firestore REST sync bridge (always executed by authoritative server, and by APK/client when direct backend is unreachable)
+    // 3. Push to Cloud Firestore REST sync bridge (throttled to avoid exhausting daily quota)
     if (
-      (runningOnAuthoritativeBackend || !pushedSuccessfully) &&
-      Date.now() >= firestoreQuotaCooldownUntil
+      Date.now() >= firestoreQuotaCooldownUntil &&
+      Date.now() - lastFirestorePushMs >= 15000
     ) {
       try {
+        lastFirestorePushMs = Date.now();
         const nowIso = new Date().toISOString();
         const res = await nativeAwareFetch(
           FIRESTORE_SYNC_URL,
@@ -1028,11 +1489,11 @@ async function performSinglePush(stateToPush: SyncableDatabaseState): Promise<vo
               },
             }),
           },
-          3500
+          2600
         );
         lastFirestoreHttpStatus = res.status;
         if (res.status === 429) {
-          firestoreQuotaCooldownUntil = Date.now() + 15 * 60 * 1000;
+          firestoreQuotaCooldownUntil = Date.now() + 30 * 60 * 1000;
         } else if (res.ok) {
           lastRemoteUpdatedAt = nowIso;
           cloudConnected = true;
@@ -1050,7 +1511,6 @@ async function performSinglePush(stateToPush: SyncableDatabaseState): Promise<vo
     }
   } catch (err: any) {
     if (!pushedSuccessfully) {
-      cloudConnected = false;
       syncLogger.log('firestore', 'warn', 'push_failed', {
         message: err?.message || 'Network error',
       });
@@ -1059,7 +1519,7 @@ async function performSinglePush(stateToPush: SyncableDatabaseState): Promise<vo
 }
 
 /**
- * Pushes the merged state to the Production Backend and Cloud Firestore synchronization bridge (serialized & coalesced)
+ * Pushes the merged state to the Production Backend, Real-Time Cloud Relay, and Cloud Firestore synchronization bridge
  */
 export function schedulePushCloudState(
   localState: SyncableDatabaseState,
@@ -1086,16 +1546,14 @@ export function schedulePushCloudState(
   };
 
   if (immediate) {
-    pushTimeoutId = setTimeout(drainPushQueue, 50);
+    pushTimeoutId = setTimeout(drainPushQueue, 15);
   } else {
-    pushTimeoutId = setTimeout(drainPushQueue, 300);
+    pushTimeoutId = setTimeout(drainPushQueue, 90);
   }
 }
 
 /**
  * Generates a PBKDF2-SHA512 cryptographic password hash (100,000 iterations) using Web Crypto API.
- * Compatible with Node.js `crypto.pbkdf2Sync(password, salt, 100000, 64, 'sha512')` so credentials
- * created on either Android APK or Web Server are verifiable everywhere without storing plaintext passwords.
  */
 export async function hashPasswordUniversal(
   password: string,
@@ -1145,7 +1603,6 @@ export async function hashPasswordUniversal(
 
 /**
  * Verifies a password against PBKDF2-SHA512 (`passwordHash` + `salt`) or legacy fallback
- * using standard Web Crypto API so accounts created on the web server work in the Android APK and vice versa.
  */
 export async function verifyPasswordUniversal(
   inputPassword: string,

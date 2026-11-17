@@ -87,7 +87,7 @@ define(['./workbox-7e5eb42b'], (function (workbox) { 'use strict';
     "revision": "692c420d2bbc264d9bd2d2c0ee96428b"
   }, {
     "url": "index.html",
-    "revision": "fcf7155fc01df817888951432b3a0b06"
+    "revision": "ef8f4e683409d0ab29558e281d0110b1"
   }, {
     "url": "icon.svg",
     "revision": "f8eacca2a095f7fc72e6f403a09b7b2d"
@@ -95,55 +95,55 @@ define(['./workbox-7e5eb42b'], (function (workbox) { 'use strict';
     "url": "apple-touch-icon.png",
     "revision": "35c10ad7360f108733d923d9e00c20f2"
   }, {
-    "url": "assets/vendor-react-Blvw1YtV.js",
+    "url": "assets/vendor-react-CfasSphu.js",
     "revision": null
   }, {
-    "url": "assets/vendor-leaflet-GIXaehag.css",
+    "url": "assets/vendor-leaflet-C1sF6AH5.css",
     "revision": null
   }, {
-    "url": "assets/vendor-leaflet-DFE5GvRa.js",
+    "url": "assets/vendor-leaflet-BaxV0pCE.js",
     "revision": null
   }, {
-    "url": "assets/vendor-icons-IfKlgG3R.js",
+    "url": "assets/vendor-icons-CnKhq82H.js",
     "revision": null
   }, {
     "url": "assets/rolldown-runtime-WkwZ5CU-.js",
     "revision": null
   }, {
-    "url": "assets/index-DPFic28r.css",
+    "url": "assets/index-CIRX2-QS.css",
     "revision": null
   }, {
-    "url": "assets/index-BiNy4GYk.js",
+    "url": "assets/index-BjmRk0ag.js",
     "revision": null
   }, {
-    "url": "assets/ToastContext--OQFuSfF.js",
+    "url": "assets/SavedPlacesManager-huhHRdSr.js",
     "revision": null
   }, {
-    "url": "assets/SavedPlacesManager-DEprkdfp.js",
+    "url": "assets/RoomsManager-DB_VyflW.js",
     "revision": null
   }, {
-    "url": "assets/RoomsManager-BAE-BLE4.js",
+    "url": "assets/RemindersManager-C19CZs73.js",
     "revision": null
   }, {
-    "url": "assets/RemindersManager-8moXFKu7.js",
+    "url": "assets/ProfilePrivacyView-BCj4b4mM.js",
     "revision": null
   }, {
-    "url": "assets/ProfilePrivacyView-CyTjOxem.js",
+    "url": "assets/NotificationsCenter-r_VEHBav.js",
     "revision": null
   }, {
-    "url": "assets/NotificationsCenter-Dc5JKiUQ.js",
+    "url": "assets/MeetingsManager-BWLDsptf.js",
     "revision": null
   }, {
-    "url": "assets/MeetingsManager-Byg20HJi.js",
+    "url": "assets/FriendsView-DssjBshR.js",
     "revision": null
   }, {
-    "url": "assets/FriendsView-DfYyFcTA.js",
+    "url": "assets/ChatView-DACI1JvD.js",
     "revision": null
   }, {
-    "url": "assets/ChatView-BP1fGXZQ.js",
+    "url": "assets/AudioWaveformVisualizer-H6LAWvwa.js",
     "revision": null
   }, {
-    "url": "assets/AdminDashboard-BDYUBo4k.js",
+    "url": "assets/AdminDashboard-BfTT0BVR.js",
     "revision": null
   }, {
     "url": "apple-touch-icon.png",

@@ -1159,7 +1159,33 @@ app.get('/api/direct-messages/threads/all', authMiddleware, (req, res) => {
   res.json({ threads });
 });
 
+app.post('/api/rooms/:id/messages', authMiddleware, (req, res) => {
+  try {
+    const user = (req as any).user as UserProfile;
+    const chatMsg = db.createMessage({
+      senderId: user.id,
+      roomId: req.params.id,
+      channelId: req.body.channelId,
+      text: req.body.text,
+      attachments: req.body.attachments,
+      replyToId: req.body.replyToId,
+      clientMsgId: req.body.clientMsgId,
+    });
+    broadcastToRoom(req.params.id, { type: 'chat:message', message: chatMsg });
+    res.json({ message: chatMsg });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 // REST Chat Message Endpoints (fallback for non-WS / mobile environments)
+app.get('/api/messages', authMiddleware, (req, res) => {
+  const user = (req as any).user as UserProfile;
+  const limit = Number(req.query.limit) || 100;
+  const messages = db.getMessagesForUser(user.id, limit);
+  res.json({ messages });
+});
+
 app.post('/api/messages/create', authMiddleware, (req, res) => {
   try {
     const user = (req as any).user as UserProfile;
@@ -1434,6 +1460,16 @@ app.post('/api/saved-places', authMiddleware, (req, res) => {
   }
 });
 
+app.put('/api/saved-places/:id', authMiddleware, (req, res) => {
+  try {
+    const user = (req as any).user as UserProfile;
+    const place = db.updateSavedPlace(user.id, req.params.id, req.body);
+    res.json({ place });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
 app.delete('/api/saved-places/:id', authMiddleware, (req, res) => {
   const user = (req as any).user as UserProfile;
   db.deleteSavedPlace(user.id, req.params.id);
@@ -1509,6 +1545,18 @@ app.post('/api/alerts/emergency', authMiddleware, sosRateLimiter, (req, res) => 
   } catch (err: any) {
     res.status(400).json({ error: err.message });
   }
+});
+
+app.get('/api/alerts', authMiddleware, (req, res) => {
+  const user = (req as any).user as UserProfile;
+  const alerts = db.getActiveEmergencyAlerts(user?.id);
+  res.json({ alerts });
+});
+
+app.get('/api/alerts/active', authMiddleware, (req, res) => {
+  const user = (req as any).user as UserProfile;
+  const alerts = db.getActiveEmergencyAlerts(user?.id);
+  res.json({ alerts });
 });
 
 app.get('/api/alerts/emergency/active', authMiddleware, (req, res) => {
@@ -1656,7 +1704,15 @@ app.get('/api/alerts/track/:token', (req, res) => {
 app.post('/api/locations/request', authMiddleware, (req, res) => {
   try {
     const user = (req as any).user as UserProfile;
-    const target = req.body.toUserId || req.body.identifier || req.body.username || req.body.email;
+    const target =
+      req.body.toUsernameOrEmail ||
+      req.body.toUserId ||
+      req.body.identifier ||
+      req.body.username ||
+      req.body.email ||
+      req.body.fullName ||
+      req.body.name ||
+      req.body.target;
     const request = db.requestLocationShare(user.id, target);
     broadcastToUser(request.toUserId, {
       type: 'notification',

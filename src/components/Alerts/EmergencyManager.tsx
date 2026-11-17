@@ -94,18 +94,43 @@ export const EmergencyLocationMap: React.FC<EmergencyLocationMapProps> = ({
     const map = L.map(mapContainerRef.current, {
       center: [latitude, longitude],
       zoom: 17,
+      minZoom: 2,
+      maxZoom: 20,
       zoomControl: false,
       attributionControl: false,
     });
 
     const tileUrl =
       tileMode === 'hybrid'
-        ? 'https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}'
-        : 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+        ? 'https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}&scale=2&hl=en'
+        : 'https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}&scale=2&hl=en';
 
-    tileLayerRef.current = L.tileLayer(tileUrl, {
+    const layer = L.tileLayer(tileUrl, {
+      subdomains: ['0', '1', '2', '3'],
+      maxNativeZoom: 20,
       maxZoom: 20,
-    }).addTo(map);
+      crossOrigin: false,
+      errorTileUrl: '',
+      updateWhenZooming: true,
+    });
+    layer.on('tileerror', (errEvt: any) => {
+      const tile = errEvt?.tile as HTMLImageElement | undefined;
+      const coords = errEvt?.coords;
+      if (!tile || !coords || tile.dataset.fallbackApplied === '1') return;
+      tile.dataset.fallbackApplied = '1';
+      tile.removeAttribute('crossorigin');
+      const z = Math.min(17, coords.z);
+      tile.onload = () => {
+        tile.classList.add('leaflet-tile-loaded');
+        tile.style.visibility = 'visible';
+        tile.style.opacity = '1';
+      };
+      tile.src =
+        tileMode === 'hybrid'
+          ? `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${coords.y}/${coords.x}`
+          : `https://tile.openstreetmap.org/${Math.min(19, coords.z)}/${coords.x}/${coords.y}.png`;
+    });
+    tileLayerRef.current = layer.addTo(map);
 
     if (Number.isFinite(accuracy) && accuracy > 0) {
       L.circle([latitude, longitude], {
