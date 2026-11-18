@@ -20,7 +20,22 @@ import type {
   ProfileVisibility,
   UserPathTrail,
   LocationBreadcrumb,
+  CrowdZoneCommunityReport,
+  CrowdZonePost,
+  CrowdZoneComment,
+  CrowdZoneSavedPlace,
+  CrowdZoneUserSettings,
+  ModerationLogEntry,
+  CrowdTimeWindow,
+  CrowdReportCategory,
+  CrowdLevel,
 } from '../types.ts';
+import {
+  encodeGeohash,
+  aggregateCrowdCells,
+  buildCrowdHistorySeries,
+  predictCrowdActivitySeries,
+} from '../utils/crowdIntelligenceEngine.ts';
 import {
   INITIAL_SEED_ROOMS,
   INITIAL_SEED_ROOM_MEMBERS,
@@ -82,6 +97,11 @@ interface DatabaseSchema {
     altitude?: number | null;
     timestamp: string;
   }>;
+  crowdReports: CrowdZoneCommunityReport[];
+  crowdPosts: CrowdZonePost[];
+  crowdSavedPlaces: CrowdZoneSavedPlace[];
+  userSettings: Record<string, CrowdZoneUserSettings>;
+  moderationLogs: ModerationLogEntry[];
   deletedIds?: string[];
 }
 
@@ -101,6 +121,11 @@ const initialDb: DatabaseSchema = {
   auditLogs: [],
   passwordResets: [],
   locationHistory: [],
+  crowdReports: [],
+  crowdPosts: [],
+  crowdSavedPlaces: [],
+  userSettings: {},
+  moderationLogs: [],
 };
 
 export const UNIVERSAL_ROOM_ID = 'room-universal';
@@ -166,6 +191,11 @@ class Database {
       ...this.data,
       messages: (this.data.messages || []).slice(-250),
       locationHistory: (this.data.locationHistory || []).slice(-180),
+      crowdReports: (this.data.crowdReports || []).slice(0, 100),
+      crowdPosts: (this.data.crowdPosts || []).slice(0, 100),
+      crowdSavedPlaces: (this.data.crowdSavedPlaces || []).slice(0, 120),
+      userSettings: this.data.userSettings || {},
+      moderationLogs: (this.data.moderationLogs || []).slice(0, 80),
       auditLogs: (this.data.auditLogs || []).slice(-80),
       sessions: (this.data.sessions || []).slice(-120),
       deletedIds: (this.data.deletedIds || []).slice(-400),
@@ -192,6 +222,11 @@ class Database {
       meetings: snap.meetings || [],
       emergencyAlerts: snap.emergencyAlerts || [],
       locationShareRequests: snap.locationShareRequests || [],
+      crowdReports: snap.crowdReports || [],
+      crowdPosts: snap.crowdPosts || [],
+      crowdSavedPlaces: snap.crowdSavedPlaces || [],
+      userSettings: snap.userSettings || {},
+      moderationLogs: snap.moderationLogs || [],
       deletedIds: snap.deletedIds || [],
     };
   }
@@ -304,6 +339,11 @@ class Database {
       auditLogs: [],
       passwordResets: [],
       locationHistory: [],
+      crowdReports: [],
+      crowdPosts: [],
+      crowdSavedPlaces: [],
+      userSettings: {},
+      moderationLogs: [],
       deletedIds: [],
     };
     try {
@@ -311,6 +351,11 @@ class Database {
         const raw = fs.readFileSync(DB_FILE, 'utf-8');
         const parsed = JSON.parse(raw);
         if (!parsed.locationHistory) parsed.locationHistory = [];
+        if (!parsed.crowdReports) parsed.crowdReports = [];
+        if (!parsed.crowdPosts) parsed.crowdPosts = [];
+        if (!parsed.crowdSavedPlaces) parsed.crowdSavedPlaces = [];
+        if (!parsed.userSettings) parsed.userSettings = {};
+        if (!parsed.moderationLogs) parsed.moderationLogs = [];
         mergeDatabaseStates(base, parsed, true);
         purgeExampleMembersFromState(base);
         return base;
@@ -833,15 +878,15 @@ class Database {
 
     const parsedAccuracy = Number(coords.accuracy_m ?? coords.accuracy);
 
-    // Strict Server-Side Coordinate & Sensor Validation (Step 3b & 3c: MAX_ACCURACY_M = 100)
+    // Coordinate & Sensor Validation (allows indoor/Web Wi-Fi up to 5000m)
     if (!Number.isFinite(parsedLat) || parsedLat < -90 || parsedLat > 90) {
       throw new Error('Invalid latitude coordinates: Must be between -90 and 90');
     }
     if (!Number.isFinite(parsedLng) || parsedLng < -180 || parsedLng > 180) {
       throw new Error('Invalid longitude coordinates: Must be between -180 and 180');
     }
-    if (!Number.isFinite(parsedAccuracy) || parsedAccuracy <= 0 || parsedAccuracy > 100) {
-      throw new Error('Rejected coarse location fix: accuracy_m must be > 0 and <= 100 meters');
+    if (!Number.isFinite(parsedAccuracy) || parsedAccuracy <= 0 || parsedAccuracy > 5000) {
+      throw new Error('Rejected coarse location fix: accuracy_m must be > 0 and <= 5000 meters');
     }
 
     // Auto-expiry check for temporary sharing
@@ -1032,12 +1077,12 @@ class Database {
     const nowMs = Date.now();
     const twoMinutesMs = 2 * 60 * 1000;
 
-    // Only include requesting user's own location if it was updated within the last 2 minutes and accuracy <= 100m
+    // Include requesting user's own location if it was updated within the last 2 minutes and accuracy <= 5000m
     const ownLoc = this.data.locations[requestingUserId];
     if (
       ownLoc &&
       Number.isFinite(ownLoc.accuracy) &&
-      ownLoc.accuracy <= 100 &&
+      ownLoc.accuracy <= 5000 &&
       nowMs - new Date(ownLoc.timestamp).getTime() <= twoMinutesMs
     ) {
       results.push({
@@ -1051,9 +1096,14 @@ class Database {
       });
     }
 
+    const deletedSet = new Set((this.data.deletedIds || []).map((d) => String(d).toLowerCase()));
+    const reqKeys = [requestingUser.id, requestingUser.username, requestingUser.fullName]
+      .filter(Boolean)
+      .map((s) => s.toLowerCase());
+
     for (const [targetUserId, loc] of Object.entries(this.data.locations)) {
       if (targetUserId === requestingUserId) continue;
-      if (!Number.isFinite(loc.accuracy) || loc.accuracy > 100) continue;
+      if (!Number.isFinite(loc.accuracy) || loc.accuracy > 5000) continue;
 
       const targetUser = this.findUserById(targetUserId);
       if (!targetUser) continue;
@@ -1062,6 +1112,22 @@ class Database {
       if (reqBlockedSet.has(targetUserId) || (targetUser.privacy.blockedUserIds || []).includes(requestingUserId)) {
         continue;
       }
+
+      // Unfriend enforcement: If either party deleted/unfriended the other, hide location
+      const targetKeys = [targetUser.id, targetUser.username, targetUser.fullName, targetUserId]
+        .filter(Boolean)
+        .map((s) => s.toLowerCase());
+      let isUnfriended = false;
+      for (const rk of reqKeys) {
+        for (const tk of targetKeys) {
+          if (deletedSet.has(`unfriend_${rk}_${tk}`) || deletedSet.has(`unfriend_${tk}_${rk}`)) {
+            isUnfriended = true;
+            break;
+          }
+        }
+        if (isUnfriended) break;
+      }
+      if (isUnfriended) continue;
 
       // Opt-in check: If target has turned off location sharing, do not reveal
       if (targetUser.privacy.locationSharingEnabled === false) {
@@ -1779,6 +1845,9 @@ class Database {
   }
 
   public clearRoomMessages(userId: string, roomId: string) {
+    if (roomId === 'room-universal') {
+      throw new Error('Cannot clear messages in Universal Lounge');
+    }
     // Check if user is a member of the room
     const isMember = this.data.roomMembers.some((m) => m.roomId === roomId && m.userId === userId);
     if (!isMember) {
@@ -2071,6 +2140,20 @@ class Database {
       throw new Error('You cannot send a friend or location request to yourself');
     }
 
+    if (Array.isArray(this.data.deletedIds)) {
+      const fKeys = [fromUser.id, fromUser.username, fromUser.fullName].filter(Boolean).map((s) => s.toLowerCase());
+      const tKeys = [toUser.id, toUser.username, toUser.fullName].filter(Boolean).map((s) => s.toLowerCase());
+      this.data.deletedIds = this.data.deletedIds.filter((id) => {
+        const low = String(id).toLowerCase();
+        for (const fk of fKeys) {
+          for (const tk of tKeys) {
+            if (low === `unfriend_${fk}_${tk}` || low === `unfriend_${tk}_${fk}`) return false;
+          }
+        }
+        return true;
+      });
+    }
+
     const nowIso = new Date().toISOString();
     const existing = this.data.locationShareRequests.find(
       (r) =>
@@ -2132,27 +2215,139 @@ class Database {
     } else {
       delete req.expiresAt;
     }
+    if ((response === 'accepted' || response === 'temporary') && Array.isArray(this.data.deletedIds)) {
+      const fKeys = [req.fromUserId, req.fromUsername, req.fromUserName].filter(Boolean).map((s) => String(s).toLowerCase());
+      const tKeys = [req.toUserId, req.toUsername, req.toUserName].filter(Boolean).map((s) => String(s).toLowerCase());
+      this.data.deletedIds = this.data.deletedIds.filter((id) => {
+        const low = String(id).toLowerCase();
+        for (const fk of fKeys) {
+          for (const tk of tKeys) {
+            if (low === `unfriend_${fk}_${tk}` || low === `unfriend_${tk}_${fk}`) return false;
+          }
+        }
+        return true;
+      });
+    }
     this.save();
     return req;
   }
 
   public removeLocationShareRequest(userId: string, requestId: string): boolean {
+    const me = this.findUserById(userId);
+    const uidLower = userId.toLowerCase();
+    const unameLower = (me?.username || '').toLowerCase();
+    const fullNameLower = (me?.fullName || '').toLowerCase();
+    const reqLower = requestId.toLowerCase();
+
+    const matchesMe = (cId?: string, cUser?: string, cName?: string) => {
+      const idLow = (cId || '').toLowerCase();
+      const userLow = (cUser || '').toLowerCase();
+      const nameLow = (cName || '').toLowerCase();
+      return (
+        idLow === uidLower ||
+        (unameLower && (idLow === unameLower || userLow === unameLower)) ||
+        (fullNameLower && (idLow === fullNameLower || nameLow === fullNameLower))
+      );
+    };
+
     const idx = this.data.locationShareRequests.findIndex(
       (r) =>
-        r.id === requestId &&
-        (r.toUserId.toLowerCase() === userId.toLowerCase() ||
-          r.fromUserId.toLowerCase() === userId.toLowerCase())
+        (r.id === requestId ||
+          r.toUserId.toLowerCase() === reqLower ||
+          r.fromUserId.toLowerCase() === reqLower) &&
+        (matchesMe(r.toUserId, r.toUsername, r.toUserName) ||
+          matchesMe(r.fromUserId, r.fromUsername, r.fromUserName))
     );
     if (idx < 0) return false;
+    const removed = this.data.locationShareRequests[idx];
     this.data.locationShareRequests.splice(idx, 1);
     if (!Array.isArray(this.data.deletedIds)) {
       this.data.deletedIds = [];
     }
-    if (!this.data.deletedIds.includes(requestId)) {
-      this.data.deletedIds.push(requestId);
+    if (!this.data.deletedIds.includes(removed.id)) {
+      this.data.deletedIds.push(removed.id);
     }
     this.save();
     return true;
+  }
+
+  public removeFriend(userId: string, friendUserId: string): { removedCount: number } {
+    const me = this.findUserById(userId);
+    const uidLower = userId.toLowerCase();
+    const unameLower = (me?.username || '').toLowerCase();
+    const fullNameLower = (me?.fullName || '').toLowerCase();
+    const targetLower = friendUserId.toLowerCase();
+
+    const targetUser = this.data.users.find(
+      (u) =>
+        u.id.toLowerCase() === targetLower ||
+        u.username.toLowerCase() === targetLower ||
+        u.fullName.toLowerCase() === targetLower
+    );
+
+    const myAllKeys = new Set<string>([uidLower]);
+    if (unameLower) myAllKeys.add(unameLower);
+    if (fullNameLower) myAllKeys.add(fullNameLower);
+
+    const targetAllKeys = new Set<string>([targetLower]);
+    if (targetUser?.id) targetAllKeys.add(targetUser.id.toLowerCase());
+    if (targetUser?.username) targetAllKeys.add(targetUser.username.toLowerCase());
+    if (targetUser?.fullName) targetAllKeys.add(targetUser.fullName.toLowerCase());
+
+    const matchesMe = (cId?: string, cUser?: string, cName?: string) => {
+      return (
+        (cId && myAllKeys.has(cId.toLowerCase())) ||
+        (cUser && myAllKeys.has(cUser.toLowerCase())) ||
+        (cName && myAllKeys.has(cName.toLowerCase()))
+      );
+    };
+
+    const matchesFriend = (cId?: string, cUser?: string, cName?: string) => {
+      return (
+        (cId && targetAllKeys.has(cId.toLowerCase())) ||
+        (cUser && targetAllKeys.has(cUser.toLowerCase())) ||
+        (cName && targetAllKeys.has(cName.toLowerCase()))
+      );
+    };
+
+    if (!Array.isArray(this.data.deletedIds)) {
+      this.data.deletedIds = [];
+    }
+
+    let removedCount = 0;
+    this.data.locationShareRequests = this.data.locationShareRequests.filter((r) => {
+      const isPair =
+        (matchesMe(r.fromUserId, r.fromUsername, r.fromUserName) &&
+          matchesFriend(r.toUserId, r.toUsername, r.toUserName)) ||
+        (matchesMe(r.toUserId, r.toUsername, r.toUserName) &&
+          matchesFriend(r.fromUserId, r.fromUsername, r.fromUserName));
+      if (isPair) {
+        removedCount++;
+        if (!this.data.deletedIds!.includes(r.id)) {
+          this.data.deletedIds!.push(r.id);
+        }
+        if (r.fromUserId && !myAllKeys.has(r.fromUserId.toLowerCase())) {
+          targetAllKeys.add(r.fromUserId.toLowerCase());
+        }
+        if (r.toUserId && !myAllKeys.has(r.toUserId.toLowerCase())) {
+          targetAllKeys.add(r.toUserId.toLowerCase());
+        }
+        return false;
+      }
+      return true;
+    });
+
+    for (const mk of myAllKeys) {
+      for (const tk of targetAllKeys) {
+        const unfriendKey = `unfriend_${mk}_${tk}`;
+        if (!this.data.deletedIds.includes(unfriendKey)) {
+          this.data.deletedIds.push(unfriendKey);
+        }
+      }
+    }
+
+    this.save();
+    return { removedCount };
   }
 
   public getLocationShareRequests(userId: string): LocationShareRequest[] {
@@ -2263,6 +2458,561 @@ class Database {
 
   public getAllRooms(): Room[] {
     return this.data.rooms.map((r) => this.sanitizeRoom(r, ''));
+  }
+
+  // ============================================================================
+  // CROWDZONE — Real-Time Crowd Intelligence, Reports, Posts, Saved Places, Settings
+  // ============================================================================
+
+  private getEligibleCrowdSignals() {
+    const signals: Array<{
+      id?: string;
+      userId: string;
+      latitude: number;
+      longitude: number;
+      accuracy: number;
+      speed?: number | null;
+      timestamp: string;
+      contributesToCrowd?: boolean;
+    }> = [];
+
+    const userMap = new Map<string, UserRecord>();
+    for (const u of this.data.users || []) {
+      if (u?.id) userMap.set(u.id, u);
+    }
+
+    const canContribute = (uid: string): boolean => {
+      const user = userMap.get(uid);
+      if (user && user.privacy?.locationSharingEnabled === false) return false;
+      const settings = (this.data.userSettings || {})[uid];
+      if (settings && settings.contributeAnonymousCrowdSignals === false) return false;
+      return true;
+    };
+
+    for (const [uid, loc] of Object.entries(this.data.locations || {})) {
+      if (!loc) continue;
+      signals.push({
+        id: `live-${uid}`,
+        userId: loc.userId || uid,
+        latitude: loc.latitude,
+        longitude: loc.longitude,
+        accuracy: loc.accuracy,
+        speed: loc.speed,
+        timestamp: loc.updated_at || loc.timestamp,
+        contributesToCrowd: canContribute(loc.userId || uid),
+      });
+    }
+
+    for (const hist of this.data.locationHistory || []) {
+      if (!hist) continue;
+      signals.push({
+        id: hist.id,
+        userId: hist.userId,
+        latitude: hist.latitude,
+        longitude: hist.longitude,
+        accuracy: hist.accuracy,
+        speed: hist.speed,
+        timestamp: hist.timestamp,
+        contributesToCrowd: canContribute(hist.userId),
+      });
+    }
+
+    return signals;
+  }
+
+  public getUserCrowdSettings(userId: string): CrowdZoneUserSettings {
+    if (!this.data.userSettings) {
+      this.data.userSettings = {};
+    }
+    const existing = this.data.userSettings[userId];
+    if (existing) return existing;
+    const defaults: CrowdZoneUserSettings = {
+      userId,
+      contributeAnonymousCrowdSignals: true,
+      notificationRadiusKm: 5,
+      crowdAlertsEnabled: true,
+      emergencyAlertsEnabled: true,
+      communityReportAlertsEnabled: true,
+      updatedAt: new Date().toISOString(),
+    };
+    this.data.userSettings[userId] = defaults;
+    return defaults;
+  }
+
+  public updateUserCrowdSettings(
+    userId: string,
+    payload: Partial<Omit<CrowdZoneUserSettings, 'userId' | 'updatedAt'>>
+  ): CrowdZoneUserSettings {
+    const current = this.getUserCrowdSettings(userId);
+    const updated: CrowdZoneUserSettings = {
+      ...current,
+      ...(typeof payload.contributeAnonymousCrowdSignals === 'boolean'
+        ? { contributeAnonymousCrowdSignals: payload.contributeAnonymousCrowdSignals }
+        : {}),
+      ...(typeof payload.notificationRadiusKm === 'number' && Number.isFinite(payload.notificationRadiusKm)
+        ? { notificationRadiusKm: Math.max(0.5, Math.min(50, payload.notificationRadiusKm)) }
+        : {}),
+      ...(typeof payload.crowdAlertsEnabled === 'boolean'
+        ? { crowdAlertsEnabled: payload.crowdAlertsEnabled }
+        : {}),
+      ...(typeof payload.emergencyAlertsEnabled === 'boolean'
+        ? { emergencyAlertsEnabled: payload.emergencyAlertsEnabled }
+        : {}),
+      ...(typeof payload.communityReportAlertsEnabled === 'boolean'
+        ? { communityReportAlertsEnabled: payload.communityReportAlertsEnabled }
+        : {}),
+      updatedAt: new Date().toISOString(),
+    };
+    this.data.userSettings[userId] = updated;
+    this.save();
+    return updated;
+  }
+
+  public getCrowdCells(params?: {
+    window?: CrowdTimeWindow;
+    precision?: number;
+    lat?: number;
+    lng?: number;
+    radiusKm?: number;
+  }) {
+    const windowKey: CrowdTimeWindow = params?.window || '1h';
+    const precision = params?.precision || 6;
+    const signals = this.getEligibleCrowdSignals();
+    const reports = (this.data.crowdReports || []).filter((r) => r.status !== 'removed');
+    return aggregateCrowdCells({
+      signals,
+      reports,
+      window: windowKey,
+      precision,
+      centerLat: params?.lat,
+      centerLng: params?.lng,
+      radiusKm: params?.radiusKm,
+    });
+  }
+
+  public getCrowdHistory(params?: {
+    window?: CrowdTimeWindow;
+    cellId?: string;
+    precision?: number;
+  }) {
+    const windowKey: CrowdTimeWindow = params?.window || '24h';
+    const signals = this.getEligibleCrowdSignals();
+    const reports = (this.data.crowdReports || []).filter((r) => r.status !== 'removed');
+    return buildCrowdHistorySeries({
+      signals,
+      reports,
+      window: windowKey,
+      cellId: params?.cellId,
+      precision: params?.precision || 6,
+    });
+  }
+
+  public getCrowdPredictions(params?: {
+    cellId?: string;
+    precision?: number;
+  }) {
+    const signals = this.getEligibleCrowdSignals();
+    const reports = (this.data.crowdReports || []).filter((r) => r.status !== 'removed');
+    const history24h = buildCrowdHistorySeries({
+      signals,
+      reports,
+      window: '24h',
+      cellId: params?.cellId,
+      precision: params?.precision || 6,
+    });
+    const cells = aggregateCrowdCells({
+      signals,
+      reports,
+      window: '1h',
+      precision: params?.precision || 6,
+    });
+    const targetCell = params?.cellId
+      ? cells.find((c) => c.cellId === params.cellId)
+      : cells[0];
+    return predictCrowdActivitySeries({
+      historyBuckets: history24h,
+      currentTrend: targetCell?.trend || 'stable',
+    });
+  }
+
+  public getCrowdReports(params?: { window?: CrowdTimeWindow }): CrowdZoneCommunityReport[] {
+    if (!Array.isArray(this.data.crowdReports)) {
+      this.data.crowdReports = [];
+    }
+    const now = Date.now();
+    // Auto-expire reports past expiresAt
+    for (const r of this.data.crowdReports) {
+      if (r.status === 'active' && r.expiresAt && new Date(r.expiresAt).getTime() < now) {
+        r.status = 'expired';
+      }
+    }
+    return this.data.crowdReports
+      .filter((r) => r.status !== 'removed')
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }
+
+  public createCrowdReport(
+    userId: string,
+    payload: {
+      placeName: string;
+      category: CrowdReportCategory;
+      crowdLevel: Exclude<CrowdLevel, 'Unknown'>;
+      description: string;
+      latitude: number;
+      longitude: number;
+      ttlMinutes?: number;
+    }
+  ): CrowdZoneCommunityReport {
+    const user = this.findUserById(userId);
+    if (!user) throw new Error('User not found');
+    if (!Number.isFinite(payload.latitude) || !Number.isFinite(payload.longitude)) {
+      throw new Error('Valid GPS coordinates are required for a community report');
+    }
+    const cleanDesc = String(payload.description || '').trim();
+    if (!cleanDesc) {
+      throw new Error('Report description is required');
+    }
+
+    const nowIso = new Date().toISOString();
+    const ttlMs = Math.max(15, Math.min(720, Number(payload.ttlMinutes || 120))) * 60 * 1000;
+    const cellId = encodeGeohash(payload.latitude, payload.longitude, 6);
+
+    const report: CrowdZoneCommunityReport = {
+      id: 'cz-rep-' + crypto.randomUUID(),
+      reporterId: user.id,
+      reporterName: user.fullName || user.username,
+      reporterAvatar: user.avatarUrl,
+      cellId,
+      placeName: String(payload.placeName || 'Pinned Location').trim().slice(0, 120),
+      category: payload.category || 'crowd_level',
+      crowdLevel: payload.crowdLevel || 'Moderate',
+      description: cleanDesc.slice(0, 500),
+      latitude: Number(payload.latitude.toFixed(6)),
+      longitude: Number(payload.longitude.toFixed(6)),
+      verifiedBy: [user.id],
+      verificationCount: 1,
+      confidenceScore: 70,
+      createdAt: nowIso,
+      expiresAt: new Date(Date.now() + ttlMs).toISOString(),
+      status: 'active',
+    };
+
+    if (!Array.isArray(this.data.crowdReports)) {
+      this.data.crowdReports = [];
+    }
+    this.data.crowdReports.unshift(report);
+    this.save();
+    return report;
+  }
+
+  public verifyCrowdReport(userId: string, reportId: string): CrowdZoneCommunityReport {
+    const user = this.findUserById(userId);
+    if (!user) throw new Error('User not found');
+    const report = (this.data.crowdReports || []).find((r) => r.id === reportId);
+    if (!report) throw new Error('Community report not found');
+
+    if (!Array.isArray(report.verifiedBy)) {
+      report.verifiedBy = [];
+    }
+    if (!report.verifiedBy.includes(user.id)) {
+      report.verifiedBy.push(user.id);
+    }
+    report.verificationCount = report.verifiedBy.length;
+    report.confidenceScore = Math.min(99, 65 + report.verificationCount * 8);
+    this.save();
+    return report;
+  }
+
+  public deleteCrowdReport(userId: string, reportId: string): boolean {
+    const user = this.findUserById(userId);
+    const idx = (this.data.crowdReports || []).findIndex((r) => r.id === reportId);
+    if (idx < 0) return false;
+    const target = this.data.crowdReports[idx];
+    if (target.reporterId !== userId && !user?.isAdmin) {
+      throw new Error('Unauthorized to delete this report');
+    }
+    this.data.crowdReports.splice(idx, 1);
+    if (!Array.isArray(this.data.deletedIds)) this.data.deletedIds = [];
+    this.data.deletedIds.push(reportId);
+    this.save();
+    return true;
+  }
+
+  public getCrowdPosts(): CrowdZonePost[] {
+    if (!Array.isArray(this.data.crowdPosts)) {
+      this.data.crowdPosts = [];
+    }
+    return this.data.crowdPosts
+      .filter((p) => p.status !== 'removed')
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  }
+
+  public createCrowdPost(
+    userId: string,
+    payload: {
+      text: string;
+      placeName?: string;
+      crowdLevel?: CrowdLevel;
+      latitude?: number;
+      longitude?: number;
+    }
+  ): CrowdZonePost {
+    const user = this.findUserById(userId);
+    if (!user) throw new Error('User not found');
+    const cleanText = String(payload.text || '').trim();
+    if (!cleanText) throw new Error('Post content cannot be empty');
+
+    const hasCoords =
+      typeof payload.latitude === 'number' &&
+      Number.isFinite(payload.latitude) &&
+      typeof payload.longitude === 'number' &&
+      Number.isFinite(payload.longitude);
+
+    const post: CrowdZonePost = {
+      id: 'cz-post-' + crypto.randomUUID(),
+      authorId: user.id,
+      authorName: user.fullName || user.username,
+      authorAvatar: user.avatarUrl,
+      placeName: payload.placeName ? String(payload.placeName).trim().slice(0, 120) : undefined,
+      cellId: hasCoords ? encodeGeohash(payload.latitude!, payload.longitude!, 6) : undefined,
+      latitude: hasCoords ? Number(payload.latitude!.toFixed(6)) : undefined,
+      longitude: hasCoords ? Number(payload.longitude!.toFixed(6)) : undefined,
+      crowdLevel: payload.crowdLevel,
+      text: cleanText.slice(0, 800),
+      likes: [],
+      reactions: {},
+      comments: [],
+      createdAt: new Date().toISOString(),
+      status: 'active',
+    };
+
+    if (!Array.isArray(this.data.crowdPosts)) {
+      this.data.crowdPosts = [];
+    }
+    this.data.crowdPosts.unshift(post);
+    this.save();
+    return post;
+  }
+
+  public addCrowdPostComment(userId: string, postId: string, text: string): CrowdZonePost {
+    const user = this.findUserById(userId);
+    if (!user) throw new Error('User not found');
+    const post = (this.data.crowdPosts || []).find((p) => p.id === postId);
+    if (!post) throw new Error('Post not found');
+    const cleanText = String(text || '').trim();
+    if (!cleanText) throw new Error('Comment text cannot be empty');
+
+    const comment: CrowdZoneComment = {
+      id: 'cz-cmt-' + crypto.randomUUID(),
+      postId,
+      authorId: user.id,
+      authorName: user.fullName || user.username,
+      authorAvatar: user.avatarUrl,
+      text: cleanText.slice(0, 400),
+      createdAt: new Date().toISOString(),
+    };
+
+    if (!Array.isArray(post.comments)) {
+      post.comments = [];
+    }
+    post.comments.push(comment);
+    this.save();
+    return post;
+  }
+
+  public reactToCrowdPost(userId: string, postId: string, emoji: string): CrowdZonePost {
+    const post = (this.data.crowdPosts || []).find((p) => p.id === postId);
+    if (!post) throw new Error('Post not found');
+    const cleanEmoji = String(emoji || '👍').trim().slice(0, 8);
+    if (!post.reactions) post.reactions = {};
+    if (!Array.isArray(post.reactions[cleanEmoji])) {
+      post.reactions[cleanEmoji] = [];
+    }
+    const idx = post.reactions[cleanEmoji].indexOf(userId);
+    if (idx >= 0) {
+      post.reactions[cleanEmoji].splice(idx, 1);
+    } else {
+      post.reactions[cleanEmoji].push(userId);
+    }
+    this.save();
+    return post;
+  }
+
+  public deleteCrowdPost(userId: string, postId: string): boolean {
+    const user = this.findUserById(userId);
+    const idx = (this.data.crowdPosts || []).findIndex((p) => p.id === postId);
+    if (idx < 0) return false;
+    const target = this.data.crowdPosts[idx];
+    if (target.authorId !== userId && !user?.isAdmin) {
+      throw new Error('Unauthorized to delete this post');
+    }
+    this.data.crowdPosts.splice(idx, 1);
+    if (!Array.isArray(this.data.deletedIds)) this.data.deletedIds = [];
+    this.data.deletedIds.push(postId);
+    this.save();
+    return true;
+  }
+
+  public getCrowdSavedPlaces(userId: string): CrowdZoneSavedPlace[] {
+    if (!Array.isArray(this.data.crowdSavedPlaces)) {
+      this.data.crowdSavedPlaces = [];
+    }
+    return this.data.crowdSavedPlaces.filter((p) => p.userId === userId);
+  }
+
+  public saveCrowdPlace(
+    userId: string,
+    payload: {
+      name: string;
+      customLabel?: string;
+      address: string;
+      category?: string;
+      latitude: number;
+      longitude: number;
+      notifyWhenLevel?: Exclude<CrowdLevel, 'Unknown'>;
+      alertsEnabled?: boolean;
+    }
+  ): CrowdZoneSavedPlace {
+    if (!Number.isFinite(payload.latitude) || !Number.isFinite(payload.longitude)) {
+      throw new Error('Valid coordinates are required');
+    }
+    if (!Array.isArray(this.data.crowdSavedPlaces)) {
+      this.data.crowdSavedPlaces = [];
+    }
+    const cellId = encodeGeohash(payload.latitude, payload.longitude, 6);
+    const place: CrowdZoneSavedPlace = {
+      id: 'cz-place-' + crypto.randomUUID(),
+      userId,
+      name: String(payload.name || 'Saved Location').trim().slice(0, 120),
+      customLabel: payload.customLabel ? String(payload.customLabel).trim().slice(0, 60) : undefined,
+      address: String(payload.address || '').trim().slice(0, 240),
+      category: String(payload.category || 'general').trim(),
+      latitude: Number(payload.latitude.toFixed(6)),
+      longitude: Number(payload.longitude.toFixed(6)),
+      cellId,
+      notifyWhenLevel: payload.notifyWhenLevel || 'Quiet',
+      alertsEnabled: payload.alertsEnabled ?? true,
+      createdAt: new Date().toISOString(),
+    };
+    this.data.crowdSavedPlaces.unshift(place);
+    this.save();
+    return place;
+  }
+
+  public deleteCrowdSavedPlace(userId: string, placeId: string): boolean {
+    if (!Array.isArray(this.data.crowdSavedPlaces)) return false;
+    const idx = this.data.crowdSavedPlaces.findIndex(
+      (p) => p.id === placeId && p.userId === userId
+    );
+    if (idx < 0) return false;
+    this.data.crowdSavedPlaces.splice(idx, 1);
+    if (!Array.isArray(this.data.deletedIds)) this.data.deletedIds = [];
+    this.data.deletedIds.push(placeId);
+    this.save();
+    return true;
+  }
+
+  public moderateCrowdItem(
+    adminId: string,
+    payload: {
+      targetType: 'crowd_report' | 'crowd_post' | 'user' | 'room';
+      targetId: string;
+      action: 'approve' | 'remove' | 'expire' | 'warn';
+      reason: string;
+    }
+  ): ModerationLogEntry {
+    const admin = this.findUserById(adminId);
+    if (!admin) throw new Error('Moderator not found');
+
+    if (payload.targetType === 'crowd_report') {
+      const rep = (this.data.crowdReports || []).find((r) => r.id === payload.targetId);
+      if (rep) {
+        if (payload.action === 'remove') rep.status = 'removed';
+        else if (payload.action === 'expire') rep.status = 'expired';
+        else if (payload.action === 'approve') rep.status = 'active';
+      }
+    } else if (payload.targetType === 'crowd_post') {
+      const post = (this.data.crowdPosts || []).find((p) => p.id === payload.targetId);
+      if (post) {
+        if (payload.action === 'remove') post.status = 'removed';
+        else if (payload.action === 'approve') post.status = 'active';
+      }
+    }
+
+    if (!Array.isArray(this.data.moderationLogs)) {
+      this.data.moderationLogs = [];
+    }
+    const entry: ModerationLogEntry = {
+      id: 'mod-' + crypto.randomUUID(),
+      moderatorId: admin.id,
+      moderatorName: admin.fullName || admin.username,
+      targetType: payload.targetType,
+      targetId: payload.targetId,
+      action: payload.action,
+      reason: String(payload.reason || 'Administrative review').slice(0, 240),
+      createdAt: new Date().toISOString(),
+    };
+    this.data.moderationLogs.unshift(entry);
+    this.logAudit(
+      admin.id,
+      admin.fullName || admin.username,
+      `CROWDZONE_MOD_${payload.action.toUpperCase()}`,
+      `${payload.targetType}:${payload.targetId} — ${entry.reason}`
+    );
+    this.save();
+    return entry;
+  }
+
+  public getModerationLogs(): ModerationLogEntry[] {
+    return (this.data.moderationLogs || []).slice(0, 100);
+  }
+
+  public getCrowdZoneOverview(
+    userId: string,
+    params?: {
+      window?: CrowdTimeWindow;
+      precision?: number;
+      lat?: number;
+      lng?: number;
+      radiusKm?: number;
+      cellId?: string;
+    }
+  ) {
+    const windowKey: CrowdTimeWindow = params?.window || '1h';
+    const precision = params?.precision || 6;
+    const cells = this.getCrowdCells({
+      window: windowKey,
+      precision,
+      lat: params?.lat,
+      lng: params?.lng,
+      radiusKm: params?.radiusKm,
+    });
+    const history = this.getCrowdHistory({
+      window: windowKey,
+      cellId: params?.cellId,
+      precision,
+    });
+    const predictions = this.getCrowdPredictions({
+      cellId: params?.cellId || cells[0]?.cellId,
+      precision,
+    });
+    const reports = this.getCrowdReports({ window: windowKey });
+    const posts = this.getCrowdPosts();
+    const savedPlaces = this.getCrowdSavedPlaces(userId);
+    const settings = this.getUserCrowdSettings(userId);
+
+    return {
+      window: windowKey,
+      cells,
+      history,
+      predictions,
+      reports,
+      posts,
+      savedPlaces,
+      settings,
+      emergencyAlerts: (this.data.emergencyAlerts || []).filter((a) => a.status === 'active'),
+      serverTimestamp: new Date().toISOString(),
+    };
   }
 }
 

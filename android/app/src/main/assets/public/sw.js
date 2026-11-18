@@ -87,7 +87,7 @@ define(['./workbox-7e5eb42b'], (function (workbox) { 'use strict';
     "revision": "692c420d2bbc264d9bd2d2c0ee96428b"
   }, {
     "url": "index.html",
-    "revision": "ef8f4e683409d0ab29558e281d0110b1"
+    "revision": "f831f194b990208c699cd2d0f6243514"
   }, {
     "url": "icon.svg",
     "revision": "f8eacca2a095f7fc72e6f403a09b7b2d"
@@ -95,55 +95,64 @@ define(['./workbox-7e5eb42b'], (function (workbox) { 'use strict';
     "url": "apple-touch-icon.png",
     "revision": "35c10ad7360f108733d923d9e00c20f2"
   }, {
-    "url": "assets/vendor-react-CfasSphu.js",
+    "url": "assets/vendor-react-BvlbIIV7.js",
+    "revision": null
+  }, {
+    "url": "assets/vendor-motion-BrdVWIPG.js",
     "revision": null
   }, {
     "url": "assets/vendor-leaflet-C1sF6AH5.css",
     "revision": null
   }, {
-    "url": "assets/vendor-leaflet-BaxV0pCE.js",
+    "url": "assets/vendor-leaflet-B8kVHbsh.js",
     "revision": null
   }, {
-    "url": "assets/vendor-icons-CnKhq82H.js",
+    "url": "assets/vendor-icons-B88ngCZf.js",
     "revision": null
   }, {
-    "url": "assets/rolldown-runtime-WkwZ5CU-.js",
+    "url": "assets/nearbyPlaces-B05tIsqn.js",
     "revision": null
   }, {
-    "url": "assets/index-CIRX2-QS.css",
+    "url": "assets/index-cF7sWIdE.css",
     "revision": null
   }, {
-    "url": "assets/index-BjmRk0ag.js",
+    "url": "assets/index-DsFRZvC6.js",
     "revision": null
   }, {
-    "url": "assets/SavedPlacesManager-huhHRdSr.js",
+    "url": "assets/ToastContext-StvSa_76.js",
     "revision": null
   }, {
-    "url": "assets/RoomsManager-DB_VyflW.js",
+    "url": "assets/SavedPlacesManager-D1l02D9d.js",
     "revision": null
   }, {
-    "url": "assets/RemindersManager-C19CZs73.js",
+    "url": "assets/RoomsManager-DAFoV9yU.js",
     "revision": null
   }, {
-    "url": "assets/ProfilePrivacyView-BCj4b4mM.js",
+    "url": "assets/RemindersManager-ByNSMWjS.js",
     "revision": null
   }, {
-    "url": "assets/NotificationsCenter-r_VEHBav.js",
+    "url": "assets/ProfilePrivacyView-5vAqSq3P.js",
     "revision": null
   }, {
-    "url": "assets/MeetingsManager-BWLDsptf.js",
+    "url": "assets/NotificationsCenter-DNIfJNtz.js",
     "revision": null
   }, {
-    "url": "assets/FriendsView-DssjBshR.js",
+    "url": "assets/MeetingsManager-CEDUgr99.js",
     "revision": null
   }, {
-    "url": "assets/ChatView-DACI1JvD.js",
+    "url": "assets/FriendsView-DIxeWPTZ.js",
     "revision": null
   }, {
-    "url": "assets/AudioWaveformVisualizer-H6LAWvwa.js",
+    "url": "assets/CrowdZoneModule-BrOKBgBa.js",
     "revision": null
   }, {
-    "url": "assets/AdminDashboard-BfTT0BVR.js",
+    "url": "assets/ChatView-Bzu-VIB-.js",
+    "revision": null
+  }, {
+    "url": "assets/AudioWaveformVisualizer-1LGvatIv.js",
+    "revision": null
+  }, {
+    "url": "assets/AdminDashboard-uYx_PjtW.js",
     "revision": null
   }, {
     "url": "apple-touch-icon.png",

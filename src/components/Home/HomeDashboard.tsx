@@ -6,6 +6,7 @@ import { api } from '../../utils/api.ts';
 import { calculateDistanceMeters, formatDistance, formatTimeAgo } from '../../utils/geo.ts';
 import { useToast } from '../../context/ToastContext.tsx';
 import type { Room, SavedPlace, LocationShareRequest, ChatMessage } from '../../types.ts';
+import { PublicApisIntelWidget } from './PublicApisIntelWidget.tsx';
 import {
   Map as MapIcon,
   Users,
@@ -31,6 +32,7 @@ import {
   Activity,
   Heart,
   Zap,
+  Radar,
 } from 'lucide-react';
 
 interface HomeDashboardProps {
@@ -410,6 +412,15 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
               <MapIcon className="w-4 h-4 text-[#FF4FA3]" />
               <span>Open Live Map</span>
             </button>
+
+            <button
+              type="button"
+              onClick={() => onNavigateTab('crowdzone')}
+              className="px-4 py-2.5 rounded-2xl bg-gradient-to-r from-[#00D9FF] to-[#397BFF] text-[#050811] hover:opacity-95 font-black text-xs flex items-center gap-2 shadow-[0_0_24px_rgba(0,217,255,0.45)] transition-all cursor-pointer active:scale-95"
+            >
+              <Radar className="w-4 h-4" />
+              <span>CROWDZONE</span>
+            </button>
           </div>
         </div>
 
@@ -713,6 +724,14 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
         </section>
       )}
 
+      {/* 3B. LIVE TELEMETRY & ENVIRONMENT INTELLIGENCE (powered by public-apis/public-apis) */}
+      <PublicApisIntelWidget
+        latitude={myLocation?.latitude}
+        longitude={myLocation?.longitude}
+        isDark={isDark}
+        onFocusMapLocation={onFocusMapLocation}
+      />
+
       {/* 4. COLOURFUL QUICK ACTION BUTTONS */}
       <section>
         <div className="flex items-center justify-between mb-3">
@@ -722,7 +741,21 @@ export const HomeDashboard: React.FC<HomeDashboardProps> = ({
           </h2>
         </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+          <button
+            type="button"
+            onClick={() => onNavigateTab('crowdzone')}
+            className="p-4 rounded-3xl bg-gradient-to-br from-[#00D9FF] via-[#1CA9FF] to-[#397BFF] text-[#050811] text-left transition-all cursor-pointer active:scale-95 shadow-[0_10px_28px_rgba(0,217,255,0.4)] group border border-cyan-300/40"
+          >
+            <div className="w-10 h-10 rounded-2xl bg-[#050811]/20 flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
+              <Radar className="w-5 h-5 text-[#050811]" />
+            </div>
+            <span className="text-xs font-black tracking-wide block">CROWDZONE</span>
+            <span className="text-[10px] text-[#050811]/85 font-bold mt-0.5 block">
+              Live crowd radar & heatmap
+            </span>
+          </button>
+
           <button
             type="button"
             onClick={() => onNavigateTab('map')}

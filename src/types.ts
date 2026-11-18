@@ -324,4 +324,208 @@ export type WsServerMessage =
   | { type: 'emergency:broadcast'; alert: EmergencyAlert }
   | { type: 'emergency:ack_update'; alert: EmergencyAlert }
   | { type: 'emergency:deleted'; alertId: string }
-  | { type: 'notification'; title: string; body: string; notificationType: string; data?: any };
+  | { type: 'notification'; title: string; body: string; notificationType: string; data?: any }
+  | { type: 'location.updated'; location: UserLocation }
+  | { type: 'crowd.updated'; cell?: CrowdCellSummary; cells?: CrowdCellSummary[] }
+  | { type: 'report.created'; report: CrowdZoneCommunityReport }
+  | { type: 'report.verified'; report: CrowdZoneCommunityReport }
+  | { type: 'message.created'; message: ChatMessage }
+  | { type: 'alert.created'; alert: EmergencyAlert }
+  | { type: 'notification.created'; notification: CrowdZoneNotificationItem }
+  | { type: 'room.updated'; room: Room };
+
+// ============================================================================
+// CROWDZONE MODULE DOMAIN TYPES (Geohash Crowd Intelligence & Community Feed)
+// ============================================================================
+
+export type CrowdLevel = 'Quiet' | 'Moderate' | 'Busy' | 'Very Busy' | 'Unknown';
+
+export type CrowdActivityWindow = '15m' | '1h' | '3h' | '24h' | '7d' | 'all';
+export type CrowdTimeWindow = CrowdActivityWindow;
+
+export type CrowdTrendDirection = 'increasing' | 'decreasing' | 'stable';
+export type CrowdTrend = CrowdTrendDirection;
+
+export type CrowdReportCategory =
+  | 'crowd_level'
+  | 'queue_wait'
+  | 'event'
+  | 'incident'
+  | 'traffic'
+  | 'safety_hazard'
+  | 'weather'
+  | 'crowd'
+  | 'queue'
+  | 'safety'
+  | 'transit'
+  | 'facility';
+
+export interface CrowdCellSummary {
+  cellId: string;
+  geohash: string;
+  centerLat: number;
+  centerLng: number;
+  bounds: {
+    minLat: number;
+    maxLat: number;
+    minLng: number;
+    maxLng: number;
+  };
+  crowdLevel: CrowdLevel;
+  densityScore: number;
+  confidenceScore: number; // 0 - 100
+  trend: CrowdTrendDirection;
+  dataSource: 'measured' | 'reported' | 'hybrid' | 'insufficient';
+  dataOrigin: 'measured' | 'reported' | 'hybrid' | 'insufficient';
+  insufficientData: boolean;
+  activeSignalsBucket: number;
+  verifiedReportCount: number;
+  verifiedReportsCount: number;
+  totalReportsCount: number;
+  weightedScore: number;
+  windowId: CrowdActivityWindow;
+  updatedAt: string;
+}
+
+export interface CrowdHistoryBucket {
+  bucketStart: string;
+  bucketEnd: string;
+  label: string;
+  crowdLevel: CrowdLevel;
+  densityScore: number;
+  signalCount: number;
+  reportCount: number;
+  weightedScore: number;
+  activityType: 'observed' | 'predicted';
+}
+
+export interface CrowdPredictionPoint {
+  hourOffset: number;
+  targetTime: string;
+  label: string;
+  hourLabel: string;
+  predictedLevel: CrowdLevel;
+  predictedDensityScore: number;
+  predictedScore: number;
+  confidenceScore: number;
+  activityType: 'predicted';
+  basis: string;
+}
+
+export interface CrowdZoneCommunityReport {
+  id: string;
+  cellId: string;
+  geohash?: string;
+  reporterId: string;
+  reporterName: string;
+  reporterAvatar?: string;
+  authorId?: string;
+  authorName?: string;
+  placeName: string;
+  category: CrowdReportCategory;
+  crowdLevel: Exclude<CrowdLevel, 'Unknown'>;
+  waitMinutes?: number | null;
+  title?: string;
+  description: string;
+  latitude: number;
+  longitude: number;
+  verified?: boolean;
+  verifiedBy: string[];
+  verificationCount: number;
+  verificationsCount?: number;
+  confidenceScore: number;
+  status: 'active' | 'expired' | 'resolved' | 'removed' | 'dismissed';
+  createdAt: string;
+  updatedAt?: string;
+  expiresAt: string;
+}
+
+export interface CrowdZoneComment {
+  id: string;
+  postId: string;
+  authorId: string;
+  authorName: string;
+  authorAvatar?: string;
+  text: string;
+  createdAt: string;
+}
+
+export interface CrowdZonePost {
+  id: string;
+  cellId?: string;
+  geohash?: string;
+  placeName?: string;
+  latitude?: number;
+  longitude?: number;
+  authorId: string;
+  authorName: string;
+  authorAvatar?: string;
+  text: string;
+  content?: string;
+  crowdLevel?: CrowdLevel;
+  category?: 'update' | 'tip' | 'question' | 'alert' | 'event';
+  likes: string[];
+  reactions: Record<string, string[]>;
+  comments: CrowdZoneComment[];
+  status: 'active' | 'removed';
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export interface CrowdZoneSavedPlace {
+  id: string;
+  userId: string;
+  name: string;
+  customLabel?: string;
+  address: string;
+  category: string;
+  latitude: number;
+  longitude: number;
+  cellId: string;
+  geohash?: string;
+  notifyWhenLevel: Exclude<CrowdLevel, 'Unknown'>;
+  alertsEnabled: boolean;
+  notifyOnCrowdChange?: boolean;
+  alertThreshold?: CrowdLevel;
+  createdAt: string;
+}
+
+export interface CrowdZoneUserSettings {
+  userId: string;
+  contributeAnonymousCrowdSignals: boolean;
+  notificationRadiusKm: number;
+  crowdAlertsEnabled: boolean;
+  emergencyAlertsEnabled: boolean;
+  communityReportAlertsEnabled: boolean;
+  notifyNearbyCrowdChanges?: boolean;
+  notifyEmergencyAlerts?: boolean;
+  notifyCommunityReports?: boolean;
+  notifySavedPlaceAlerts?: boolean;
+  updatedAt: string;
+}
+
+export interface CrowdZoneNotificationItem {
+  id: string;
+  userId?: string;
+  type: 'crowd_change' | 'emergency' | 'community_report' | 'saved_place';
+  title: string;
+  body: string;
+  latitude?: number;
+  longitude?: number;
+  geohash?: string;
+  crowdLevel?: CrowdLevel;
+  createdAt: string;
+}
+
+export interface ModerationLogEntry {
+  id: string;
+  moderatorId: string;
+  moderatorName: string;
+  targetType: 'crowd_report' | 'crowd_post' | 'user' | 'room';
+  targetId: string;
+  action: 'approve' | 'remove' | 'expire' | 'warn' | 'verify' | 'dismiss' | 'flag_spam';
+  reason: string;
+  createdAt: string;
+}
+
+

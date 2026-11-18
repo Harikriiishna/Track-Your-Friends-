@@ -2,10 +2,14 @@
   "entities": {
     "BeaconSyncState": {
       "title": "BeaconSyncState",
-      "description": "Synchronized cross-device application state for users, rooms, locations, messages, saved places, reminders, and emergency alerts.",
+      "description": "Synchronized cross-device application state for users, rooms, locations, messages, saved places, reminders, emergency alerts, and CROWDZONE intelligence.",
       "type": "object",
       "properties": {
         "payload": {
+          "type": "string",
+          "description": "Serialized JSON state payload for cross-device synchronization."
+        },
+        "stateJson": {
           "type": "string",
           "description": "Serialized JSON state payload for cross-device synchronization."
         },
@@ -15,13 +19,122 @@
           "description": "ISO timestamp of last state sync."
         }
       },
-      "required": ["payload", "updatedAt"]
+      "required": ["updatedAt"]
+    },
+    "CrowdCell": {
+      "title": "CrowdCell",
+      "description": "Privacy-preserving geohash cell crowd aggregation summary.",
+      "type": "object",
+      "properties": {
+        "cellId": { "type": "string" },
+        "centerLat": { "type": "number" },
+        "centerLng": { "type": "number" },
+        "crowdLevel": { "type": "string", "enum": ["Quiet", "Moderate", "Busy", "Very Busy", "Unknown"] },
+        "densityScore": { "type": "number" },
+        "confidenceScore": { "type": "number" },
+        "trend": { "type": "string", "enum": ["increasing", "decreasing", "stable"] },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["cellId", "centerLat", "centerLng", "crowdLevel", "densityScore", "confidenceScore", "updatedAt"]
+    },
+    "CrowdReport": {
+      "title": "CrowdReport",
+      "description": "Community crowd, queue, event, traffic, or safety report with peer verification.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "reporterId": { "type": "string" },
+        "reporterName": { "type": "string" },
+        "cellId": { "type": "string" },
+        "placeName": { "type": "string" },
+        "category": { "type": "string", "enum": ["crowd_level", "queue_wait", "event", "incident", "traffic", "safety_hazard", "weather"] },
+        "crowdLevel": { "type": "string", "enum": ["Quiet", "Moderate", "Busy", "Very Busy"] },
+        "description": { "type": "string" },
+        "latitude": { "type": "number" },
+        "longitude": { "type": "number" },
+        "verificationCount": { "type": "number" },
+        "confidenceScore": { "type": "number" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "expiresAt": { "type": "string", "format": "date-time" },
+        "status": { "type": "string", "enum": ["active", "expired", "removed"] }
+      },
+      "required": ["id", "reporterId", "cellId", "placeName", "category", "crowdLevel", "description", "latitude", "longitude", "createdAt", "status"]
+    },
+    "CrowdPost": {
+      "title": "CrowdPost",
+      "description": "Public CROWDZONE community post with location context.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "authorId": { "type": "string" },
+        "authorName": { "type": "string" },
+        "placeName": { "type": "string" },
+        "cellId": { "type": "string" },
+        "text": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "status": { "type": "string", "enum": ["active", "removed"] }
+      },
+      "required": ["id", "authorId", "authorName", "text", "createdAt", "status"]
+    },
+    "CrowdSavedPlace": {
+      "title": "CrowdSavedPlace",
+      "description": "User saved place with crowd level notification preferences.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "name": { "type": "string" },
+        "address": { "type": "string" },
+        "latitude": { "type": "number" },
+        "longitude": { "type": "number" },
+        "cellId": { "type": "string" },
+        "notifyWhenLevel": { "type": "string", "enum": ["Quiet", "Moderate", "Busy", "Very Busy"] },
+        "alertsEnabled": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "name", "latitude", "longitude", "cellId", "createdAt"]
+    },
+    "UserCrowdSettings": {
+      "title": "UserCrowdSettings",
+      "description": "User privacy and CROWDZONE notification radius preferences.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "contributeAnonymousCrowdSignals": { "type": "boolean" },
+        "notificationRadiusKm": { "type": "number" },
+        "crowdAlertsEnabled": { "type": "boolean" },
+        "emergencyAlertsEnabled": { "type": "boolean" },
+        "communityReportAlertsEnabled": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["userId", "contributeAnonymousCrowdSignals", "notificationRadiusKm", "updatedAt"]
     }
   },
   "firestore": {
     "/beacon_sync/{docId}": {
       "schema": "BeaconSyncState",
       "description": "Global cross-device synchronization documents for Web and Android APK clients."
+    },
+    "/crowd_cells/{cellId}": {
+      "schema": "CrowdCell",
+      "description": "Privacy-preserving geohash crowd cell aggregations."
+    },
+    "/reports/{reportId}": {
+      "schema": "CrowdReport",
+      "description": "Community crowd and safety reports."
+    },
+    "/posts/{postId}": {
+      "schema": "CrowdPost",
+      "description": "Public CROWDZONE community feed posts."
+    },
+    "/places/{placeId}": {
+      "schema": "CrowdSavedPlace",
+      "description": "Saved places with crowd notification rules."
+    },
+    "/user_settings/{userId}": {
+      "schema": "UserCrowdSettings",
+      "description": "Per-user CROWDZONE privacy and alert radius settings."
     }
   }
 }
+

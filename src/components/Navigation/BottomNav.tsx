@@ -12,13 +12,14 @@ import {
   Clock,
   Siren,
   Shield,
+  Radar,
   X,
 } from 'lucide-react';
 import { sound, triggerHaptic } from '../../utils/audio.ts';
 import { useTheme } from '../../context/ThemeContext.tsx';
 import { useAuth } from '../../context/AuthContext.tsx';
 
-export type PrimaryTab = 'home' | 'map' | 'friends' | 'chat' | 'profile';
+export type PrimaryTab = 'home' | 'map' | 'crowdzone' | 'friends' | 'chat' | 'profile';
 
 export interface BottomNavProps {
   activeTab?: string;
@@ -53,6 +54,13 @@ export const PRIMARY_NAV_ITEMS: Array<{
     icon: Map,
     activeGradient: 'from-[#00D6A0] to-[#00D9FF]',
     glowColor: 'shadow-[0_0_20px_rgba(0,214,160,0.55)]',
+  },
+  {
+    id: 'crowdzone',
+    label: 'CROWDZONE',
+    icon: Radar,
+    activeGradient: 'from-[#00D9FF] to-[#397BFF]',
+    glowColor: 'shadow-[0_0_22px_rgba(0,217,255,0.65)]',
   },
   {
     id: 'friends',
@@ -133,26 +141,32 @@ export const BottomNav: React.FC<BottomNavProps> = ({
                 className="relative w-full flex flex-col items-center justify-center py-0.5 px-1 rounded-2xl transition-all cursor-pointer select-none"
               >
                 <div
-                  className={`relative flex items-center justify-center w-12 h-8 rounded-2xl transition-all ${
+                  className={`relative flex items-center justify-center w-11 h-8 rounded-2xl transition-all ${
                     isActive
                       ? `bg-gradient-to-r ${item.activeGradient} text-white ${item.glowColor}`
-                      : isLight
-                        ? 'text-[#655E8A] hover:text-[#161032] hover:bg-[#8957FF]/10'
-                        : 'text-[#A6A1C8] hover:text-white hover:bg-white/5'
+                      : item.id === 'crowdzone'
+                        ? 'text-[#00D9FF] bg-[#00D9FF]/10 border border-[#00D9FF]/30 hover:bg-[#00D9FF]/20'
+                        : isLight
+                          ? 'text-[#655E8A] hover:text-[#161032] hover:bg-[#8957FF]/10'
+                          : 'text-[#A6A1C8] hover:text-white hover:bg-white/5'
                   }`}
                 >
                   <Icon className="w-4 h-4 stroke-[2.3]" />
                 </div>
 
                 <span
-                  className={`mt-1 text-[11px] leading-tight font-bold transition-colors ${
+                  className={`mt-1 text-[10px] sm:text-[11px] leading-tight font-bold transition-colors truncate max-w-[64px] ${
                     isActive
-                      ? isLight
-                        ? 'text-[#161032]'
-                        : 'text-white'
-                      : isLight
-                        ? 'text-[#655E8A]'
-                        : 'text-[#A6A1C8]'
+                      ? item.id === 'crowdzone'
+                        ? 'text-[#00D9FF]'
+                        : isLight
+                          ? 'text-[#161032]'
+                          : 'text-white'
+                      : item.id === 'crowdzone'
+                        ? 'text-[#00D9FF]'
+                        : isLight
+                          ? 'text-[#655E8A]'
+                          : 'text-[#A6A1C8]'
                   }`}
                 >
                   {item.label}
@@ -218,6 +232,7 @@ export const DesktopNavRail: React.FC<
   const desktopItems = [
     { id: 'home', label: 'Home Hub', icon: Home, badge: 0, gradient: 'from-[#8957FF] to-[#FF4FA3]' },
     { id: 'map', label: 'Live HD Map', icon: Map, badge: 0, gradient: 'from-[#00D6A0] to-[#00D9FF]' },
+    { id: 'crowdzone', label: 'CROWDZONE', icon: Radar, badge: 0, gradient: 'from-[#00D9FF] to-[#397BFF]' },
     { id: 'universal', label: 'Universal Lounge', icon: Globe, badge: 0, gradient: 'from-[#397BFF] to-[#00D9FF]' },
     { id: 'rooms', label: 'Private Rooms', icon: Users, badge: 0, gradient: 'from-[#8957FF] to-[#397BFF]' },
     { id: 'friends', label: 'Friends & Circle', icon: Users, badge: friendsBadge, gradient: 'from-[#00D6A0] to-[#397BFF]' },

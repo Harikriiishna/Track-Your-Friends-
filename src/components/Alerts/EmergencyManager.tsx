@@ -221,13 +221,9 @@ export const EmergencyLocationMap: React.FC<EmergencyLocationMapProps> = ({
 
         {/* Top-right Map Controls */}
         <div className="absolute top-2.5 right-2.5 z-[400] flex items-center gap-1.5 pointer-events-auto">
-          <button
-            type="button"
-            onClick={() => setTileMode((prev) => (prev === 'hybrid' ? 'street' : 'hybrid'))}
-            className="px-2.5 py-1.5 rounded-lg bg-slate-900/90 hover:bg-slate-800 text-white text-[11px] font-bold border border-white/15 shadow cursor-pointer"
-          >
-            {tileMode === 'hybrid' ? 'Street' : 'Satellite'}
-          </button>
+          <span className="px-2.5 py-1.5 rounded-lg bg-slate-900/90 text-sky-300 text-[10px] font-bold border border-white/15 shadow">
+            Satellite 2x HDR
+          </span>
           <button
             type="button"
             onClick={() => {

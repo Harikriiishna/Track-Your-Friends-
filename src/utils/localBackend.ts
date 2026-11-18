@@ -15,7 +15,22 @@ import type {
   UserSession,
   UserPathTrail,
   LocationBreadcrumb,
+  CrowdZoneCommunityReport,
+  CrowdZonePost,
+  CrowdZoneComment,
+  CrowdZoneSavedPlace,
+  CrowdZoneUserSettings,
+  ModerationLogEntry,
+  CrowdTimeWindow,
+  CrowdReportCategory,
+  CrowdLevel,
 } from '../types.ts';
+import {
+  encodeGeohash,
+  aggregateCrowdCells,
+  buildCrowdHistorySeries,
+  predictCrowdActivitySeries,
+} from './crowdIntelligenceEngine.ts';
 import { fetchRealNearbyPlaces, searchRealPlacesByQuery } from './nearbyPlaces.ts';
 import {
   INITIAL_SEED_USERS,
@@ -76,6 +91,11 @@ interface LocalDatabaseSchema {
     altitude?: number | null;
     timestamp: string;
   }>;
+  crowdReports?: CrowdZoneCommunityReport[];
+  crowdPosts?: CrowdZonePost[];
+  crowdSavedPlaces?: CrowdZoneSavedPlace[];
+  userSettings?: Record<string, CrowdZoneUserSettings>;
+  moderationLogs?: ModerationLogEntry[];
   deletedIds?: string[];
 }
 
@@ -195,18 +215,114 @@ class LocalBackendEngine {
     return Array.from(ids);
   }
 
+  public isUserUnfriendedOrBlocked(
+    currentUserId?: string,
+    target?: { userId?: string; id?: string; username?: string; fullName?: string } | null
+  ): boolean {
+    if (!target) return false;
+    const rawTargetId = String(target.userId || target.id || '').trim();
+    const rawTargetUser = String(target.username || '').trim();
+    const rawTargetName = String(target.fullName || '').trim();
+    if (!rawTargetId && !rawTargetUser && !rawTargetName) return false;
+
+    const me =
+      (currentUserId
+        ? this.data.users.find(
+            (u) =>
+              u.id.toLowerCase() === currentUserId.toLowerCase() ||
+              u.username.toLowerCase() === currentUserId.toLowerCase()
+          )
+        : null) || this.getAuthenticatedUser();
+
+    const myKeys = new Set<string>();
+    if (currentUserId) myKeys.add(currentUserId.toLowerCase());
+    if (me?.id) myKeys.add(me.id.toLowerCase());
+    if (me?.username) myKeys.add(me.username.toLowerCase());
+    if (me?.fullName) myKeys.add(me.fullName.toLowerCase());
+
+    const targetRecord = this.data.users.find(
+      (u) =>
+        (rawTargetId && u.id.toLowerCase() === rawTargetId.toLowerCase()) ||
+        (rawTargetUser && u.username.toLowerCase() === rawTargetUser.toLowerCase()) ||
+        (rawTargetName && u.fullName.toLowerCase() === rawTargetName.toLowerCase())
+    );
+
+    const targetKeys = new Set<string>();
+    if (rawTargetId) targetKeys.add(rawTargetId.toLowerCase());
+    if (rawTargetUser) targetKeys.add(rawTargetUser.toLowerCase());
+    if (rawTargetName) targetKeys.add(rawTargetName.toLowerCase());
+    if (targetRecord?.id) targetKeys.add(targetRecord.id.toLowerCase());
+    if (targetRecord?.username) targetKeys.add(targetRecord.username.toLowerCase());
+    if (targetRecord?.fullName) targetKeys.add(targetRecord.fullName.toLowerCase());
+
+    // Never filter out the current user's own marker
+    for (const mk of myKeys) {
+      if (targetKeys.has(mk)) return false;
+    }
+
+    // 1. Check blockedUserIds
+    if (me?.privacy?.blockedUserIds?.some((b) => targetKeys.has(String(b).toLowerCase()))) {
+      return true;
+    }
+    if (targetRecord?.privacy?.blockedUserIds?.some((b) => myKeys.has(String(b).toLowerCase()))) {
+      return true;
+    }
+
+    // 2. Check deletedIds for unfriend_<me>_<target> or unfriend_<target>_<me>
+    const deletedSet = new Set((this.data.deletedIds || []).map((d) => String(d).toLowerCase()));
+    for (const mk of myKeys) {
+      for (const tk of targetKeys) {
+        if (deletedSet.has(`unfriend_${mk}_${tk}`) || deletedSet.has(`unfriend_${tk}_${mk}`)) {
+          return true;
+        }
+      }
+    }
+
+    // 3. Check localStorage beacon_removed_friends_* lists
+    if (typeof window !== 'undefined' && typeof localStorage !== 'undefined') {
+      try {
+        const storageKeys = new Set<string>(['beacon_removed_friends_global']);
+        if (currentUserId) storageKeys.add(`beacon_removed_friends_${currentUserId}`);
+        if (me?.id) storageKeys.add(`beacon_removed_friends_${me.id}`);
+        if (me?.username) storageKeys.add(`beacon_removed_friends_${me.username}`);
+        for (const sk of storageKeys) {
+          const raw = localStorage.getItem(sk);
+          if (!raw) continue;
+          const list: string[] = JSON.parse(raw);
+          if (Array.isArray(list)) {
+            for (const item of list) {
+              if (targetKeys.has(String(item).toLowerCase())) {
+                return true;
+              }
+            }
+          }
+        }
+      } catch {
+        // ignore storage read error
+      }
+    }
+
+    return false;
+  }
+
   public getLiveLocationsSnapshot(currentUserId?: string): UserLocation[] {
     const out: UserLocation[] = [];
     for (const [uid, loc] of Object.entries(this.data.locations || {})) {
       if (!loc || !Number.isFinite(loc.latitude) || !Number.isFinite(loc.longitude)) continue;
       const acc = Number(loc.accuracy_m ?? loc.accuracy);
-      if (!Number.isFinite(acc) || acc <= 0 || acc > 100) continue;
+      if (!Number.isFinite(acc) || acc <= 0 || acc > 5000) continue;
       const usr = this.data.users.find((u) => u.id === (loc.userId || uid));
-      out.push({
-        ...loc,
+      const candidate = {
         userId: loc.userId || uid,
         username: loc.username || usr?.username || 'member',
         fullName: loc.fullName || usr?.fullName || 'Member',
+      };
+      if (this.isUserUnfriendedOrBlocked(currentUserId, candidate)) continue;
+      out.push({
+        ...loc,
+        userId: candidate.userId,
+        username: candidate.username,
+        fullName: candidate.fullName,
         avatarUrl:
           loc.avatarUrl ||
           usr?.avatarUrl ||
@@ -447,6 +563,11 @@ class LocalBackendEngine {
       auditLogs: [],
       passwordResets: [],
       locationHistory: [],
+      crowdReports: [],
+      crowdPosts: [],
+      crowdSavedPlaces: [],
+      userSettings: {},
+      moderationLogs: [],
       deletedIds: [],
     };
   }
@@ -1458,6 +1579,9 @@ class LocalBackendEngine {
         return { message } as unknown as T;
       }
       if (method === 'DELETE') {
+        if (roomId === 'room-universal') {
+          throw this.createError('Cannot clear messages in Universal Lounge', 403);
+        }
         this.data.messages = this.data.messages.filter((m) => m.roomId !== roomId);
         this.save();
         return { success: true } as unknown as T;
@@ -1702,8 +1826,8 @@ class LocalBackendEngine {
       if (!Number.isFinite(parsedLng) || parsedLng < -180 || parsedLng > 180) {
         throw this.createError('Invalid longitude', 400);
       }
-      if (!Number.isFinite(parsedAcc) || parsedAcc <= 0 || parsedAcc > 100) {
-        throw this.createError('Rejected coarse location fix: accuracy_m must be <= 100m', 400);
+      if (!Number.isFinite(parsedAcc) || parsedAcc <= 0 || parsedAcc > 5000) {
+        throw this.createError('Rejected coarse location fix: accuracy_m must be <= 5000m', 400);
       }
       const serverNowIso = new Date().toISOString();
       const loc: UserLocation = {
@@ -1754,7 +1878,8 @@ class LocalBackendEngine {
         .filter(
           (l) =>
             Number.isFinite(l.accuracy) &&
-            l.accuracy <= 100 &&
+            l.accuracy <= 5000 &&
+            !this.isUserUnfriendedOrBlocked(currentUser?.id, l) &&
             (l.userId !== currentUser?.id || nowMs - new Date(l.timestamp).getTime() <= twoMinutesMs)
         )
         .map((l) => ({
@@ -1807,13 +1932,18 @@ class LocalBackendEngine {
 
     if (method === 'GET' && pathname === '/api/locations/search') {
       const q = (query.get('q') || '').trim();
-      if (!q || q.length < 2) return { results: [] } as unknown as T;
+      if (!q || q.length < 2) return { results: [], places: [] } as unknown as T;
       const latRaw = query.get('lat');
       const lonRaw = query.get('lon');
       const lat = latRaw !== null ? Number(latRaw) : undefined;
       const lon = lonRaw !== null ? Number(lonRaw) : undefined;
-      const results = await searchRealPlacesByQuery(q, lat, lon);
-      return { results } as unknown as T;
+      const rawResults = await searchRealPlacesByQuery(q, lat, lon);
+      const results = rawResults.map((p) => ({
+        ...p,
+        address: p.address || p.display_name || p.name,
+        category: p.category || p.type || 'place',
+      }));
+      return { results, places: results } as unknown as T;
     }
 
     if (method === 'GET' && pathname === '/api/locations/nearby') {
@@ -1821,10 +1951,15 @@ class LocalBackendEngine {
       const lon = Number(query.get('lon'));
       const category = (query.get('category') || 'all').toLowerCase();
       const maxRadiusMeters = Number(query.get('radius')) || 10000;
-      if (isNaN(lat) || isNaN(lon)) return { results: [] } as unknown as T;
+      if (isNaN(lat) || isNaN(lon)) return { results: [], places: [] } as unknown as T;
 
-      const results = await fetchRealNearbyPlaces(lat, lon, category, maxRadiusMeters);
-      return { results } as unknown as T;
+      const rawResults = await fetchRealNearbyPlaces(lat, lon, category, maxRadiusMeters);
+      const results = rawResults.map((p) => ({
+        ...p,
+        address: p.address || p.display_name || p.name,
+        category: p.category || p.type || 'place',
+      }));
+      return { results, places: results } as unknown as T;
     }
 
     if (method === 'GET' && pathname === '/api/locations/directions') {
@@ -2279,6 +2414,30 @@ class LocalBackendEngine {
         throw this.createError('You cannot send a friend request to yourself', 400);
       }
 
+      const clearUnfriendTombstones = (targetU: { id: string; username: string; fullName: string }) => {
+        const myKeys = [currentUser.id, currentUser.username, currentUser.fullName]
+          .filter(Boolean)
+          .map((s) => s.toLowerCase());
+        const tKeys = [targetU.id, targetU.username, targetU.fullName, rawTarget]
+          .filter(Boolean)
+          .map((s) => s.toLowerCase());
+        if (Array.isArray(this.data.deletedIds)) {
+          this.data.deletedIds = this.data.deletedIds.filter((id) => {
+            const low = String(id).toLowerCase();
+            for (const mk of myKeys) {
+              for (const tk of tKeys) {
+                if (low === `unfriend_${mk}_${tk}` || low === `unfriend_${tk}_${mk}`) {
+                  return false;
+                }
+              }
+            }
+            return true;
+          });
+        }
+      };
+
+      clearUnfriendTombstones(toUser);
+
       const nowIso = new Date().toISOString();
       const existing = this.data.locationShareRequests.find(
         (r) =>
@@ -2331,6 +2490,27 @@ class LocalBackendEngine {
       } else {
         delete req.expiresAt;
       }
+      if (body.response === 'accepted' || body.response === 'temporary') {
+        const fKeys = [req.fromUserId, req.fromUsername, req.fromUserName]
+          .filter(Boolean)
+          .map((s) => String(s).toLowerCase());
+        const tKeys = [req.toUserId, req.toUsername, req.toUserName]
+          .filter(Boolean)
+          .map((s) => String(s).toLowerCase());
+        if (Array.isArray(this.data.deletedIds)) {
+          this.data.deletedIds = this.data.deletedIds.filter((id) => {
+            const low = String(id).toLowerCase();
+            for (const fk of fKeys) {
+              for (const tk of tKeys) {
+                if (low === `unfriend_${fk}_${tk}` || low === `unfriend_${tk}_${fk}`) {
+                  return false;
+                }
+              }
+            }
+            return true;
+          });
+        }
+      }
       this.save(true);
       return { request: req } as unknown as T;
     }
@@ -2338,15 +2518,139 @@ class LocalBackendEngine {
     const deleteLocReqMatch = pathname.match(/^\/api\/locations\/requests\/([^/]+)$/);
     if (method === 'DELETE' && deleteLocReqMatch) {
       const reqId = decodeURIComponent(deleteLocReqMatch[1]);
-      this.data.locationShareRequests = this.data.locationShareRequests.filter(
-        (r) => r.id !== reqId
-      );
+      const reqLower = reqId.toLowerCase();
+      const removedIds: string[] = [];
+      this.data.locationShareRequests = this.data.locationShareRequests.filter((r) => {
+        if (
+          r.id === reqId ||
+          r.toUserId.toLowerCase() === reqLower ||
+          r.fromUserId.toLowerCase() === reqLower
+        ) {
+          removedIds.push(r.id);
+          return false;
+        }
+        return true;
+      });
       if (!this.data.deletedIds) this.data.deletedIds = [];
-      if (!this.data.deletedIds.includes(reqId)) {
-        this.data.deletedIds.push(reqId);
+      for (const id of [reqId, ...removedIds]) {
+        if (!this.data.deletedIds.includes(id)) {
+          this.data.deletedIds.push(id);
+        }
       }
       this.save(true);
       return { success: true } as unknown as T;
+    }
+
+    const deleteFriendMatch = pathname.match(/^\/api\/friends\/([^/]+)$/);
+    if (method === 'DELETE' && deleteFriendMatch) {
+      const friendId = decodeURIComponent(deleteFriendMatch[1]);
+      const targetLower = friendId.toLowerCase();
+      const uidLower = (currentUser?.id || '').toLowerCase();
+      const unameLower = (currentUser?.username || '').toLowerCase();
+      const fullNameLower = (currentUser?.fullName || '').toLowerCase();
+
+      const matchedFriendUser = this.data.users.find(
+        (u) =>
+          u.id.toLowerCase() === targetLower ||
+          u.username.toLowerCase() === targetLower ||
+          u.fullName.toLowerCase() === targetLower
+      );
+
+      const targetAllKeys = new Set<string>([targetLower]);
+      if (matchedFriendUser?.id) targetAllKeys.add(matchedFriendUser.id.toLowerCase());
+      if (matchedFriendUser?.username) targetAllKeys.add(matchedFriendUser.username.toLowerCase());
+      if (matchedFriendUser?.fullName) targetAllKeys.add(matchedFriendUser.fullName.toLowerCase());
+
+      const myAllKeys = new Set<string>();
+      if (uidLower) myAllKeys.add(uidLower);
+      if (unameLower) myAllKeys.add(unameLower);
+      if (fullNameLower) myAllKeys.add(fullNameLower);
+
+      const matchesMe = (cId?: string, cUser?: string, cName?: string) => {
+        if (myAllKeys.size === 0) return true;
+        return (
+          (cId && myAllKeys.has(cId.toLowerCase())) ||
+          (cUser && myAllKeys.has(cUser.toLowerCase())) ||
+          (cName && myAllKeys.has(cName.toLowerCase()))
+        );
+      };
+
+      const matchesFriend = (cId?: string, cUser?: string, cName?: string) => {
+        return (
+          (cId && targetAllKeys.has(cId.toLowerCase())) ||
+          (cUser && targetAllKeys.has(cUser.toLowerCase())) ||
+          (cName && targetAllKeys.has(cName.toLowerCase()))
+        );
+      };
+
+      if (!this.data.deletedIds) this.data.deletedIds = [];
+      let removedCount = 0;
+
+      this.data.locationShareRequests = this.data.locationShareRequests.filter((r) => {
+        const isPair =
+          (matchesMe(r.fromUserId, r.fromUsername, r.fromUserName) &&
+            matchesFriend(r.toUserId, r.toUsername, r.toUserName)) ||
+          (matchesMe(r.toUserId, r.toUsername, r.toUserName) &&
+            matchesFriend(r.fromUserId, r.fromUsername, r.fromUserName));
+        if (isPair) {
+          removedCount++;
+          if (!this.data.deletedIds!.includes(r.id)) {
+            this.data.deletedIds!.push(r.id);
+          }
+          if (r.fromUserId && !myAllKeys.has(r.fromUserId.toLowerCase())) {
+            targetAllKeys.add(r.fromUserId.toLowerCase());
+          }
+          if (r.toUserId && !myAllKeys.has(r.toUserId.toLowerCase())) {
+            targetAllKeys.add(r.toUserId.toLowerCase());
+          }
+          return false;
+        }
+        return true;
+      });
+
+      // Remove deleted friend's cached location from local map state immediately
+      for (const [locKey, locVal] of Object.entries(this.data.locations || {})) {
+        if (
+          targetAllKeys.has(locKey.toLowerCase()) ||
+          (locVal?.userId && targetAllKeys.has(String(locVal.userId).toLowerCase())) ||
+          (locVal?.username && targetAllKeys.has(String(locVal.username).toLowerCase())) ||
+          (locVal?.fullName && targetAllKeys.has(String(locVal.fullName).toLowerCase()))
+        ) {
+          delete this.data.locations[locKey];
+        }
+      }
+
+      // Record unfriend tombstones for all identifier combinations
+      for (const mk of myAllKeys) {
+        for (const tk of targetAllKeys) {
+          const unfriendKey = `unfriend_${mk}_${tk}`;
+          if (!this.data.deletedIds.includes(unfriendKey)) {
+            this.data.deletedIds.push(unfriendKey);
+          }
+        }
+      }
+
+      if (typeof window !== 'undefined' && typeof localStorage !== 'undefined') {
+        try {
+          const storageKeys = ['beacon_removed_friends_global'];
+          if (currentUser?.id) storageKeys.push(`beacon_removed_friends_${currentUser.id}`);
+          for (const sk of storageKeys) {
+            const prevList: string[] = JSON.parse(localStorage.getItem(sk) || '[]');
+            const merged = Array.from(new Set([...prevList, ...Array.from(targetAllKeys)]));
+            localStorage.setItem(sk, JSON.stringify(merged));
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      this.save(true);
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(
+          new CustomEvent('beacon:friends-updated', { detail: { removedFriendId: friendId } })
+        );
+      }
+      return { success: true, removedCount } as unknown as T;
     }
 
     // 13. COMMUNITY REPORTS & ADMIN
@@ -2392,6 +2696,454 @@ class LocalBackendEngine {
         this.save();
       }
       return { success: true } as unknown as T;
+    }
+
+    // 14. CROWDZONE MODULE ENDPOINTS
+    const buildEligibleSignals = () => {
+      const signals: Array<{
+        id?: string;
+        userId: string;
+        latitude: number;
+        longitude: number;
+        accuracy: number;
+        speed?: number | null;
+        timestamp: string;
+        contributesToCrowd?: boolean;
+      }> = [];
+
+      const canContribute = (uid: string): boolean => {
+        const usr = this.data.users.find((u) => u.id === uid);
+        if (usr && usr.privacy?.locationSharingEnabled === false) return false;
+        const st = (this.data.userSettings || {})[uid];
+        if (st && st.contributeAnonymousCrowdSignals === false) return false;
+        return true;
+      };
+
+      for (const [uid, loc] of Object.entries(this.data.locations || {})) {
+        if (!loc) continue;
+        signals.push({
+          id: `live-${uid}`,
+          userId: loc.userId || uid,
+          latitude: loc.latitude,
+          longitude: loc.longitude,
+          accuracy: loc.accuracy,
+          speed: loc.speed,
+          timestamp: loc.updated_at || loc.timestamp,
+          contributesToCrowd: canContribute(loc.userId || uid),
+        });
+      }
+      for (const hist of this.data.locationHistory || []) {
+        if (!hist) continue;
+        signals.push({
+          id: hist.id,
+          userId: hist.userId,
+          latitude: hist.latitude,
+          longitude: hist.longitude,
+          accuracy: hist.accuracy,
+          speed: hist.speed,
+          timestamp: hist.timestamp,
+          contributesToCrowd: canContribute(hist.userId),
+        });
+      }
+      return signals;
+    };
+
+    const ensureUserSettings = (uid: string): CrowdZoneUserSettings => {
+      if (!this.data.userSettings) this.data.userSettings = {};
+      if (!this.data.userSettings[uid]) {
+        this.data.userSettings[uid] = {
+          userId: uid,
+          contributeAnonymousCrowdSignals: true,
+          notificationRadiusKm: 5,
+          crowdAlertsEnabled: true,
+          emergencyAlertsEnabled: true,
+          communityReportAlertsEnabled: true,
+          updatedAt: new Date().toISOString(),
+        };
+      }
+      return this.data.userSettings[uid];
+    };
+
+    if (method === 'GET' && pathname === '/api/crowdzone/overview') {
+      const uid = currentUser?.id || 'guest';
+      const windowKey = ((query.get('window') || '1h') as CrowdTimeWindow);
+      const precision = query.get('precision') ? Number(query.get('precision')) : 6;
+      const lat = query.get('lat') ? Number(query.get('lat')) : undefined;
+      const lng = query.get('lng') ? Number(query.get('lng')) : undefined;
+      const radiusKm = query.get('radiusKm') ? Number(query.get('radiusKm')) : undefined;
+      const cellId = query.get('cellId') || undefined;
+
+      const signals = buildEligibleSignals();
+      const reports = (this.data.crowdReports || []).filter((r) => r.status !== 'removed');
+      const cells = aggregateCrowdCells({
+        signals,
+        reports,
+        window: windowKey,
+        precision,
+        centerLat: lat,
+        centerLng: lng,
+        radiusKm,
+      });
+      const history = buildCrowdHistorySeries({
+        signals,
+        reports,
+        window: windowKey,
+        cellId,
+        precision,
+      });
+      const history24h = buildCrowdHistorySeries({
+        signals,
+        reports,
+        window: '24h',
+        cellId: cellId || cells[0]?.cellId,
+        precision,
+      });
+      const predictions = predictCrowdActivitySeries({
+        historyBuckets: history24h,
+        currentTrend: cells[0]?.trend || 'stable',
+      });
+      const posts = (this.data.crowdPosts || [])
+        .filter((p) => p.status !== 'removed')
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      const savedPlaces = (this.data.crowdSavedPlaces || []).filter((p) => p.userId === uid);
+      const settings = ensureUserSettings(uid);
+
+      return {
+        window: windowKey,
+        cells,
+        history,
+        predictions,
+        reports,
+        posts,
+        savedPlaces,
+        settings,
+        emergencyAlerts: (this.data.emergencyAlerts || []).filter((a) => a.status === 'active'),
+        serverTimestamp: new Date().toISOString(),
+      } as unknown as T;
+    }
+
+    if (method === 'GET' && pathname === '/api/crowdzone/cells') {
+      const windowKey = ((query.get('window') || '1h') as CrowdTimeWindow);
+      const precision = query.get('precision') ? Number(query.get('precision')) : 6;
+      const lat = query.get('lat') ? Number(query.get('lat')) : undefined;
+      const lng = query.get('lng') ? Number(query.get('lng')) : undefined;
+      const radiusKm = query.get('radiusKm') ? Number(query.get('radiusKm')) : undefined;
+      const signals = buildEligibleSignals();
+      const reports = (this.data.crowdReports || []).filter((r) => r.status !== 'removed');
+      const cells = aggregateCrowdCells({
+        signals,
+        reports,
+        window: windowKey,
+        precision,
+        centerLat: lat,
+        centerLng: lng,
+        radiusKm,
+      });
+      return { cells, window: windowKey, updatedAt: new Date().toISOString() } as unknown as T;
+    }
+
+    if (method === 'GET' && pathname === '/api/crowdzone/history') {
+      const windowKey = ((query.get('window') || '24h') as CrowdTimeWindow);
+      const cellId = query.get('cellId') || undefined;
+      const precision = query.get('precision') ? Number(query.get('precision')) : 6;
+      const signals = buildEligibleSignals();
+      const reports = (this.data.crowdReports || []).filter((r) => r.status !== 'removed');
+      const history = buildCrowdHistorySeries({
+        signals,
+        reports,
+        window: windowKey,
+        cellId,
+        precision,
+      });
+      return { history, window: windowKey } as unknown as T;
+    }
+
+    if (method === 'GET' && pathname === '/api/crowdzone/predictions') {
+      const cellId = query.get('cellId') || undefined;
+      const precision = query.get('precision') ? Number(query.get('precision')) : 6;
+      const signals = buildEligibleSignals();
+      const reports = (this.data.crowdReports || []).filter((r) => r.status !== 'removed');
+      const history24h = buildCrowdHistorySeries({
+        signals,
+        reports,
+        window: '24h',
+        cellId,
+        precision,
+      });
+      const predictions = predictCrowdActivitySeries({
+        historyBuckets: history24h,
+        currentTrend: 'stable',
+      });
+      return { predictions } as unknown as T;
+    }
+
+    if (method === 'GET' && pathname === '/api/crowdzone/reports') {
+      const reports = (this.data.crowdReports || [])
+        .filter((r) => r.status !== 'removed')
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      return { reports } as unknown as T;
+    }
+
+    if (method === 'POST' && pathname === '/api/crowdzone/reports') {
+      if (!currentUser) throw this.createError('Unauthorized', 401);
+      const lat = Number(body.latitude);
+      const lng = Number(body.longitude);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        throw this.createError('Valid GPS coordinates are required', 400);
+      }
+      const nowIso = new Date().toISOString();
+      const ttlMs = Math.max(15, Math.min(720, Number(body.ttlMinutes || 120))) * 60 * 1000;
+      const report: CrowdZoneCommunityReport = {
+        id: generateId('cz-rep'),
+        reporterId: currentUser.id,
+        reporterName: currentUser.fullName || currentUser.username,
+        reporterAvatar: currentUser.avatarUrl,
+        cellId: encodeGeohash(lat, lng, 6),
+        placeName: String(body.placeName || 'Pinned Location').trim().slice(0, 120),
+        category: (body.category || 'crowd_level') as CrowdReportCategory,
+        crowdLevel: (body.crowdLevel || 'Moderate') as Exclude<CrowdLevel, 'Unknown'>,
+        description: String(body.description || '').trim().slice(0, 500),
+        latitude: Number(lat.toFixed(6)),
+        longitude: Number(lng.toFixed(6)),
+        verifiedBy: [currentUser.id],
+        verificationCount: 1,
+        confidenceScore: 70,
+        createdAt: nowIso,
+        expiresAt: new Date(Date.now() + ttlMs).toISOString(),
+        status: 'active',
+      };
+      if (!Array.isArray(this.data.crowdReports)) this.data.crowdReports = [];
+      this.data.crowdReports.unshift(report);
+      this.save(true);
+      return { report } as unknown as T;
+    }
+
+    const verifyReportMatch = pathname.match(/^\/api\/crowdzone\/reports\/([^/]+)\/verify$/);
+    if (method === 'POST' && verifyReportMatch) {
+      if (!currentUser) throw this.createError('Unauthorized', 401);
+      const repId = decodeURIComponent(verifyReportMatch[1]);
+      const report = (this.data.crowdReports || []).find((r) => r.id === repId);
+      if (!report) throw this.createError('Report not found', 404);
+      if (!Array.isArray(report.verifiedBy)) report.verifiedBy = [];
+      if (!report.verifiedBy.includes(currentUser.id)) {
+        report.verifiedBy.push(currentUser.id);
+      }
+      report.verificationCount = report.verifiedBy.length;
+      report.confidenceScore = Math.min(99, 65 + report.verificationCount * 8);
+      this.save(true);
+      return { report } as unknown as T;
+    }
+
+    const deleteCrowdReportMatch = pathname.match(/^\/api\/crowdzone\/reports\/([^/]+)$/);
+    if (method === 'DELETE' && deleteCrowdReportMatch) {
+      if (!currentUser) throw this.createError('Unauthorized', 401);
+      const repId = decodeURIComponent(deleteCrowdReportMatch[1]);
+      this.data.crowdReports = (this.data.crowdReports || []).filter((r) => r.id !== repId);
+      if (!Array.isArray(this.data.deletedIds)) this.data.deletedIds = [];
+      this.data.deletedIds.push(repId);
+      this.save(true);
+      return { success: true } as unknown as T;
+    }
+
+    if (method === 'GET' && pathname === '/api/crowdzone/posts') {
+      const posts = (this.data.crowdPosts || [])
+        .filter((p) => p.status !== 'removed')
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      return { posts } as unknown as T;
+    }
+
+    if (method === 'POST' && pathname === '/api/crowdzone/posts') {
+      if (!currentUser) throw this.createError('Unauthorized', 401);
+      const hasCoords = Number.isFinite(Number(body.latitude)) && Number.isFinite(Number(body.longitude));
+      const lat = hasCoords ? Number(body.latitude) : undefined;
+      const lng = hasCoords ? Number(body.longitude) : undefined;
+      const post: CrowdZonePost = {
+        id: generateId('cz-post'),
+        authorId: currentUser.id,
+        authorName: currentUser.fullName || currentUser.username,
+        authorAvatar: currentUser.avatarUrl,
+        placeName: body.placeName ? String(body.placeName).trim().slice(0, 120) : undefined,
+        cellId: lat !== undefined && lng !== undefined ? encodeGeohash(lat, lng, 6) : undefined,
+        latitude: lat !== undefined ? Number(lat.toFixed(6)) : undefined,
+        longitude: lng !== undefined ? Number(lng.toFixed(6)) : undefined,
+        crowdLevel: body.crowdLevel,
+        text: String(body.text || '').trim().slice(0, 800),
+        likes: [],
+        reactions: {},
+        comments: [],
+        createdAt: new Date().toISOString(),
+        status: 'active',
+      };
+      if (!Array.isArray(this.data.crowdPosts)) this.data.crowdPosts = [];
+      this.data.crowdPosts.unshift(post);
+      this.save(true);
+      return { post } as unknown as T;
+    }
+
+    const postCommentMatch = pathname.match(/^\/api\/crowdzone\/posts\/([^/]+)\/comments$/);
+    if (method === 'POST' && postCommentMatch) {
+      if (!currentUser) throw this.createError('Unauthorized', 401);
+      const postId = decodeURIComponent(postCommentMatch[1]);
+      const post = (this.data.crowdPosts || []).find((p) => p.id === postId);
+      if (!post) throw this.createError('Post not found', 404);
+      const comment: CrowdZoneComment = {
+        id: generateId('cz-cmt'),
+        postId,
+        authorId: currentUser.id,
+        authorName: currentUser.fullName || currentUser.username,
+        authorAvatar: currentUser.avatarUrl,
+        text: String(body.text || '').trim().slice(0, 400),
+        createdAt: new Date().toISOString(),
+      };
+      if (!Array.isArray(post.comments)) post.comments = [];
+      post.comments.push(comment);
+      this.save(true);
+      return { post } as unknown as T;
+    }
+
+    const postReactMatch = pathname.match(/^\/api\/crowdzone\/posts\/([^/]+)\/react$/);
+    if (method === 'POST' && postReactMatch) {
+      if (!currentUser) throw this.createError('Unauthorized', 401);
+      const postId = decodeURIComponent(postReactMatch[1]);
+      const post = (this.data.crowdPosts || []).find((p) => p.id === postId);
+      if (!post) throw this.createError('Post not found', 404);
+      const emoji = String(body.emoji || '👍').trim().slice(0, 8);
+      if (!post.reactions) post.reactions = {};
+      if (!Array.isArray(post.reactions[emoji])) post.reactions[emoji] = [];
+      const idx = post.reactions[emoji].indexOf(currentUser.id);
+      if (idx >= 0) post.reactions[emoji].splice(idx, 1);
+      else post.reactions[emoji].push(currentUser.id);
+      this.save(true);
+      return { post } as unknown as T;
+    }
+
+    const deletePostMatch = pathname.match(/^\/api\/crowdzone\/posts\/([^/]+)$/);
+    if (method === 'DELETE' && deletePostMatch) {
+      if (!currentUser) throw this.createError('Unauthorized', 401);
+      const postId = decodeURIComponent(deletePostMatch[1]);
+      this.data.crowdPosts = (this.data.crowdPosts || []).filter((p) => p.id !== postId);
+      if (!Array.isArray(this.data.deletedIds)) this.data.deletedIds = [];
+      this.data.deletedIds.push(postId);
+      this.save(true);
+      return { success: true } as unknown as T;
+    }
+
+    if (method === 'GET' && pathname === '/api/crowdzone/places') {
+      const uid = currentUser?.id || 'guest';
+      const places = (this.data.crowdSavedPlaces || []).filter((p) => p.userId === uid);
+      return { places } as unknown as T;
+    }
+
+    if (method === 'POST' && pathname === '/api/crowdzone/places') {
+      if (!currentUser) throw this.createError('Unauthorized', 401);
+      const lat = Number(body.latitude);
+      const lng = Number(body.longitude);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        throw this.createError('Valid coordinates are required', 400);
+      }
+      const place: CrowdZoneSavedPlace = {
+        id: generateId('cz-place'),
+        userId: currentUser.id,
+        name: String(body.name || 'Saved Location').trim().slice(0, 120),
+        customLabel: body.customLabel ? String(body.customLabel).trim().slice(0, 60) : undefined,
+        address: String(body.address || '').trim().slice(0, 240),
+        category: String(body.category || 'general').trim(),
+        latitude: Number(lat.toFixed(6)),
+        longitude: Number(lng.toFixed(6)),
+        cellId: encodeGeohash(lat, lng, 6),
+        notifyWhenLevel: (body.notifyWhenLevel || 'Quiet') as Exclude<CrowdLevel, 'Unknown'>,
+        alertsEnabled: body.alertsEnabled ?? true,
+        createdAt: new Date().toISOString(),
+      };
+      if (!Array.isArray(this.data.crowdSavedPlaces)) this.data.crowdSavedPlaces = [];
+      this.data.crowdSavedPlaces.unshift(place);
+      this.save(true);
+      return { place } as unknown as T;
+    }
+
+    const deleteCrowdPlaceMatch = pathname.match(/^\/api\/crowdzone\/places\/([^/]+)$/);
+    if (method === 'DELETE' && deleteCrowdPlaceMatch) {
+      if (!currentUser) throw this.createError('Unauthorized', 401);
+      const placeId = decodeURIComponent(deleteCrowdPlaceMatch[1]);
+      this.data.crowdSavedPlaces = (this.data.crowdSavedPlaces || []).filter(
+        (p) => !(p.id === placeId && p.userId === currentUser.id)
+      );
+      if (!Array.isArray(this.data.deletedIds)) this.data.deletedIds = [];
+      this.data.deletedIds.push(placeId);
+      this.save(true);
+      return { success: true } as unknown as T;
+    }
+
+    if (method === 'GET' && pathname === '/api/crowdzone/settings') {
+      const uid = currentUser?.id || 'guest';
+      return { settings: ensureUserSettings(uid) } as unknown as T;
+    }
+
+    if (method === 'PUT' && pathname === '/api/crowdzone/settings') {
+      if (!currentUser) throw this.createError('Unauthorized', 401);
+      const existing = ensureUserSettings(currentUser.id);
+      const updated: CrowdZoneUserSettings = {
+        ...existing,
+        ...(typeof body.contributeAnonymousCrowdSignals === 'boolean'
+          ? { contributeAnonymousCrowdSignals: body.contributeAnonymousCrowdSignals }
+          : {}),
+        ...(typeof body.notificationRadiusKm === 'number'
+          ? { notificationRadiusKm: Math.max(0.5, Math.min(50, body.notificationRadiusKm)) }
+          : {}),
+        ...(typeof body.crowdAlertsEnabled === 'boolean'
+          ? { crowdAlertsEnabled: body.crowdAlertsEnabled }
+          : {}),
+        ...(typeof body.emergencyAlertsEnabled === 'boolean'
+          ? { emergencyAlertsEnabled: body.emergencyAlertsEnabled }
+          : {}),
+        ...(typeof body.communityReportAlertsEnabled === 'boolean'
+          ? { communityReportAlertsEnabled: body.communityReportAlertsEnabled }
+          : {}),
+        updatedAt: new Date().toISOString(),
+      };
+      this.data.userSettings![currentUser.id] = updated;
+      this.save(true);
+      return { settings: updated } as unknown as T;
+    }
+
+    if (method === 'GET' && pathname === '/api/admin/crowdzone') {
+      return {
+        reports: this.data.crowdReports || [],
+        posts: this.data.crowdPosts || [],
+        moderationLogs: this.data.moderationLogs || [],
+      } as unknown as T;
+    }
+
+    if (method === 'POST' && pathname === '/api/admin/crowdzone/moderate') {
+      if (!currentUser) throw this.createError('Unauthorized', 401);
+      if (body.targetType === 'crowd_report') {
+        const rep = (this.data.crowdReports || []).find((r) => r.id === body.targetId);
+        if (rep) {
+          if (body.action === 'remove') rep.status = 'removed';
+          else if (body.action === 'expire') rep.status = 'expired';
+          else if (body.action === 'approve') rep.status = 'active';
+        }
+      } else if (body.targetType === 'crowd_post') {
+        const post = (this.data.crowdPosts || []).find((p) => p.id === body.targetId);
+        if (post) {
+          if (body.action === 'remove') post.status = 'removed';
+          else if (body.action === 'approve') post.status = 'active';
+        }
+      }
+      const entry: ModerationLogEntry = {
+        id: generateId('mod'),
+        moderatorId: currentUser.id,
+        moderatorName: currentUser.fullName || currentUser.username,
+        targetType: body.targetType,
+        targetId: body.targetId,
+        action: body.action,
+        reason: String(body.reason || 'Administrative review').slice(0, 240),
+        createdAt: new Date().toISOString(),
+      };
+      if (!Array.isArray(this.data.moderationLogs)) this.data.moderationLogs = [];
+      this.data.moderationLogs.unshift(entry);
+      this.save(true);
+      return { log: entry } as unknown as T;
     }
 
     return {} as T;

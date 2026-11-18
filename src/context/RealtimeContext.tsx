@@ -375,10 +375,12 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           };
         });
       }
-      const peersOnly = locations.filter((l) => l.userId !== currentUserId);
+      const peersOnly = locations.filter(
+        (l) => l.userId !== currentUserId && !localBackend.isUserUnfriendedOrBlocked(currentUserId, l)
+      );
       const nextList = myLocationRef.current
         ? [...peersOnly, myLocationRef.current]
-        : locations;
+        : peersOnly;
 
       setUserLocations((prev) => {
         if (prev.length === nextList.length) {
@@ -469,6 +471,15 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       }, coalesceDelayMs);
     };
     window.addEventListener('beacon:cloud-sync-updated', onCloudSyncUpdated);
+
+    const onFriendsUpdated = () => {
+      if (!isMounted) return;
+      setUserLocations((prev) =>
+        prev.filter((l) => l.userId === currentUserId || !localBackend.isUserUnfriendedOrBlocked(currentUserId, l))
+      );
+      syncFromLocalSnapshot();
+    };
+    window.addEventListener('beacon:friends-updated', onFriendsUpdated);
 
     let heartbeatTimer: any = null;
 
@@ -626,6 +637,7 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       if (syncCoalesceTimer) clearTimeout(syncCoalesceTimer);
       if (heartbeatTimer) clearInterval(heartbeatTimer);
       window.removeEventListener('beacon:cloud-sync-updated', onCloudSyncUpdated);
+      window.removeEventListener('beacon:friends-updated', onFriendsUpdated);
       window.removeEventListener('online', handleLifecycleResume);
       window.removeEventListener('offline', handleNetworkOffline);
       window.removeEventListener('focus', handleLifecycleResume);
@@ -647,7 +659,8 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             Number.isFinite(l.latitude) &&
             Number.isFinite(l.longitude) &&
             Number.isFinite(l.accuracy) &&
-            l.accuracy <= 100 &&
+            l.accuracy <= 5000 &&
+            (l.userId === user?.id || !localBackend.isUserUnfriendedOrBlocked(user?.id, l)) &&
             (l.userId !== user?.id || Boolean(myLocationRef.current))
         );
         const ownDbRow = data.userLocations.find((l) => l.userId === user?.id);
@@ -674,7 +687,12 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
       case 'location:broadcast': {
         const loc = data.location;
-        if (!Number.isFinite(loc.latitude) || !Number.isFinite(loc.longitude) || loc.accuracy > 100) {
+        if (
+          !Number.isFinite(loc.latitude) ||
+          !Number.isFinite(loc.longitude) ||
+          loc.accuracy > 5000 ||
+          (loc.userId !== user?.id && localBackend.isUserUnfriendedOrBlocked(user?.id, loc))
+        ) {
           break;
         }
         if (loc.userId === user?.id) {
@@ -833,8 +851,8 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     }
   };
 
-  // Step 3b & 3c: Strict position validation & database persistence
-  const MAX_ACCURACY_M = 100;
+  // Step 3b & 3c: Coordinate validation & database persistence (allows indoor/Web Wi-Fi up to 5000m)
+  const MAX_ACCURACY_M = 5000;
 
   const processPositionFix = useCallback(
     (
@@ -1496,6 +1514,7 @@ export const RealtimeProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const clearChat = useCallback(async (roomId?: string, recipientId?: string) => {
     try {
       if (roomId) {
+        if (roomId === 'room-universal') return;
         await api.delete(`/api/rooms/${roomId}/messages`);
         setChatMessages((prev) => ({ ...prev, [roomId]: [] }));
       } else if (recipientId) {

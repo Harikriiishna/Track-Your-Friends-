@@ -3,7 +3,7 @@ import { useAuth } from '../../context/AuthContext.tsx';
 import { useRealtime } from '../../context/RealtimeContext.tsx';
 import type { Room, RoomMember, UserRole, SavedPlace, MessageAttachment } from '../../types.ts';
 import { api } from '../../utils/api.ts';
-import { localBackend } from '../../utils/localBackend.ts';
+import { useRoomsQuery } from '../../hooks/useRoomsQuery.ts';
 import { calculateDistanceMeters, formatDistance } from '../../utils/geo.ts';
 import { VoiceRecorder, sound, triggerHaptic } from '../../utils/audio.ts';
 import { AudioWaveformVisualizer, VoiceMessagePlayer } from '../Chat/AudioWaveformVisualizer.tsx';
@@ -145,8 +145,20 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
   } = useRealtime();
 
   const toast = useToast();
-  const [rooms, setRooms] = useState<Room[]>([]);
-  const [activeRoomDetails, setActiveRoomDetails] = useState<Room | null>(null);
+  const {
+    rooms,
+    activeRoomDetails,
+    isLoading,
+    createRoomMutation,
+    joinRoomMutation,
+    leaveRoomMutation,
+    changeRoleMutation,
+    kickMemberMutation,
+  } = useRoomsQuery({
+    userId: user?.id,
+    selectedRoomId,
+    onSelectRoom,
+  });
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showJoinModal, setShowJoinModal] = useState(false);
   const [showRoomMap, setShowRoomMap] = useState(false);
@@ -158,7 +170,6 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
   const activeRoomSectionRef = React.useRef<HTMLDivElement>(null);
   const voiceNoteSectionRef = React.useRef<HTMLDivElement>(null);
   const roomGeofenceSectionRef = React.useRef<HTMLDivElement>(null);
-  const [isLoading, setIsLoading] = useState(true);
   const [quickHubMessage, setQuickHubMessage] = useState('');
 
   // Room Voice Note Recorder State
@@ -1119,126 +1130,21 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
     return Array.from(memberMap.values());
   }, [searchQuery, activeRoomDetails, userLocations, onlineUserIds, user, myLocation]);
 
-  // Fetch rooms with signature diffing
-  const loadRooms = React.useCallback(async (showSpinner = false) => {
-    if (!user?.id) return;
-    try {
-      if (showSpinner) setIsLoading(true);
-      const res = await api.get<{ rooms: Room[] }>('/api/rooms');
-      if (Array.isArray(res?.rooms)) {
-        setRooms((prev) => {
-          const prevSig = prev.map((r) => `${r.id}:${r.name}:${r.memberCount}`).join('|');
-          const nextSig = res.rooms.map((r) => `${r.id}:${r.name}:${r.memberCount}`).join('|');
-          return prevSig === nextSig ? prev : res.rooms;
-        });
-        if (!selectedRoomId && res.rooms.length > 0) {
-          const customRoom = res.rooms.find((r) => r.id !== 'room-universal');
-          onSelectRoom(customRoom ? customRoom.id : res.rooms[0].id);
-        }
-      }
-    } catch (err) {
-      console.warn('Could not load rooms from backend, using cached rooms:', err);
-      const fallbackRooms = localBackend.getUserRooms(user.id);
-      if (fallbackRooms.length > 0) {
-        setRooms((prev) => (prev.length > 0 ? prev : fallbackRooms));
-        if (!selectedRoomId) {
-          const customRoom = fallbackRooms.find((r) => r.id !== 'room-universal');
-          onSelectRoom(customRoom ? customRoom.id : fallbackRooms[0].id);
-        }
-      }
-    } finally {
-      if (showSpinner) setIsLoading(false);
-    }
-  }, [user?.id, selectedRoomId, onSelectRoom]);
-
-  useEffect(() => {
-    loadRooms(true);
-    const onSync = () => {
-      loadRooms(false);
-    };
-    window.addEventListener('beacon:cloud-sync-updated', onSync);
-    return () => {
-      window.removeEventListener('beacon:cloud-sync-updated', onSync);
-    };
-  }, [loadRooms]);
-
-  // Fetch room details when selectedRoomId changes or when Cloud Firestore syncs new members
-  useEffect(() => {
-    if (!selectedRoomId) {
-      setActiveRoomDetails(null);
-      return;
-    }
-    let mounted = true;
-    async function loadDetails() {
-      try {
-        const res = await api.get<{ room: Room }>(`/api/rooms/${selectedRoomId}`);
-        if (!mounted || !res?.room) return;
-        setActiveRoomDetails((prev) => {
-          if (!prev || prev.id !== res.room.id) return res.room;
-          const prevMemSig = (prev.members || []).map((m) => `${m.userId}:${m.role}`).join('|');
-          const nextMemSig = (res.room.members || []).map((m) => `${m.userId}:${m.role}`).join('|');
-          if (
-            prev.name === res.room.name &&
-            prev.description === res.room.description &&
-            prev.memberCount === res.room.memberCount &&
-            prevMemSig === nextMemSig
-          ) {
-            return prev;
-          }
-          return res.room;
-        });
-      } catch (err) {
-        if (!mounted) return;
-        if (selectedRoomId === 'room-universal') {
-          setActiveRoomDetails((prev) =>
-            prev?.id === 'room-universal'
-              ? prev
-              : ({
-                  id: 'room-universal',
-                  name: '🌐 Universal Lounge',
-                  description:
-                    'The open global town square for everyone on Beacon. Coordinate live locations, chat across channels, and meet members worldwide.',
-                  ownerId: 'system',
-                  hasPassword: false,
-                  createdAt: '2026-01-01T00:00:00.000Z',
-                  memberCount: 1,
-                  isPrivate: false,
-                  isUniversal: true,
-                  members: [],
-                } as Room)
-          );
-        }
-      }
-    }
-    loadDetails();
-    window.addEventListener('beacon:cloud-sync-updated', loadDetails);
-    return () => {
-      mounted = false;
-      window.removeEventListener('beacon:cloud-sync-updated', loadDetails);
-    };
-  }, [selectedRoomId]);
-
   const handleCreateRoom = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
     try {
-      const res = await api.post<{ room: Room }>('/api/rooms', {
+      const createdRoom = await createRoomMutation({
         name: newRoomName.trim(),
         description: newRoomDesc.trim(),
         password: newRoomPassword.trim(),
       });
-      setRooms((prev) =>
-        prev.some((r) => r.id === res.room.id)
-          ? prev.map((r) => (r.id === res.room.id ? res.room : r))
-          : [...prev, res.room]
-      );
-      setActiveRoomDetails(res.room);
-      onSelectRoom(res.room.id);
+      onSelectRoom(createdRoom.id);
       setShowCreateModal(false);
       setNewRoomName('');
       setNewRoomDesc('');
       setNewRoomPassword('');
-      toast.success(`Room "${res.room.name}" created — you are now inside`);
+      toast.success(`Room "${createdRoom.name}" created — you are now inside`);
     } catch (err: any) {
       setErrorMsg(err.message || 'Failed to create room');
     }
@@ -1248,21 +1154,15 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
     e.preventDefault();
     setErrorMsg(null);
     try {
-      const res = await api.post<{ room: Room }>('/api/rooms/join', {
+      const joinedRoom = await joinRoomMutation({
         roomId: joinRoomId.trim(),
         password: joinPassword.trim(),
       });
-      setRooms((prev) =>
-        prev.some((r) => r.id === res.room.id)
-          ? prev.map((r) => (r.id === res.room.id ? res.room : r))
-          : [...prev, res.room]
-      );
-      setActiveRoomDetails(res.room);
-      onSelectRoom(res.room.id);
+      onSelectRoom(joinedRoom.id);
       setShowJoinModal(false);
       setJoinRoomId('');
       setJoinPassword('');
-      toast.success(`Joined "${res.room.name}" — you will stay in this room until you press Leave`);
+      toast.success(`Joined "${joinedRoom.name}" — you will stay in this room until you press Leave`);
     } catch (err: any) {
       setErrorMsg(err.message || 'Failed to join room');
     }
@@ -1270,9 +1170,7 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
 
   const handleLeaveRoom = async (roomId: string) => {
     try {
-      await api.post(`/api/rooms/${roomId}/leave`);
-      const remaining = rooms.filter((r) => r.id !== roomId);
-      setRooms(remaining);
+      const remaining = await leaveRoomMutation(roomId);
       if (selectedRoomId === roomId) {
         const nextRoom = remaining.find((r) => r.id !== 'room-universal') || remaining[0];
         onSelectRoom(nextRoom ? nextRoom.id : 'room-universal');
@@ -1286,9 +1184,7 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
   const handleChangeRole = async (targetUserId: string, newRole: UserRole) => {
     if (!selectedRoomId) return;
     try {
-      await api.post(`/api/rooms/${selectedRoomId}/roles`, { targetUserId, newRole });
-      const res = await api.get<{ room: Room }>(`/api/rooms/${selectedRoomId}`);
-      setActiveRoomDetails(res.room);
+      await changeRoleMutation(selectedRoomId, targetUserId, newRole);
       toast.success(`Role updated to ${newRole}`);
     } catch (err: any) {
       toast.error(err.message || 'Failed to change role');
@@ -1298,9 +1194,7 @@ export const RoomsManager: React.FC<RoomsManagerProps> = ({
   const handleKickMember = async (targetUserId: string, memberName: string) => {
     if (!selectedRoomId) return;
     try {
-      await api.kickRoomMember(selectedRoomId, targetUserId);
-      const res = await api.get<{ room: Room }>(`/api/rooms/${selectedRoomId}`);
-      setActiveRoomDetails(res.room);
+      await kickMemberMutation(selectedRoomId, targetUserId);
       toast.success(`${memberName} was removed from the room`);
     } catch (err: any) {
       toast.error(err.message || 'Failed to remove member');

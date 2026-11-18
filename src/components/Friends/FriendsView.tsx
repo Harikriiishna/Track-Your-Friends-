@@ -24,6 +24,7 @@ import {
   Sparkles,
   Eye,
   Heart,
+  Trash2,
 } from 'lucide-react';
 
 interface FriendsViewProps {
@@ -67,6 +68,18 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
   const [isSending, setIsSending] = useState(false);
   const [copiedMyId, setCopiedMyId] = useState(false);
   const [previewFriend, setPreviewFriend] = useState<FriendDirectoryItem | null>(null);
+  const [removedFriendIds, setRemovedFriendIds] = useState<string[]>(() => {
+    if (typeof window === 'undefined') return [];
+    try {
+      const globalRaw = localStorage.getItem('beacon_removed_friends_global');
+      const userRaw = user?.id ? localStorage.getItem(`beacon_removed_friends_${user.id}`) : null;
+      const gList: string[] = globalRaw ? JSON.parse(globalRaw) : [];
+      const uList: string[] = userRaw ? JSON.parse(userRaw) : [];
+      return Array.from(new Set([...gList, ...uList].map((s) => String(s).toLowerCase())));
+    } catch {
+      return [];
+    }
+  });
 
   const loadFriendsData = async () => {
     if (!user || !api.getToken()) return;
@@ -86,9 +99,24 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
 
   useEffect(() => {
     void loadFriendsData();
-    const onSync = () => void loadFriendsData();
+    const onSync = () => {
+      void loadFriendsData();
+      try {
+        const globalRaw = localStorage.getItem('beacon_removed_friends_global');
+        const userRaw = user?.id ? localStorage.getItem(`beacon_removed_friends_${user.id}`) : null;
+        const gList: string[] = globalRaw ? JSON.parse(globalRaw) : [];
+        const uList: string[] = userRaw ? JSON.parse(userRaw) : [];
+        setRemovedFriendIds(Array.from(new Set([...gList, ...uList].map((s) => String(s).toLowerCase()))));
+      } catch {
+        // ignore
+      }
+    };
     window.addEventListener('beacon:cloud-sync-updated', onSync);
-    return () => window.removeEventListener('beacon:cloud-sync-updated', onSync);
+    window.addEventListener('beacon:friends-updated', onSync);
+    return () => {
+      window.removeEventListener('beacon:cloud-sync-updated', onSync);
+      window.removeEventListener('beacon:friends-updated', onSync);
+    };
   }, [user?.id]);
 
   const isCurrentUserMatch = React.useCallback(
@@ -176,8 +204,16 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
       }
     });
 
+    const removedSet = new Set(removedFriendIds.map((id) => id.toLowerCase()));
     const q = searchQuery.trim().toLowerCase();
     return Array.from(map.values()).filter((f) => {
+      if (
+        removedSet.has(f.userId.toLowerCase()) ||
+        removedSet.has(f.username.toLowerCase()) ||
+        removedSet.has(f.fullName.toLowerCase())
+      ) {
+        return false;
+      }
       if (statusFilter === 'online' && !f.isOnline) return false;
       if (statusFilter === 'sharing' && !f.isSharingLocation) return false;
       if (!q) return true;
@@ -187,7 +223,15 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
         f.userId.toLowerCase().includes(q)
       );
     });
-  }, [requests, userLocations, onlineUserIds, isCurrentUserMatch, searchQuery, statusFilter]);
+  }, [
+    requests,
+    userLocations,
+    onlineUserIds,
+    isCurrentUserMatch,
+    searchQuery,
+    statusFilter,
+    removedFriendIds,
+  ]);
 
   const incomingPending = useMemo(
     () =>
@@ -221,6 +265,25 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
         username: cleaned,
       });
       setRequests((prev) => [res.request, ...prev.filter((r) => r.id !== res.request.id)]);
+      setRemovedFriendIds((prev) => {
+        const next = prev.filter(
+          (id) =>
+            id !== cleaned.toLowerCase() &&
+            id !== res.request.toUserId.toLowerCase() &&
+            id !== (res.request.toUsername || '').toLowerCase() &&
+            id !== (res.request.toUserName || '').toLowerCase()
+        );
+        try {
+          localStorage.setItem('beacon_removed_friends_global', JSON.stringify(next));
+          if (user?.id) {
+            localStorage.setItem(`beacon_removed_friends_${user.id}`, JSON.stringify(next));
+          }
+        } catch {
+          // ignore
+        }
+        return next;
+      });
+      window.dispatchEvent(new CustomEvent('beacon:friends-updated'));
       setTargetIdentifier('');
       toast.success(`Friend & location request sent to "${cleaned}"!`);
       setSubTab('requests');
@@ -241,6 +304,31 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
         response,
       });
       setRequests((prev) => prev.map((r) => (r.id === requestId ? res.request : r)));
+      if (response === 'accepted' || response === 'temporary') {
+        const peerKeys = [
+          res.request.fromUserId,
+          res.request.fromUsername,
+          res.request.fromUserName,
+          res.request.toUserId,
+          res.request.toUsername,
+          res.request.toUserName,
+        ]
+          .filter(Boolean)
+          .map((s) => String(s).toLowerCase());
+        setRemovedFriendIds((prev) => {
+          const next = prev.filter((id) => !peerKeys.includes(id));
+          try {
+            localStorage.setItem('beacon_removed_friends_global', JSON.stringify(next));
+            if (user?.id) {
+              localStorage.setItem(`beacon_removed_friends_${user.id}`, JSON.stringify(next));
+            }
+          } catch {
+            // ignore
+          }
+          return next;
+        });
+        window.dispatchEvent(new CustomEvent('beacon:friends-updated'));
+      }
       if (response === 'accepted') {
         toast.success('Friend request accepted — live location sharing active!');
       } else if (response === 'temporary') {
@@ -250,6 +338,58 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
       }
     } catch (err: any) {
       toast.error(err?.message || 'Failed to respond to request');
+    }
+  };
+
+  const handleDeleteFriend = async (friend: FriendDirectoryItem) => {
+    const targetLower = friend.userId.toLowerCase();
+    const userLower = friend.username.toLowerCase();
+    const nameLower = friend.fullName.toLowerCase();
+    setRemovedFriendIds((prev) => {
+      const next = Array.from(new Set([...prev, targetLower, userLower, nameLower].filter(Boolean)));
+      try {
+        localStorage.setItem('beacon_removed_friends_global', JSON.stringify(next));
+        if (user?.id) {
+          localStorage.setItem(`beacon_removed_friends_${user.id}`, JSON.stringify(next));
+        }
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+    setRequests((prev) =>
+      prev.filter(
+        (r) =>
+          r.fromUserId.toLowerCase() !== targetLower &&
+          r.toUserId.toLowerCase() !== targetLower &&
+          (r.fromUsername || '').toLowerCase() !== userLower &&
+          (r.toUsername || '').toLowerCase() !== userLower &&
+          (r.fromUserName || '').toLowerCase() !== nameLower &&
+          (r.toUserName || '').toLowerCase() !== nameLower
+      )
+    );
+    if (previewFriend?.userId === friend.userId) {
+      setPreviewFriend(null);
+    }
+    try {
+      await api.removeFriend(friend.userId);
+    } catch {
+      // fallback local removal
+    }
+    window.dispatchEvent(
+      new CustomEvent('beacon:friends-updated', { detail: { removedFriend: friend } })
+    );
+    window.dispatchEvent(new CustomEvent('beacon:cloud-sync-updated'));
+    toast.success(`Removed ${friend.fullName} from your friends list & map`);
+  };
+
+  const handleDeleteFriendRequest = async (requestId: string, label: string) => {
+    try {
+      await api.deleteFriendRequest(requestId);
+      setRequests((prev) => prev.filter((r) => r.id !== requestId));
+      toast.info(`Deleted friend request (${label})`);
+    } catch (err: any) {
+      toast.error(err?.message || 'Failed to delete friend request');
     }
   };
 
@@ -641,6 +781,15 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
                         >
                           <Eye className="w-4 h-4" />
                         </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteFriend(friend)}
+                          className="p-2 rounded-xl border border-rose-500/30 bg-rose-500/10 text-rose-400 hover:bg-rose-500 hover:text-white transition-colors cursor-pointer"
+                          title={`Delete ${friend.fullName} from Friends`}
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
                       </div>
                     </div>
                   );
@@ -769,9 +918,24 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
                           </span>
                         </div>
                       </div>
-                      <span className="px-2.5 py-1 rounded-full bg-[#FFD166]/20 border border-[#FFD166]/40 text-[#FFD166] text-[10px] font-extrabold">
-                        Pending
-                      </span>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <span className="px-2.5 py-1 rounded-full bg-[#FFD166]/20 border border-[#FFD166]/40 text-[#FFD166] text-[10px] font-extrabold">
+                          Pending
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleDeleteFriendRequest(
+                              req.id,
+                              req.toUserName || req.toUsername || req.toUserId
+                            )
+                          }
+                          className="p-1.5 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-400 hover:bg-rose-500 hover:text-white transition-colors cursor-pointer"
+                          title="Cancel & Delete Request"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -1057,6 +1221,15 @@ export const FriendsView: React.FC<FriendsViewProps> = ({
                     <span>Locate</span>
                   </button>
                 )}
+
+                <button
+                  type="button"
+                  onClick={() => handleDeleteFriend(previewFriend)}
+                  className="p-2.5 rounded-2xl bg-rose-500/15 border border-rose-500/35 text-rose-400 hover:bg-rose-500 hover:text-white transition-colors cursor-pointer"
+                  title={`Delete ${previewFriend.fullName} from Friends`}
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
 
                 <button
                   type="button"

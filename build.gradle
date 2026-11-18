@@ -43,6 +43,22 @@ subprojects {
                     }
                 }
             }
+            project.tasks.matching { it.name == 'assembleRelease' }.configureEach {
+                doLast {
+                    def srcSigned = new File(project.projectDir, 'build/outputs/apk/release/app-release.apk')
+                    def srcUnsigned = new File(project.projectDir, 'build/outputs/apk/release/app-release-unsigned.apk')
+                    def srcApk = srcSigned.exists() ? srcSigned : srcUnsigned
+                    def dstApk = new File(rootProject.projectDir, 'app/build/outputs/apk/release/app-release.apk')
+                    if (srcApk.exists() && srcApk.canonicalPath != dstApk.canonicalPath) {
+                        dstApk.parentFile.mkdirs()
+                        java.nio.file.Files.copy(
+                            srcApk.toPath(),
+                            dstApk.toPath(),
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING
+                        )
+                    }
+                }
+            }
         }
     }
 }

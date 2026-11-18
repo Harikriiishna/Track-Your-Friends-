@@ -134,6 +134,15 @@ function broadcastGlobalEmergency(alertMessage: WsServerMessage) {
   }
 }
 
+function broadcastToAllClients(eventMessage: WsServerMessage) {
+  const payload = JSON.stringify(eventMessage);
+  for (const session of clients.values()) {
+    if (session.ws.readyState === WebSocket.OPEN) {
+      session.ws.send(payload);
+    }
+  }
+}
+
 function getCombinedOnlineUsers(): string[] {
   const wsOnline = Array.from(clients.values()).map((c) => c.userId);
   const cloudActive = db.getRecentlyActiveUserIds();
@@ -244,8 +253,14 @@ wss.on('connection', (ws: WebSocket, req) => {
           const loc = db.updateLocation(currentUserId, msg.location);
           // Broadcast to authorized peers
           broadcastToAuthorizedPeers(currentUserId, { type: 'location:broadcast', location: loc });
+          broadcastToAuthorizedPeers(currentUserId, { type: 'location.updated', location: loc });
           // Also echo back to sender to confirm saved state
           ws.send(JSON.stringify({ type: 'location:broadcast', location: loc }));
+          // Broadcast updated privacy-preserving crowd cells
+          broadcastToAllClients({
+            type: 'crowd.updated',
+            cells: db.getCrowdCells({ window: '1h' }),
+          });
           break;
         }
 
@@ -1286,6 +1301,11 @@ app.post('/api/locations/update', authMiddleware, (req, res) => {
     });
 
     broadcastToAuthorizedPeers(user.id, { type: 'location:broadcast', location: loc });
+    broadcastToAuthorizedPeers(user.id, { type: 'location.updated', location: loc });
+    broadcastToAllClients({
+      type: 'crowd.updated',
+      cells: db.getCrowdCells({ window: '1h' }),
+    });
     res.json({ location: loc });
   } catch (err: any) {
     res.status(400).json({ error: err.message });
@@ -1314,17 +1334,22 @@ app.get('/api/locations/search', async (req, res) => {
   try {
     const query = String(req.query.q || '').trim();
     if (!query || query.length < 2) {
-      res.json({ results: [] });
+      res.json({ results: [], places: [] });
       return;
     }
 
     const lat = req.query.lat ? Number(req.query.lat) : undefined;
     const lon = req.query.lon ? Number(req.query.lon) : undefined;
 
-    const places = await searchRealPlacesByQuery(query, lat, lon);
-    res.json({ results: places });
+    const rawPlaces = await searchRealPlacesByQuery(query, lat, lon);
+    const places = rawPlaces.map((p) => ({
+      ...p,
+      address: p.address || p.display_name || p.name,
+      category: p.category || p.type || 'place',
+    }));
+    res.json({ results: places, places });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Location search error', results: [] });
+    res.status(500).json({ error: err.message || 'Location search error', results: [], places: [] });
   }
 });
 
@@ -1356,10 +1381,15 @@ app.get('/api/locations/nearby', async (req, res) => {
       return;
     }
 
-    const results = await fetchRealNearbyPlaces(lat, lon, category, maxRadiusMeters);
-    res.json({ results });
+    const rawResults = await fetchRealNearbyPlaces(lat, lon, category, maxRadiusMeters);
+    const results = rawResults.map((p) => ({
+      ...p,
+      address: p.address || p.display_name || p.name,
+      category: p.category || p.type || 'place',
+    }));
+    res.json({ results, places: results });
   } catch (err: any) {
-    res.status(500).json({ error: err.message || 'Nearby query failed', results: [] });
+    res.status(500).json({ error: err.message || 'Nearby query failed', results: [], places: [] });
   }
 });
 
@@ -1755,6 +1785,16 @@ app.delete('/api/locations/requests/:id', authMiddleware, (req, res) => {
   }
 });
 
+app.delete('/api/friends/:friendId', authMiddleware, (req, res) => {
+  try {
+    const user = (req as any).user as UserProfile;
+    const result = db.removeFriend(user.id, req.params.friendId);
+    res.json({ success: true, ...result });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to remove friend' });
+  }
+});
+
 app.get('/api/locations/requests', authMiddleware, (req, res) => {
   const user = (req as any).user as UserProfile;
   const requests = db.getLocationShareRequests(user.id);
@@ -1796,6 +1836,258 @@ app.post('/api/admin/reports/:id/resolve', authMiddleware, (req, res) => {
   }
   db.resolveReport(req.params.id, req.body.status);
   res.json({ success: true });
+});
+
+// ============================================================================
+// CROWDZONE MODULE — Real-Time Crowd Intelligence, Reports, Posts, Saved Places
+// ============================================================================
+
+app.get('/api/crowdzone/overview', authMiddleware, (req, res) => {
+  try {
+    const user = (req as any).user as UserProfile;
+    const windowParam = (typeof req.query.window === 'string' ? req.query.window : '1h') as any;
+    const precision = req.query.precision ? Number(req.query.precision) : 6;
+    const lat = req.query.lat !== undefined ? Number(req.query.lat) : undefined;
+    const lng = req.query.lng !== undefined ? Number(req.query.lng) : undefined;
+    const radiusKm = req.query.radiusKm !== undefined ? Number(req.query.radiusKm) : undefined;
+    const cellId = typeof req.query.cellId === 'string' ? req.query.cellId : undefined;
+
+    const overview = db.getCrowdZoneOverview(user.id, {
+      window: windowParam,
+      precision,
+      lat,
+      lng,
+      radiusKm,
+      cellId,
+    });
+    res.json(overview);
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to compute CROWDZONE overview' });
+  }
+});
+
+app.get('/api/crowdzone/cells', authMiddleware, (req, res) => {
+  try {
+    const windowParam = (typeof req.query.window === 'string' ? req.query.window : '1h') as any;
+    const precision = req.query.precision ? Number(req.query.precision) : 6;
+    const lat = req.query.lat !== undefined ? Number(req.query.lat) : undefined;
+    const lng = req.query.lng !== undefined ? Number(req.query.lng) : undefined;
+    const radiusKm = req.query.radiusKm !== undefined ? Number(req.query.radiusKm) : undefined;
+
+    const cells = db.getCrowdCells({
+      window: windowParam,
+      precision,
+      lat,
+      lng,
+      radiusKm,
+    });
+    res.json({ cells, window: windowParam, updatedAt: new Date().toISOString() });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to compute crowd cells' });
+  }
+});
+
+app.get('/api/crowdzone/history', authMiddleware, (req, res) => {
+  try {
+    const windowParam = (typeof req.query.window === 'string' ? req.query.window : '24h') as any;
+    const cellId = typeof req.query.cellId === 'string' ? req.query.cellId : undefined;
+    const precision = req.query.precision ? Number(req.query.precision) : 6;
+    const history = db.getCrowdHistory({ window: windowParam, cellId, precision });
+    res.json({ history, window: windowParam });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to load crowd history' });
+  }
+});
+
+app.get('/api/crowdzone/predictions', authMiddleware, (req, res) => {
+  try {
+    const cellId = typeof req.query.cellId === 'string' ? req.query.cellId : undefined;
+    const precision = req.query.precision ? Number(req.query.precision) : 6;
+    const predictions = db.getCrowdPredictions({ cellId, precision });
+    res.json({ predictions });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to load crowd predictions' });
+  }
+});
+
+app.get('/api/crowdzone/reports', authMiddleware, (req, res) => {
+  try {
+    const windowParam = (typeof req.query.window === 'string' ? req.query.window : '24h') as any;
+    const reports = db.getCrowdReports({ window: windowParam });
+    res.json({ reports });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to load community reports' });
+  }
+});
+
+app.post('/api/crowdzone/reports', authMiddleware, (req, res) => {
+  try {
+    const user = (req as any).user as UserProfile;
+    const report = db.createCrowdReport(user.id, req.body || {});
+    broadcastToAllClients({ type: 'report.created', report });
+    broadcastToAllClients({
+      type: 'crowd.updated',
+      cells: db.getCrowdCells({ window: '1h' }),
+    });
+    res.json({ report });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to create community report' });
+  }
+});
+
+app.post('/api/crowdzone/reports/:id/verify', authMiddleware, (req, res) => {
+  try {
+    const user = (req as any).user as UserProfile;
+    const report = db.verifyCrowdReport(user.id, req.params.id);
+    broadcastToAllClients({ type: 'report.verified', report });
+    broadcastToAllClients({
+      type: 'crowd.updated',
+      cells: db.getCrowdCells({ window: '1h' }),
+    });
+    res.json({ report });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to verify community report' });
+  }
+});
+
+app.delete('/api/crowdzone/reports/:id', authMiddleware, (req, res) => {
+  try {
+    const user = (req as any).user as UserProfile;
+    const deleted = db.deleteCrowdReport(user.id, req.params.id);
+    broadcastToAllClients({
+      type: 'crowd.updated',
+      cells: db.getCrowdCells({ window: '1h' }),
+    });
+    res.json({ success: deleted });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to delete community report' });
+  }
+});
+
+app.get('/api/crowdzone/posts', authMiddleware, (_req, res) => {
+  try {
+    const posts = db.getCrowdPosts();
+    res.json({ posts });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to load community posts' });
+  }
+});
+
+app.post('/api/crowdzone/posts', authMiddleware, (req, res) => {
+  try {
+    const user = (req as any).user as UserProfile;
+    const post = db.createCrowdPost(user.id, req.body || {});
+    res.json({ post });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to create community post' });
+  }
+});
+
+app.post('/api/crowdzone/posts/:id/comments', authMiddleware, (req, res) => {
+  try {
+    const user = (req as any).user as UserProfile;
+    const post = db.addCrowdPostComment(user.id, req.params.id, req.body?.text);
+    res.json({ post });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to add comment' });
+  }
+});
+
+app.post('/api/crowdzone/posts/:id/react', authMiddleware, (req, res) => {
+  try {
+    const user = (req as any).user as UserProfile;
+    const post = db.reactToCrowdPost(user.id, req.params.id, req.body?.emoji);
+    res.json({ post });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to react to post' });
+  }
+});
+
+app.delete('/api/crowdzone/posts/:id', authMiddleware, (req, res) => {
+  try {
+    const user = (req as any).user as UserProfile;
+    const success = db.deleteCrowdPost(user.id, req.params.id);
+    res.json({ success });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to delete post' });
+  }
+});
+
+app.get('/api/crowdzone/places', authMiddleware, (req, res) => {
+  try {
+    const user = (req as any).user as UserProfile;
+    const places = db.getCrowdSavedPlaces(user.id);
+    res.json({ places });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to load saved places' });
+  }
+});
+
+app.post('/api/crowdzone/places', authMiddleware, (req, res) => {
+  try {
+    const user = (req as any).user as UserProfile;
+    const place = db.saveCrowdPlace(user.id, req.body || {});
+    res.json({ place });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to save place' });
+  }
+});
+
+app.delete('/api/crowdzone/places/:id', authMiddleware, (req, res) => {
+  try {
+    const user = (req as any).user as UserProfile;
+    const success = db.deleteCrowdSavedPlace(user.id, req.params.id);
+    res.json({ success });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to delete saved place' });
+  }
+});
+
+app.get('/api/crowdzone/settings', authMiddleware, (req, res) => {
+  try {
+    const user = (req as any).user as UserProfile;
+    const settings = db.getUserCrowdSettings(user.id);
+    res.json({ settings });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to load settings' });
+  }
+});
+
+app.put('/api/crowdzone/settings', authMiddleware, (req, res) => {
+  try {
+    const user = (req as any).user as UserProfile;
+    const settings = db.updateUserCrowdSettings(user.id, req.body || {});
+    res.json({ settings });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to update settings' });
+  }
+});
+
+app.get('/api/admin/crowdzone', authMiddleware, (req, res) => {
+  const user = (req as any).user as UserProfile;
+  if (!user.isAdmin) {
+    res.status(403).json({ error: 'Administrative privileges required' });
+    return;
+  }
+  res.json({
+    reports: db.getCrowdReports(),
+    posts: db.getCrowdPosts(),
+    moderationLogs: db.getModerationLogs(),
+  });
+});
+
+app.post('/api/admin/crowdzone/moderate', authMiddleware, (req, res) => {
+  try {
+    const user = (req as any).user as UserProfile;
+    if (!user.isAdmin) {
+      res.status(403).json({ error: 'Administrative privileges required' });
+      return;
+    }
+    const logEntry = db.moderateCrowdItem(user.id, req.body || {});
+    res.json({ log: logEntry });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to moderate item' });
+  }
 });
 
 // Google Search Engine Optimization (SEO): Dynamic robots.txt and XML Sitemap

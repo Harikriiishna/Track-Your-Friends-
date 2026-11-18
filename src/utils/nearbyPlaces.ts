@@ -4,6 +4,7 @@ export interface DiscoveredPlace {
   id: string;
   name: string;
   display_name: string;
+  address?: string;
   lat: number;
   lon: number;
   category?: string;
@@ -27,11 +28,14 @@ const ARCGIS_GEOCODE_URL =
   'https://geocode.arcgis.com/arcgis/rest/services/World/GeocodeServer/findAddressCandidates';
 
 const ARCGIS_CATEGORY_MAP: Record<string, string> = {
-  all: 'Food,Coffee Shop,Gas Station,Hospital,Medical Clinic,Pharmacy,Grocery,Park,Hotel,ATM,Bank,Shop,School',
+  all: 'Food,Coffee Shop,Gas Station,Hospital,Medical Clinic,Pharmacy,Grocery,Park,Hotel,ATM,Bank,Shop,School,Metro Station,Train Station,Bus Station',
   fuel: 'Gas Station,Charging Station,Automotive',
-  food: 'Food,Restaurant,Fast Food,Indian Food,Bakery',
+  food: 'Food,Restaurant,Fast Food,Indian Food,Bakery,Coffee Shop',
   cafe: 'Coffee Shop,Tea House,Bakery,Dessert,Ice Cream Shop',
   groceries: 'Grocery,Supermarket,Convenience Store,Department Store,Market',
+  shopping: 'Shopping Center,Department Store,Supermarket,Clothing Store,Electronics Store,Market,Shop',
+  transit: 'Metro Station,Train Station,Bus Station,Bus Stop,Airport,Transit,Transport Hub',
+  education: 'College,University,School,Library,Education',
   hospital: 'Hospital,Medical Clinic,Pharmacy,Doctor,Dentist,Health Care Facility',
   park: 'Park,Garden,Nature Reserve,Sports Center,Playground',
   hotel: 'Hotel,Motel,Resort,Hostel,Guest House,Bed and Breakfast',
@@ -41,9 +45,12 @@ const ARCGIS_CATEGORY_MAP: Record<string, string> = {
 const CATEGORY_KEYWORDS: Record<string, string[]> = {
   all: ['restaurant', 'hospital', 'supermarket'],
   fuel: ['petrol', 'fuel', 'gas station'],
-  food: ['restaurant', 'hotel', 'dhaba'],
+  food: ['restaurant', 'cafe', 'hotel', 'dhaba'],
   cafe: ['cafe', 'coffee', 'bakery'],
   groceries: ['supermarket', 'grocery', 'store'],
+  shopping: ['mall', 'shopping', 'supermarket', 'market'],
+  transit: ['station', 'bus stop', 'metro', 'terminal'],
+  education: ['college', 'university', 'school', 'library'],
   hospital: ['hospital', 'clinic', 'pharmacy'],
   park: ['park', 'garden', 'playground'],
   hotel: ['hotel', 'lodge', 'resort'],
@@ -114,11 +121,16 @@ export function buildOverpassCategoryFilters(
     case 'fuel':
       return `nwr${around}["amenity"~"^(fuel|charging_station)$"];`;
     case 'food':
-      return `nwr${around}["amenity"~"^(restaurant|fast_food|food_court|biergarten|pub|bar)$"];`;
+      return `nwr${around}["amenity"~"^(restaurant|fast_food|food_court|cafe|biergarten|pub|bar)$"];`;
     case 'cafe':
       return `nwr${around}["amenity"~"^(cafe|ice_cream)$"];nwr${around}["shop"~"^(bakery|coffee|pastry|tea)$"];`;
     case 'groceries':
-      return `nwr${around}["shop"~"^(supermarket|convenience|grocery|greengrocer|mall|department_store|general|bakery|butcher|marketplace)$"];nwr${around}["amenity"="marketplace"];`;
+    case 'shopping':
+      return `nwr${around}["shop"~"^(supermarket|convenience|grocery|greengrocer|mall|department_store|general|bakery|butcher|marketplace|clothes|electronics)$"];nwr${around}["amenity"="marketplace"];`;
+    case 'transit':
+      return `nwr${around}["public_transport"~"^(station|stop_position|platform)$"];nwr${around}["railway"~"^(station|halt|subway_entrance)$"];nwr${around}["amenity"~"^(bus_station|ferry_terminal)$"];nwr${around}["highway"="bus_stop"];`;
+    case 'education':
+      return `nwr${around}["amenity"~"^(university|college|school|library|research_institute)$"];`;
     case 'hospital':
       return `nwr${around}["amenity"~"^(hospital|clinic|doctors|pharmacy|dentist)$"];nwr${around}["healthcare"];`;
     case 'park':
@@ -130,7 +142,7 @@ export function buildOverpassCategoryFilters(
     case 'all':
     default:
       return (
-        `nwr${around}["amenity"~"^(restaurant|fast_food|cafe|fuel|charging_station|hospital|clinic|pharmacy|bank|atm|marketplace|police|post_office|library|place_of_worship|school|college)$"];` +
+        `nwr${around}["amenity"~"^(restaurant|fast_food|cafe|fuel|charging_station|hospital|clinic|pharmacy|bank|atm|marketplace|police|post_office|library|place_of_worship|school|college|university|bus_station)$"];` +
         `nwr${around}["shop"~"^(supermarket|convenience|grocery|bakery|mall|department_store|chemist|electronics|clothes|general)$"];` +
         `nwr${around}["tourism"~"^(hotel|motel|guest_house|hostel|attraction|viewpoint|museum)$"];` +
         `nwr${around}["leisure"~"^(park|garden|nature_reserve|fitness_centre|sports_centre)$"];`

@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { animate, type AnimationPlaybackControls } from 'motion';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import 'leaflet.markercluster';
@@ -9,6 +10,7 @@ import { useAuth } from '../../context/AuthContext.tsx';
 import type { UserLocation, SavedPlace, UserPathTrail, Room, PlaceResult, RouteData } from '../../types.ts';
 import { calculateDistanceMeters, formatDistance, formatAccuracy, formatTimeAgo, getGpsSignalInfo } from '../../utils/geo.ts';
 import { api } from '../../utils/api.ts';
+import { localBackend } from '../../utils/localBackend.ts';
 import {
   emitNetworkHttpStatusError,
   onNetworkHttpStatusError,
@@ -1139,13 +1141,7 @@ const LiveMapComponent: React.FC<LiveMapProps> = ({
   const toast = useToast();
   type MapLayerMode = 'terrain' | 'satellite' | 'standard' | 'traffic';
   type HdrPresetMode = 'ultra' | 'vivid' | 'cyber';
-  const [mapMode, setMapMode] = useState<MapLayerMode>(() => {
-    const saved = localStorage.getItem('beacon_map_style');
-    if (saved && ['terrain', 'satellite', 'standard', 'traffic'].includes(saved)) {
-      return saved as MapLayerMode;
-    }
-    return 'standard';
-  });
+  const [mapMode, setMapMode] = useState<MapLayerMode>('satellite');
   const [tileFallbackNotice, setTileFallbackNotice] = useState<string | null>(null);
   const [isHdrEnabled, setIsHdrEnabled] = useState<boolean>(() => {
     const saved = localStorage.getItem('beacon_map_hdr');
@@ -1539,6 +1535,8 @@ const LiveMapComponent: React.FC<LiveMapProps> = ({
   const [bearing, setBearing] = useState<number>(0);
   const bearingRef = useRef<number>(0);
   const [isGesturing, setIsGesturing] = useState<boolean>(false);
+  const [showRotationDial, setShowRotationDial] = useState<boolean>(false);
+  const [isRecenteringGps, setIsRecenteringGps] = useState<boolean>(false);
 
   // User Direction Cursor & Device Compass Heading State
   const [userHeading, setUserHeading] = useState<number | null>(null);
@@ -1619,10 +1617,30 @@ const LiveMapComponent: React.FC<LiveMapProps> = ({
     return 'NW';
   };
 
+  const setMapBearing = (targetDeg: number, announce = false) => {
+    let next = Math.round(targetDeg) % 360;
+    if (next < 0) next += 360;
+    if (isHeadingUpModeRef.current) {
+      setIsHeadingUpMode(false);
+    }
+    bearingRef.current = next;
+    setBearing(next);
+    if (announce) {
+      toast.info(
+        next === 0
+          ? 'Map oriented North-up (0°)'
+          : `Rotated map to ${next}° ${getCompassHeading(next)}`
+      );
+    }
+  };
+
   const rotateMapBy = (deltaDeg: number) => {
     let next = (bearingRef.current + deltaDeg) % 360;
     if (next < 0) next += 360;
     next = Math.round(next);
+    if (isHeadingUpModeRef.current) {
+      setIsHeadingUpMode(false);
+    }
     bearingRef.current = next;
     setBearing(next);
     toast.info(`Rotated map to ${next}° ${getCompassHeading(next)}`);
@@ -1634,6 +1652,114 @@ const LiveMapComponent: React.FC<LiveMapProps> = ({
     setBearing(0);
     toast.info('Map oriented North-up (0°)');
   };
+
+  // Two-Finger Touch Twist Rotation & Desktop Shift/Alt + Drag Map Rotation
+  useEffect(() => {
+    const el = gestureAreaRef.current;
+    if (!el) return;
+
+    let initialTouchAngle: number | null = null;
+    let initialTouchBearing = 0;
+    let isTouchRotating = false;
+
+    let isMouseRotating = false;
+    let mouseStartX = 0;
+    let initialMouseBearing = 0;
+
+    const getTouchAngle = (t1: Touch, t2: Touch) =>
+      (Math.atan2(t2.clientY - t1.clientY, t2.clientX - t1.clientX) * 180) / Math.PI;
+
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length === 2) {
+        initialTouchAngle = getTouchAngle(e.touches[0], e.touches[1]);
+        initialTouchBearing = bearingRef.current;
+        isTouchRotating = false;
+      }
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+      if (e.touches.length === 2 && initialTouchAngle !== null) {
+        const currentAngle = getTouchAngle(e.touches[0], e.touches[1]);
+        let delta = currentAngle - initialTouchAngle;
+        if (delta > 180) delta -= 360;
+        if (delta < -180) delta += 360;
+
+        if (!isTouchRotating && Math.abs(delta) > 4) {
+          isTouchRotating = true;
+          setIsGesturing(true);
+          if (isHeadingUpModeRef.current) {
+            setIsHeadingUpMode(false);
+          }
+        }
+
+        if (isTouchRotating) {
+          let next = Math.round(initialTouchBearing + delta) % 360;
+          if (next < 0) next += 360;
+          bearingRef.current = next;
+          setBearing(next);
+        }
+      }
+    };
+
+    const onTouchEnd = (e: TouchEvent) => {
+      if (e.touches.length < 2) {
+        initialTouchAngle = null;
+        if (isTouchRotating) {
+          isTouchRotating = false;
+          setIsGesturing(false);
+        }
+      }
+    };
+
+    const onMouseDown = (e: MouseEvent) => {
+      if (e.shiftKey || e.altKey) {
+        isMouseRotating = true;
+        mouseStartX = e.clientX;
+        initialMouseBearing = bearingRef.current;
+        setIsGesturing(true);
+        if (mapInstanceRef.current?.dragging) {
+          mapInstanceRef.current.dragging.disable();
+        }
+        e.preventDefault();
+      }
+    };
+
+    const onMouseMove = (e: MouseEvent) => {
+      if (!isMouseRotating) return;
+      const dx = e.clientX - mouseStartX;
+      let next = Math.round(initialMouseBearing + dx * 0.65) % 360;
+      if (next < 0) next += 360;
+      bearingRef.current = next;
+      setBearing(next);
+    };
+
+    const onMouseUp = () => {
+      if (!isMouseRotating) return;
+      isMouseRotating = false;
+      setIsGesturing(false);
+      if (mapInstanceRef.current?.dragging) {
+        mapInstanceRef.current.dragging.enable();
+      }
+    };
+
+    el.addEventListener('touchstart', onTouchStart, { passive: true });
+    el.addEventListener('touchmove', onTouchMove, { passive: true });
+    el.addEventListener('touchend', onTouchEnd, { passive: true });
+    el.addEventListener('touchcancel', onTouchEnd, { passive: true });
+    el.addEventListener('mousedown', onMouseDown);
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+
+    return () => {
+      el.removeEventListener('touchstart', onTouchStart);
+      el.removeEventListener('touchmove', onTouchMove);
+      el.removeEventListener('touchend', onTouchEnd);
+      el.removeEventListener('touchcancel', onTouchEnd);
+      el.removeEventListener('mousedown', onMouseDown);
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+  }, []);
 
   const toggleHeadingUpMode = () => {
     if (!isHeadingUpMode) {
@@ -1952,11 +2078,34 @@ const LiveMapComponent: React.FC<LiveMapProps> = ({
     return ids;
   }, [roomOnlyMode, effectiveRoom, isUniversalActiveRoom, user?.id]);
 
-  // Filtered peer locations: shows all peers on Home Map, or only room members in Room Map
+  const [friendsUpdateTick, setFriendsUpdateTick] = useState(0);
+
+  useEffect(() => {
+    const onFriendsChanged = () => {
+      setFriendsUpdateTick((t) => t + 1);
+      setSelectedUser((prev) => {
+        if (prev && prev.userId !== user?.id && localBackend.isUserUnfriendedOrBlocked(user?.id, prev)) {
+          return null;
+        }
+        return prev;
+      });
+    };
+    window.addEventListener('beacon:friends-updated', onFriendsChanged);
+    window.addEventListener('beacon:cloud-sync-updated', onFriendsChanged);
+    return () => {
+      window.removeEventListener('beacon:friends-updated', onFriendsChanged);
+      window.removeEventListener('beacon:cloud-sync-updated', onFriendsChanged);
+    };
+  }, [user?.id]);
+
+  // Filtered peer locations: excludes deleted/unfriended or blocked users, and respects roomOnlyMode
   const rawDisplayedUserLocations = React.useMemo(() => {
-    if (!roomOnlyMode || !roomMemberIdsSet) return userLocations;
-    return userLocations.filter((loc) => roomMemberIdsSet.has(loc.userId));
-  }, [roomOnlyMode, roomMemberIdsSet, userLocations]);
+    const visiblePeers = userLocations.filter(
+      (loc) => loc.userId === user?.id || !localBackend.isUserUnfriendedOrBlocked(user?.id, loc)
+    );
+    if (!roomOnlyMode || !roomMemberIdsSet) return visiblePeers;
+    return visiblePeers.filter((loc) => roomMemberIdsSet.has(loc.userId));
+  }, [roomOnlyMode, roomMemberIdsSet, userLocations, user?.id, friendsUpdateTick]);
 
   // In Low Power Mode, lower the map refresh rate to 0.2 Hz (every 5,000ms) for better battery longevity
   const [displayedUserLocations, setDisplayedUserLocations] = useState<UserLocation[]>(
@@ -2017,10 +2166,19 @@ const LiveMapComponent: React.FC<LiveMapProps> = ({
       });
     }
 
-    // If roomOnlyMode and effectiveRoom has explicit members, include all room members
+    // If roomOnlyMode and effectiveRoom has explicit members, include all non-unfriended room members
     if (roomOnlyMode && effectiveRoom?.members) {
       effectiveRoom.members.forEach((mem) => {
         if (seen.has(mem.userId)) return;
+        if (
+          localBackend.isUserUnfriendedOrBlocked(user?.id, {
+            userId: mem.userId,
+            username: mem.user?.username,
+            fullName: mem.user?.fullName,
+          })
+        ) {
+          return;
+        }
         seen.add(mem.userId);
         const peerLoc = displayedUserLocations.find((l) => l.userId === mem.userId) || null;
         list.push({
@@ -2055,7 +2213,7 @@ const LiveMapComponent: React.FC<LiveMapProps> = ({
     });
 
     return list;
-  }, [user, myLocation, roomOnlyMode, effectiveRoom, displayedUserLocations, onlineUserIds]);
+  }, [user, myLocation, roomOnlyMode, effectiveRoom, displayedUserLocations, onlineUserIds, friendsUpdateTick]);
 
   const fitAllRoomMembersOnMap = () => {
     const map = mapInstanceRef.current;
@@ -2184,9 +2342,9 @@ const LiveMapComponent: React.FC<LiveMapProps> = ({
   });
 
   const [diagStats, setDiagStats] = useState<TileDiagnosticStats>(() => ({
-    mode: mapMode,
-    providerName: 'Google Maps HD',
-    templateUrl: 'https://mt{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}&hl=en',
+    mode: 'satellite',
+    providerName: 'Google Hybrid Satellite 2x HDR (lyrs=y)',
+    templateUrl: 'https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}&scale=2&hl=en',
     sampleResolvedUrl: '',
     requestedCount: 0,
     loadedCount: 0,
@@ -2801,13 +2959,13 @@ const LiveMapComponent: React.FC<LiveMapProps> = ({
           attribution: '&copy; Esri World Imagery',
         });
       } else {
-        templateUrl = 'https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}&hl=en';
-        providerName = 'Google Hybrid Satellite (lyrs=y)';
+        templateUrl = 'https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}&scale=2&hl=en';
+        providerName = 'Google Hybrid Satellite 2x HDR (lyrs=y)';
         baseLayer = L.tileLayer(templateUrl, {
           ...commonGoogleOpts,
           maxNativeZoom: 20,
           maxZoom: 22,
-          attribution: '&copy; Google Maps Satellite',
+          attribution: '&copy; Google Maps Satellite 2x HDR',
         });
       }
     } else if (mode === 'traffic') {
@@ -3593,10 +3751,10 @@ const LiveMapComponent: React.FC<LiveMapProps> = ({
     const layersControl = L.control
       .layers(
         {
-          Standard: proxyStandard,
-          Satellite: proxySatellite,
-          Topography: proxyTerrain,
-          Traffic: proxyTraffic,
+          'Standard Street': proxyStandard,
+          'Satellite 2x HDR': proxySatellite,
+          'Terrain Topo': proxyTerrain,
+          'Live Traffic': proxyTraffic,
         },
         {},
         {
@@ -3609,18 +3767,10 @@ const LiveMapComponent: React.FC<LiveMapProps> = ({
 
     map.on('baselayerchange', (e: L.LayersControlEvent) => {
       if (isSyncingControlRef.current) return;
-      const layerName = (e.name || '').toLowerCase();
-      let nextMode: MapLayerMode = 'standard';
-      if (layerName.includes('satellite')) {
-        nextMode = 'satellite';
-      } else if (layerName.includes('topography') || layerName.includes('terrain')) {
-        nextMode = 'terrain';
-      } else if (layerName.includes('traffic')) {
-        nextMode = 'traffic';
-      } else {
-        nextMode = 'standard';
-      }
-      handleSelectMapMode(nextMode);
+      if (e.name === 'Standard Street') handleSelectMapMode('standard');
+      else if (e.name === 'Terrain Topo') handleSelectMapMode('terrain');
+      else if (e.name === 'Live Traffic') handleSelectMapMode('traffic');
+      else handleSelectMapMode('satellite');
     });
 
     const clusterGroup = L.markerClusterGroup({
@@ -3981,8 +4131,8 @@ const LiveMapComponent: React.FC<LiveMapProps> = ({
     return () => window.removeEventListener('beacon:gps-fix', onGpsFix);
   }, [focusCoords, hasCenteredOnce]);
 
-  // Smooth Marker Animation Infrastructure
-  const markerAnimationFramesRef = useRef<Map<string, number>>(new Map());
+  // Smooth Marker Animation Infrastructure powered by Framer Motion
+  const markerAnimationsRef = useRef<Map<string, AnimationPlaybackControls>>(new Map());
   const peerCircleAnimationFramesRef = useRef<Map<string, number>>(new Map());
   const accuracyCircleFrameRef = useRef<number | null>(null);
 
@@ -3994,6 +4144,11 @@ const LiveMapComponent: React.FC<LiveMapProps> = ({
     duration = 850
   ) => {
     if (isLiteModeRef.current || !isActiveRef.current || (typeof document !== 'undefined' && document.hidden)) {
+      const existingAnim = markerAnimationsRef.current.get(key);
+      if (existingAnim) {
+        existingAnim.stop();
+        markerAnimationsRef.current.delete(key);
+      }
       marker.setLatLng([targetLat, targetLng]);
       return;
     }
@@ -4006,34 +4161,32 @@ const LiveMapComponent: React.FC<LiveMapProps> = ({
     const dLat = Math.abs(targetLat - startLat);
     const dLng = Math.abs(targetLng - startLng);
     if ((dLat < 0.000003 && dLng < 0.000003) || dLat > 0.05 || dLng > 0.05) {
+      const existingAnim = markerAnimationsRef.current.get(key);
+      if (existingAnim) {
+        existingAnim.stop();
+        markerAnimationsRef.current.delete(key);
+      }
       marker.setLatLng([targetLat, targetLng]);
       return;
     }
 
-    if (markerAnimationFramesRef.current.has(key)) {
-      cancelAnimationFrame(markerAnimationFramesRef.current.get(key)!);
-      markerAnimationFramesRef.current.delete(key);
+    const existingAnim = markerAnimationsRef.current.get(key);
+    if (existingAnim) {
+      existingAnim.stop();
+      markerAnimationsRef.current.delete(key);
     }
 
-    const startTime = performance.now();
-    const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
-
-    const step = (now: number) => {
-      const elapsed = now - startTime;
-      const progress = Math.min(1, elapsed / duration);
-      const ease = easeOutCubic(progress);
-
-      const nextLat = startLat + (targetLat - startLat) * ease;
-      const nextLng = startLng + (targetLng - startLng) * ease;
-
-      marker.setLatLng([nextLat, nextLng]);
-
-      if (progress < 1) {
-        const frameId = requestAnimationFrame(step);
-        markerAnimationFramesRef.current.set(key, frameId);
-      } else {
+    const controls = animate(0, 1, {
+      duration: duration / 1000,
+      ease: [0.22, 1, 0.36, 1],
+      onUpdate: (progress) => {
+        const nextLat = startLat + (targetLat - startLat) * progress;
+        const nextLng = startLng + (targetLng - startLng) * progress;
+        marker.setLatLng([nextLat, nextLng]);
+      },
+      onComplete: () => {
         marker.setLatLng([targetLat, targetLng]);
-        markerAnimationFramesRef.current.delete(key);
+        markerAnimationsRef.current.delete(key);
         if (key !== 'my_marker' && markerClusterGroupRef.current) {
           try {
             markerClusterGroupRef.current.refreshClusters(marker);
@@ -4041,18 +4194,17 @@ const LiveMapComponent: React.FC<LiveMapProps> = ({
             // ignore cluster refresh error
           }
         }
-      }
-    };
+      },
+    });
 
-    const firstFrame = requestAnimationFrame(step);
-    markerAnimationFramesRef.current.set(key, firstFrame);
+    markerAnimationsRef.current.set(key, controls);
   };
 
-  // Cleanup marker animation frames on unmount
+  // Cleanup Framer Motion marker animations on unmount
   useEffect(() => {
     return () => {
-      markerAnimationFramesRef.current.forEach((frameId) => cancelAnimationFrame(frameId));
-      markerAnimationFramesRef.current.clear();
+      markerAnimationsRef.current.forEach((controls) => controls.stop());
+      markerAnimationsRef.current.clear();
       peerCircleAnimationFramesRef.current.forEach((frameId) => cancelAnimationFrame(frameId));
       peerCircleAnimationFramesRef.current.clear();
       if (accuracyCircleFrameRef.current !== null) {
@@ -4284,8 +4436,8 @@ const LiveMapComponent: React.FC<LiveMapProps> = ({
     for (const peerLoc of displayedUserLocations) {
       if (peerLoc.userId === user?.id) continue;
       if (!Number.isFinite(peerLoc.latitude) || !Number.isFinite(peerLoc.longitude)) continue;
-      const peerAcc = Number(peerLoc.accuracy_m ?? peerLoc.accuracy);
-      if (!Number.isFinite(peerAcc) || peerAcc <= 0 || peerAcc > 100) continue;
+      const peerAcc = Number(peerLoc.accuracy_m ?? peerLoc.accuracy ?? 50);
+      if (!Number.isFinite(peerAcc) || peerAcc <= 0 || peerAcc > 5000) continue;
 
       activePeerIds.add(peerLoc.userId);
 
@@ -4436,9 +4588,10 @@ const LiveMapComponent: React.FC<LiveMapProps> = ({
     const clusterLayer = markerClusterGroupRef.current;
     for (const [userId, marker] of currentMarkers.entries()) {
       if (!activePeerIds.has(userId)) {
-        if (markerAnimationFramesRef.current.has(userId)) {
-          cancelAnimationFrame(markerAnimationFramesRef.current.get(userId)!);
-          markerAnimationFramesRef.current.delete(userId);
+        const activeAnim = markerAnimationsRef.current.get(userId);
+        if (activeAnim) {
+          activeAnim.stop();
+          markerAnimationsRef.current.delete(userId);
         }
         if (clusterLayer) {
           clusterLayer.removeLayer(marker);
@@ -4892,23 +5045,95 @@ const LiveMapComponent: React.FC<LiveMapProps> = ({
   };
 
   const centerOnMyLocation = () => {
+    setIsRecenteringGps(true);
     pendingCenterOnNextFixRef.current = true;
+
+    // 1. Trigger context-level GPS update (handles both Android native bridge & Web geolocation)
     requestLocationUpdate();
-    if (mapInstanceRef.current && myLocation) {
+
+    // 2. Immediately center on current known GPS position if available while fresh hardware fix is being acquired
+    if (mapInstanceRef.current && myLocation && Number.isFinite(myLocation.latitude) && Number.isFinite(myLocation.longitude)) {
       const map = mapInstanceRef.current;
       lastAutoFollowedCoordsRef.current = {
         lat: myLocation.latitude,
         lng: myLocation.longitude,
       };
-      recenterMapCleanly(map, myLocation.latitude, myLocation.longitude, 17, {
+      const targetZoom = Math.max(Math.round(map.getZoom()), 17);
+      recenterMapCleanly(map, myLocation.latitude, myLocation.longitude, targetZoom, {
         forceLayerRefresh: false,
+        animate: true,
       });
-      const acc = Math.round(Number(myLocation.accuracy_m ?? myLocation.accuracy));
-      toast.success(
-        `Centered on your live location (${myLocation.latitude.toFixed(5)}, ${myLocation.longitude.toFixed(5)} · Accuracy ±${acc} m)`
+    }
+
+    // 3. Explicitly trigger a fresh, uncached hardware GPS location fetch and recenter the map view upon arrival
+    if (typeof navigator !== 'undefined' && navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          setIsRecenteringGps(false);
+          const freshLat = pos.coords.latitude;
+          const freshLng = pos.coords.longitude;
+          const freshAcc = Math.round(Number(pos.coords.accuracy || 15));
+
+          if (!Number.isFinite(freshLat) || !Number.isFinite(freshLng)) return;
+
+          lastAutoFollowedCoordsRef.current = { lat: freshLat, lng: freshLng };
+          pendingCenterOnNextFixRef.current = false;
+          setHasCenteredOnce(true);
+
+          if (mapInstanceRef.current) {
+            const map = mapInstanceRef.current;
+            const targetZoom = Math.max(Math.round(map.getZoom()), 17);
+            recenterMapCleanly(map, freshLat, freshLng, targetZoom, {
+              forceLayerRefresh: false,
+              animate: true,
+            });
+          }
+
+          window.dispatchEvent(
+            new CustomEvent('beacon:gps-fix', {
+              detail: {
+                latitude: freshLat,
+                longitude: freshLng,
+                accuracy: freshAcc,
+                heading: pos.coords.heading,
+                speed: pos.coords.speed,
+                isRealGps: true,
+                forceCenter: true,
+              },
+            })
+          );
+
+          toast.success(
+            `Recentered on your fresh GPS location (${freshLat.toFixed(5)}, ${freshLng.toFixed(5)} · Accuracy ±${freshAcc} m)`
+          );
+        },
+        () => {
+          setIsRecenteringGps(false);
+          if (mapInstanceRef.current && myLocation) {
+            const acc = Math.round(Number(myLocation.accuracy_m ?? myLocation.accuracy ?? 15));
+            toast.success(
+              `Centered on your live location (${myLocation.latitude.toFixed(5)}, ${myLocation.longitude.toFixed(5)} · Accuracy ±${acc} m)`
+            );
+          } else {
+            toast.info(locationStatus || 'Waiting for GPS signal...');
+          }
+        },
+        {
+          enableHighAccuracy: true,
+          maximumAge: 0,
+          timeout: 10000,
+        }
       );
     } else {
-      toast.info(locationStatus || 'Waiting for location');
+      window.setTimeout(() => setIsRecenteringGps(false), 800);
+      if (myLocation) {
+        const acc = Math.round(Number(myLocation.accuracy_m ?? myLocation.accuracy ?? 15));
+        toast.success(
+          `Centered on your live location (${myLocation.latitude.toFixed(5)}, ${myLocation.longitude.toFixed(5)} · Accuracy ±${acc} m)`
+        );
+      } else {
+        toast.info(locationStatus || 'Waiting for location');
+      }
     }
   };
 
@@ -4921,6 +5146,18 @@ const LiveMapComponent: React.FC<LiveMapProps> = ({
     <div
       className="relative w-full h-full flex flex-col overflow-hidden bg-[#cbd5e1] select-none touch-manipulation"
     >
+      {/* Keep map markers and user avatars upright when map rotation bearing is non-zero */}
+      {bearing !== 0 && (
+        <style>{`
+          .beacon-self-marker > div,
+          .beacon-peer-marker > div,
+          .beacon-user-cluster-marker > div,
+          .custom-geofence-label-pin > div {
+            transform: rotate(${-bearing}deg);
+            transition: ${isGesturing ? 'none' : 'transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1)'};
+          }
+        `}</style>
+      )}
 
       {/* Dedicated Map Gesture Layer - isolates touch-none to the map canvas so floating buttons & popovers work smoothly */}
       <div
@@ -5460,8 +5697,14 @@ const LiveMapComponent: React.FC<LiveMapProps> = ({
             }`}
           >
             <Layers className="w-4 h-4 text-[#00E5FF]" />
-            <span className="text-xs font-semibold capitalize hidden xs:inline sm:inline">
-              {mapMode === 'terrain' ? 'Terrain' : mapMode === 'satellite' ? 'Satellite' : mapMode === 'traffic' ? 'Traffic' : 'Standard'}
+            <span className="text-xs font-semibold hidden xs:inline sm:inline">
+              {mapMode === 'standard'
+                ? 'Standard Street'
+                : mapMode === 'terrain'
+                ? 'Terrain Topo'
+                : mapMode === 'traffic'
+                ? 'Live Traffic'
+                : 'Satellite 2x HDR'}
             </span>
             {bearing !== 0 && (
               <span className="px-1.5 py-0.2 bg-sky-500 text-white rounded-full text-[9px] font-mono font-bold">
@@ -5994,10 +6237,10 @@ const LiveMapComponent: React.FC<LiveMapProps> = ({
               </div>
               <div className="grid grid-cols-2 gap-2">
                 {[
-                  { id: 'terrain', name: 'Terrain Topo HDR', icon: Mountain, desc: 'Elevation & Contours' },
-                  { id: 'satellite', name: 'Satellite 2x HDR', icon: Globe, desc: 'Aerial Hybrid Imagery' },
-                  { id: 'standard', name: 'Street Retina HDR', icon: MapIcon, desc: 'High-Contrast Roads' },
-                  { id: 'traffic', name: 'Live Traffic HDR', icon: Car, desc: 'Real-time Congestion' },
+                  { id: 'standard' as MapLayerMode, name: 'Standard Street', icon: MapIcon, desc: 'Crisp Roads & Labels' },
+                  { id: 'satellite' as MapLayerMode, name: 'Satellite 2x HDR', icon: Globe, desc: 'Aerial Hybrid Imagery' },
+                  { id: 'terrain' as MapLayerMode, name: 'Terrain Map', icon: Mountain, desc: 'Elevation & Contours' },
+                  { id: 'traffic' as MapLayerMode, name: 'Traffic Layer', icon: Car, desc: 'Live Road Congestion' },
                 ].map((item) => {
                   const Icon = item.icon;
                   const isSelected = mapMode === item.id;
@@ -6005,7 +6248,7 @@ const LiveMapComponent: React.FC<LiveMapProps> = ({
                     <button
                       key={item.id}
                       onClick={() => {
-                        handleSelectMapMode(item.id as MapLayerMode, `${item.name} enabled`);
+                        handleSelectMapMode(item.id, `${item.name} enabled`);
                       }}
                       className={`p-2.5 rounded-2xl border text-left transition-all flex items-start gap-2.5 cursor-pointer active:scale-95 ${
                         isSelected
@@ -6023,60 +6266,6 @@ const LiveMapComponent: React.FC<LiveMapProps> = ({
                         </div>
                         <span className="text-[10px] text-slate-400 block truncate">{item.desc}</span>
                       </div>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Section 1B: HDR Optical Tone-Mapping Engine */}
-            <div className="pt-2 border-t border-white/10">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider font-mono flex items-center gap-1">
-                  <Sparkles className="w-3 h-3 text-[#FF4FA3]" />
-                  <span>HDR Tone-Mapping Profile</span>
-                </span>
-                <button
-                  onClick={() => {
-                    const next = !isHdrEnabled;
-                    setIsHdrEnabled(next);
-                    localStorage.setItem('beacon_map_hdr', next ? '1' : '0');
-                    toast.info(next ? '✨ HDR Optical Grading Active' : 'SDR Standard Mode');
-                  }}
-                  className={`px-2 py-0.5 rounded-full text-[10px] font-extrabold cursor-pointer transition-all ${
-                    isHdrEnabled
-                      ? 'bg-[#00D6A0]/20 text-[#00D6A0] border border-[#00D6A0]/40'
-                      : 'bg-white/10 text-slate-400 border border-white/10'
-                  }`}
-                >
-                  {isHdrEnabled ? 'HDR ON (2x Retina)' : 'SDR OFF'}
-                </button>
-              </div>
-              <div className="grid grid-cols-3 gap-1.5">
-                {[
-                  { id: 'ultra', label: 'Ultra HDR', desc: 'Crisp & Pure' },
-                  { id: 'vivid', label: 'Vivid Bloom', desc: 'Cinema Warm' },
-                  { id: 'cyber', label: 'Cyber Neon', desc: 'Deep Contrast' },
-                ].map((preset) => {
-                  const active = isHdrEnabled && hdrPreset === preset.id;
-                  return (
-                    <button
-                      key={preset.id}
-                      onClick={() => {
-                        setIsHdrEnabled(true);
-                        setHdrPreset(preset.id as HdrPresetMode);
-                        localStorage.setItem('beacon_map_hdr', '1');
-                        localStorage.setItem('beacon_map_hdr_preset', preset.id);
-                        toast.info(`✨ ${preset.label} map visuals enabled`);
-                      }}
-                      className={`p-2 rounded-xl border text-center transition-all cursor-pointer active:scale-95 ${
-                        active
-                          ? 'bg-gradient-to-br from-[#8957FF]/35 via-[#FF4FA3]/25 to-[#00D9FF]/25 border-[#FF4FA3]/80 ring-1 ring-[#FF4FA3]/50 text-white shadow-md'
-                          : 'bg-white/5 border-white/10 text-slate-300 hover:bg-white/10'
-                      }`}
-                    >
-                      <span className="font-extrabold text-[11px] block">{preset.label}</span>
-                      <span className="text-[9px] text-slate-400 block">{preset.desc}</span>
                     </button>
                   );
                 })}
@@ -6152,11 +6341,11 @@ const LiveMapComponent: React.FC<LiveMapProps> = ({
               </div>
             </div>
 
-            {/* Section 2: Orientation & Compass Quick Actions */}
-            <div className="pt-2 border-t border-white/10">
-              <div className="flex items-center justify-between mb-2">
+            {/* Section 2: Orientation, Map Rotation & Compass Quick Actions */}
+            <div className="pt-2 border-t border-white/10 space-y-2.5">
+              <div className="flex items-center justify-between">
                 <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider font-mono">
-                  Orientation & Compass
+                  Map Rotation & Compass
                 </span>
                 <span className="text-[10px] font-mono text-sky-300 font-bold">
                   {bearing}° {getCompassHeading(bearing)} · Zoom {currentZoom.toFixed(1)}x
@@ -6164,13 +6353,15 @@ const LiveMapComponent: React.FC<LiveMapProps> = ({
               </div>
               <div className="grid grid-cols-3 gap-2">
                 <button
+                  type="button"
                   onClick={() => rotateMapBy(-45)}
                   className="py-2 px-2 bg-white/5 hover:bg-white/10 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 border border-white/10 transition-colors cursor-pointer"
                 >
                   <RotateCcw className="w-3.5 h-3.5 text-sky-400" />
-                  <span>-45°</span>
+                  <span>-45° CCW</span>
                 </button>
                 <button
+                  type="button"
                   onClick={resetNorth}
                   className={`py-2 px-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 border transition-colors cursor-pointer ${
                     bearing !== 0
@@ -6182,12 +6373,57 @@ const LiveMapComponent: React.FC<LiveMapProps> = ({
                   <span>North (0°)</span>
                 </button>
                 <button
+                  type="button"
                   onClick={() => rotateMapBy(45)}
                   className="py-2 px-2 bg-white/5 hover:bg-white/10 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 border border-white/10 transition-colors cursor-pointer"
                 >
                   <RotateCw className="w-3.5 h-3.5 text-sky-400" />
-                  <span>+45°</span>
+                  <span>+45° CW</span>
                 </button>
+              </div>
+
+              {/* 360° Continuous Map Rotation Slider & Cardinal Bearings */}
+              <div className="bg-slate-900/70 border border-white/10 rounded-xl p-2.5 space-y-2">
+                <div className="flex items-center justify-between text-[10px] font-mono">
+                  <span className="text-slate-400">Continuous 360° Bearing</span>
+                  <span className="text-cyan-300 font-bold">
+                    {bearing}° ({getCompassHeading(bearing)})
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={359}
+                  step={1}
+                  value={bearing}
+                  onChange={(e) => setMapBearing(Number(e.target.value), false)}
+                  aria-label="Map rotation angle in degrees"
+                  className="w-full accent-sky-400 cursor-pointer h-1.5 bg-slate-800 rounded-lg"
+                />
+                <div className="grid grid-cols-4 gap-1.5 pt-0.5">
+                  {[
+                    { label: '0° N', deg: 0 },
+                    { label: '90° E', deg: 90 },
+                    { label: '180° S', deg: 180 },
+                    { label: '270° W', deg: 270 },
+                  ].map((preset) => (
+                    <button
+                      key={preset.deg}
+                      type="button"
+                      onClick={() => setMapBearing(preset.deg, true)}
+                      className={`py-1 rounded-lg text-[10px] font-mono font-bold border transition-all cursor-pointer ${
+                        bearing === preset.deg
+                          ? 'bg-sky-500/25 border-sky-400 text-sky-200'
+                          : 'bg-white/5 border-white/10 text-slate-400 hover:text-white hover:bg-white/10'
+                      }`}
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="text-[9.5px] text-slate-400 text-center">
+                  Tip: Two-finger twist on mobile or Shift + Drag on desktop to rotate freely
+                </div>
               </div>
             </div>
 
@@ -6378,10 +6614,11 @@ const LiveMapComponent: React.FC<LiveMapProps> = ({
               </div>
               <button
                 onClick={centerOnMyLocation}
-                className="px-2.5 py-1 bg-white/10 hover:bg-white/20 text-sky-300 rounded-xl text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer"
+                disabled={isRecenteringGps}
+                className="px-2.5 py-1 bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/40 text-sky-200 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
               >
-                <Crosshair className="w-3.5 h-3.5" />
-                <span>Center Me</span>
+                <Crosshair className={`w-3.5 h-3.5 ${isRecenteringGps ? 'animate-spin text-cyan-300' : ''}`} />
+                <span>{isRecenteringGps ? 'Fetching GPS...' : 'Recenter on Me'}</span>
               </button>
             </div>
           </div>
@@ -6390,7 +6627,7 @@ const LiveMapComponent: React.FC<LiveMapProps> = ({
 
       {/* Bottom-Right Mobile-Ergonomic Floating HUD Controls (Orientation, Location & Custom Dark-Themed Zoom Pod in Thumb Zone) */}
       <div
-        className={`absolute ${roomOnlyMode ? 'bottom-4' : 'bottom-20'} right-3.5 md:bottom-6 md:right-6 z-20 flex flex-col items-center gap-2`}
+        className={`absolute ${roomOnlyMode ? 'bottom-4' : 'bottom-20'} right-3.5 md:bottom-6 md:right-6 z-20 flex flex-col items-end gap-2 pointer-events-none`}
       >
         {/* 3D / 2D Perspective Toggle Button */}
         <button
@@ -6404,7 +6641,7 @@ const LiveMapComponent: React.FC<LiveMapProps> = ({
             toast.info(next3d ? '🧊 3D Map Tilt Enabled' : '🗺️ 2D Crystal-Clear HD View');
           }}
           title={is3dMode ? 'Switch to 2D Razor-Sharp HD View' : 'Enable 3D Perspective Tilt'}
-          className={`w-12 h-11 rounded-2xl shadow-xl border flex flex-col items-center justify-center transition-all cursor-pointer active:scale-95 font-mono font-black text-xs ${
+          className={`pointer-events-auto w-12 h-11 rounded-2xl shadow-xl border flex flex-col items-center justify-center transition-all cursor-pointer active:scale-95 font-mono font-black text-xs ${
             is3dMode
               ? 'bg-gradient-to-br from-[#00D6A0] to-[#00D9FF] text-slate-950 border-[#00D6A0] shadow-[#00D6A0]/30 ring-2 ring-[#00D6A0]/40'
               : 'bg-[#0B081B]/95 border-[#8957FF]/35 text-white hover:bg-[#1B153A] hover:border-[#00D9FF]/50 shadow-[0_8px_24px_rgba(11,8,27,0.85)]'
@@ -6416,61 +6653,134 @@ const LiveMapComponent: React.FC<LiveMapProps> = ({
           </span>
         </button>
 
-        {/* Compass Rose Widget (Oriented to True North with Tap-to-Reset) */}
-        <div className="relative group">
-          <button
-            onClick={resetNorth}
-            title={bearing !== 0 ? `Reset to North (Current: ${bearing}° ${getCompassHeading(bearing)})` : 'Oriented North (0°)'}
-            className={`w-12 h-11 rounded-2xl shadow-xl border flex flex-col items-center justify-center transition-all cursor-pointer active:scale-95 ${
-              bearing !== 0
-                ? 'bg-sky-600 text-white border-sky-400 shadow-sky-500/30 ring-2 ring-sky-400/40'
-                : 'bg-[#0B081B]/95 border-[#8957FF]/35 text-white hover:bg-[#1B153A] hover:border-[#00D9FF]/50 shadow-[0_8px_24px_rgba(11,8,27,0.85)]'
-            }`}
-          >
-            {/* Rotating Compass Needle */}
+        {/* Map Rotation & Compass Rose Control Pod (Accessible on Mobile & Desktop) */}
+        <div className="relative flex items-center gap-1.5 pointer-events-auto">
+          {/* Interactive 360° Rotation Dial Popover (Toggled via Compass or Rotation Bar) */}
+          {showRotationDial && (
             <div
-              className="relative w-5 h-5 flex items-center justify-center transition-transform"
-              style={{
-                transform: `rotate(${-bearing}deg)`,
-                transition: isGesturing ? 'none' : 'transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1)',
-              }}
+              data-testid="map-rotation-dial-popover"
+              className="bg-[#0B081B]/95 backdrop-blur-xl border border-[#00D9FF]/45 rounded-2xl p-2.5 shadow-[0_12px_32px_rgba(0,0,0,0.9)] w-56 space-y-2 animate-in fade-in zoom-in-95 duration-150"
             >
-              {/* North Pointer (Red) */}
-              <div className="absolute top-0 w-0 h-0 border-x-[3px] border-x-transparent border-b-[9px] border-b-rose-500" />
-              {/* Pivot */}
-              <div className="w-1.5 h-1.5 rounded-full bg-slate-400 z-10" />
-              {/* South Pointer (Silver) */}
-              <div className="absolute bottom-0 w-0 h-0 border-x-[3px] border-x-transparent border-t-[9px] border-t-slate-400" />
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-extrabold uppercase tracking-wider text-[#00D9FF] font-mono">
+                  Map Rotation ({bearing}° {getCompassHeading(bearing)})
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setShowRotationDial(false)}
+                  className="text-slate-400 hover:text-white p-0.5 rounded cursor-pointer"
+                  aria-label="Close rotation dial"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={359}
+                step={1}
+                value={bearing}
+                onChange={(e) => setMapBearing(Number(e.target.value), false)}
+                aria-label="Rotate map 0 to 359 degrees"
+                className="w-full accent-[#00D9FF] cursor-pointer h-1.5 bg-slate-800 rounded-lg"
+              />
+              <div className="grid grid-cols-4 gap-1">
+                {[
+                  { label: 'N 0°', deg: 0 },
+                  { label: 'E 90°', deg: 90 },
+                  { label: 'S 180°', deg: 180 },
+                  { label: 'W 270°', deg: 270 },
+                ].map((c) => (
+                  <button
+                    key={c.deg}
+                    type="button"
+                    onClick={() => setMapBearing(c.deg, true)}
+                    className={`py-1 rounded-lg text-[9.5px] font-mono font-bold border transition-all cursor-pointer ${
+                      bearing === c.deg
+                        ? 'bg-[#00D9FF]/25 border-[#00D9FF] text-white'
+                        : 'bg-white/5 border-white/10 text-slate-300 hover:bg-white/10'
+                    }`}
+                  >
+                    {c.label}
+                  </button>
+                ))}
+              </div>
             </div>
-            <span className={`text-[8px] font-bold tracking-tight font-mono -mt-0.5 ${bearing !== 0 ? 'text-sky-300' : 'text-slate-400'}`}>
-              {bearing !== 0 ? `${bearing}°` : 'N'}
-            </span>
-          </button>
+          )}
 
-          {/* Quick Rotation Buttons (Hover or tap) */}
-          <div className={`absolute right-full mr-2 top-1/2 -translate-y-1/2 hidden md:flex items-center gap-1 ${themeConfig.glassPanel} p-1 rounded-2xl shadow-2xl border ${themeConfig.glassBorder} opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap`}>
+          {/* Direct Map Rotation Buttons (-45° CCW | Compass / Reset North | +45° CW) */}
+          <div
+            role="group"
+            aria-label="Map rotation controls"
+            data-testid="map-rotation-controls"
+            className="flex items-center bg-[#0B081B]/95 border border-[#8957FF]/40 rounded-2xl p-0.5 shadow-[0_8px_24px_rgba(11,8,27,0.85)]"
+          >
             <button
+              type="button"
               onClick={() => rotateMapBy(-45)}
-              title="Rotate 45° CCW"
-              className="px-2 py-1 hover:bg-white/10 text-white rounded-xl text-xs font-bold flex items-center gap-1 cursor-pointer transition-colors"
+              title="Rotate Map 45° Counter-Clockwise"
+              aria-label="Rotate Map 45 degrees counter-clockwise"
+              data-testid="rotate-map-ccw-btn"
+              className="w-9 h-10 hover:bg-[#8957FF]/25 text-slate-200 hover:text-[#00D9FF] active:scale-95 rounded-xl flex flex-col items-center justify-center transition-all cursor-pointer"
             >
-              <RotateCcw className="w-3 h-3" />
-              <span>45°</span>
+              <RotateCcw className="w-3.5 h-3.5 text-[#00D9FF]" />
+              <span className="text-[7.5px] font-mono font-bold -mt-0.5">-45°</span>
             </button>
+
             <button
-              onClick={resetNorth}
-              title="Reset North (0°)"
-              className="px-2 py-1 hover:bg-white/10 text-white rounded-xl text-xs font-bold cursor-pointer transition-colors"
+              type="button"
+              onClick={() => {
+                if (bearing !== 0) {
+                  resetNorth();
+                } else {
+                  setShowRotationDial((prev) => !prev);
+                }
+              }}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setShowRotationDial((prev) => !prev);
+              }}
+              title={
+                bearing !== 0
+                  ? `Tap to Reset North (Current: ${bearing}° ${getCompassHeading(bearing)})`
+                  : 'Tap to open 360° Map Rotation Dial'
+              }
+              aria-label="Compass and Map Rotation"
+              data-testid="compass-reset-north-btn"
+              className={`w-10 h-10 rounded-xl flex flex-col items-center justify-center transition-all cursor-pointer active:scale-95 ${
+                bearing !== 0
+                  ? 'bg-sky-600 text-white shadow-sm ring-1 ring-sky-300/60'
+                  : showRotationDial
+                  ? 'bg-[#1B153A] text-[#00D9FF] ring-1 ring-[#00D9FF]/50'
+                  : 'text-white hover:bg-[#1B153A]'
+              }`}
             >
-              North
+              <div
+                className="relative w-4 h-4 flex items-center justify-center transition-transform"
+                style={{
+                  transform: `rotate(${-bearing}deg)`,
+                  transition: isGesturing ? 'none' : 'transform 0.35s cubic-bezier(0.2, 0.8, 0.2, 1)',
+                }}
+              >
+                <div className="absolute top-0 w-0 h-0 border-x-[3px] border-x-transparent border-b-[8px] border-b-rose-500" />
+                <div className="w-1.5 h-1.5 rounded-full bg-slate-300 z-10" />
+                <div className="absolute bottom-0 w-0 h-0 border-x-[3px] border-x-transparent border-t-[8px] border-t-slate-400" />
+              </div>
+              <span className={`text-[7.5px] font-bold tracking-tight font-mono -mt-0.5 ${bearing !== 0 ? 'text-white' : 'text-slate-300'}`}>
+                {bearing !== 0 ? `${bearing}°` : 'N'}
+              </span>
             </button>
+
             <button
+              type="button"
               onClick={() => rotateMapBy(45)}
-              title="Rotate 45° CW"
-              className="px-2 py-1 hover:bg-white/10 text-white rounded-xl text-xs font-bold flex items-center gap-1 cursor-pointer transition-colors"
+              title="Rotate Map 45° Clockwise"
+              aria-label="Rotate Map 45 degrees clockwise"
+              data-testid="rotate-map-cw-btn"
+              className="w-9 h-10 hover:bg-[#8957FF]/25 text-slate-200 hover:text-[#00D9FF] active:scale-95 rounded-xl flex flex-col items-center justify-center transition-all cursor-pointer"
             >
-              <RotateCw className="w-3 h-3" />
-              <span>45°</span>
+              <RotateCw className="w-3.5 h-3.5 text-[#00D9FF]" />
+              <span className="text-[7.5px] font-mono font-bold -mt-0.5">+45°</span>
             </button>
           </div>
         </div>
@@ -6479,7 +6789,7 @@ const LiveMapComponent: React.FC<LiveMapProps> = ({
         <button
           onClick={toggleHeadingUpMode}
           title={isHeadingUpMode ? 'Heading-Up Follow Active (Tap to return to North-Up)' : 'Enable Heading-Up Direction Follow'}
-          className={`w-12 h-11 rounded-2xl shadow-xl border flex flex-col items-center justify-center transition-all cursor-pointer active:scale-95 ${
+          className={`pointer-events-auto w-12 h-11 rounded-2xl shadow-xl border flex flex-col items-center justify-center transition-all cursor-pointer active:scale-95 ${
             isHeadingUpMode
               ? 'bg-gradient-to-br from-cyan-500 to-blue-600 text-white border-cyan-300 shadow-cyan-500/30 ring-2 ring-cyan-400/50'
               : 'bg-[#0B081B]/95 border-[#8957FF]/35 text-white hover:bg-[#1B153A] hover:border-[#00D9FF]/50 shadow-[0_8px_24px_rgba(11,8,27,0.85)]'
@@ -6507,7 +6817,7 @@ const LiveMapComponent: React.FC<LiveMapProps> = ({
           }
           aria-label="Toggle persistent auto-follow mode"
           aria-pressed={isAutoFollowEnabled}
-          className={`w-12 h-11 rounded-2xl shadow-xl border flex flex-col items-center justify-center transition-all cursor-pointer active:scale-95 ${
+          className={`pointer-events-auto w-12 h-11 rounded-2xl shadow-xl border flex flex-col items-center justify-center transition-all cursor-pointer active:scale-95 ${
             isAutoFollowEnabled
               ? 'bg-gradient-to-br from-[#00D6A0] to-[#00D9FF] text-slate-950 border-[#00D6A0] shadow-[#00D6A0]/30 ring-2 ring-[#00D6A0]/45'
               : 'bg-[#0B081B]/95 border-[#8957FF]/35 text-white hover:bg-[#1B153A] hover:border-[#00D9FF]/50 shadow-[0_8px_24px_rgba(11,8,27,0.85)]'
@@ -6525,14 +6835,28 @@ const LiveMapComponent: React.FC<LiveMapProps> = ({
           </span>
         </button>
 
-        {/* Center on My Location Button */}
+        {/* Prominent "Recenter on Me" Button (Explicitly Re-fetches Fresh GPS & Centers View) */}
         <button
+          type="button"
           onClick={centerOnMyLocation}
-          title="Center on my location"
-          aria-label="Center on my location"
-          className="w-12 h-11 bg-[#0B081B]/95 border border-[#8957FF]/35 text-white hover:bg-[#1B153A] hover:border-[#00D9FF]/50 active:scale-95 transition-all rounded-2xl shadow-[0_8px_24px_rgba(11,8,27,0.85)] flex items-center justify-center cursor-pointer"
+          disabled={isRecenteringGps}
+          data-testid="recenter-on-me-btn"
+          title="Recenter on Me — Re-fetch current GPS location and center map"
+          aria-label="Recenter on Me"
+          className={`pointer-events-auto h-11 px-3 rounded-2xl shadow-[0_8px_24px_rgba(11,8,27,0.9)] border flex items-center gap-2 transition-all cursor-pointer active:scale-95 ${
+            isRecenteringGps
+              ? 'bg-gradient-to-r from-[#00D9FF] to-[#00D6A0] text-slate-950 border-white font-black ring-2 ring-[#00D9FF]/60'
+              : 'bg-[#0B081B]/95 border-[#00D9FF]/55 text-white hover:bg-[#1B153A] hover:border-[#00D9FF] shadow-[0_0_18px_rgba(0,217,255,0.2)]'
+          }`}
         >
-          <Crosshair className="w-5 h-5 text-[#00D9FF]" />
+          <Crosshair
+            className={`w-4 h-4 shrink-0 ${
+              isRecenteringGps ? 'animate-spin text-slate-950' : 'text-[#00D9FF]'
+            }`}
+          />
+          <span className="text-[11px] font-extrabold tracking-tight whitespace-nowrap">
+            {isRecenteringGps ? 'Locating...' : 'Recenter on Me'}
+          </span>
         </button>
 
         {/* Custom Dark-Themed Leaflet Map Zoom Controls (Positioned at Bottom-Right Thumb Zone for Mobile Ergonomics) */}
@@ -6540,7 +6864,7 @@ const LiveMapComponent: React.FC<LiveMapProps> = ({
           role="group"
           aria-label="Map zoom controls"
           data-testid="custom-zoom-controls"
-          className="bg-[#0B081B]/95 border border-[#8957FF]/45 rounded-2xl shadow-[0_12px_30px_rgba(11,8,27,0.9),0_0_18px_rgba(137,87,255,0.2)] overflow-hidden flex flex-col items-center backdrop-blur-md"
+          className="pointer-events-auto bg-[#0B081B]/95 border border-[#8957FF]/45 rounded-2xl shadow-[0_12px_30px_rgba(11,8,27,0.9),0_0_18px_rgba(137,87,255,0.2)] overflow-hidden flex flex-col items-center backdrop-blur-md"
         >
           <button
             type="button"
@@ -6818,6 +7142,42 @@ const LiveMapComponent: React.FC<LiveMapProps> = ({
               >
                 <Compass className="w-4 h-4" />
               </button>
+
+              {selectedUser.userId !== user?.id && (
+                <button
+                  onClick={async () => {
+                    const target = selectedUser;
+                    setSelectedUser(null);
+                    try {
+                      const keys = [target.userId, target.username, target.fullName]
+                        .filter(Boolean)
+                        .map((s) => String(s).toLowerCase());
+                      const gPrev: string[] = JSON.parse(
+                        localStorage.getItem('beacon_removed_friends_global') || '[]'
+                      );
+                      const next = Array.from(new Set([...gPrev, ...keys]));
+                      localStorage.setItem('beacon_removed_friends_global', JSON.stringify(next));
+                      if (user?.id) {
+                        localStorage.setItem(`beacon_removed_friends_${user.id}`, JSON.stringify(next));
+                      }
+                    } catch {
+                      // ignore
+                    }
+                    try {
+                      await api.removeFriend(target.userId);
+                    } catch {
+                      // fallback local removal
+                    }
+                    window.dispatchEvent(new CustomEvent('beacon:friends-updated'));
+                    window.dispatchEvent(new CustomEvent('beacon:cloud-sync-updated'));
+                    toast.success(`Removed ${target.fullName} from friends & map`);
+                  }}
+                  className="p-2.5 bg-rose-500/20 hover:bg-rose-500/35 border border-rose-500/40 text-rose-300 rounded-2xl transition-colors cursor-pointer"
+                  title={`Remove ${selectedUser.fullName} from friends & map`}
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -7489,149 +7849,6 @@ const LiveMapComponent: React.FC<LiveMapProps> = ({
           </div>
         </div>
       )}
-
-      {/* CrowdZone Community Reports, Queues, Crowd Heatmap & Issue Composer Overlay */}
-      <CrowdZoneOverlay
-        roomOnlyMode={roomOnlyMode}
-        reports={czReports}
-        filteredReports={filteredCzReports}
-        activeLayers={czActiveLayers}
-        onToggleLayer={handleToggleCzLayer}
-        timeFilter={czTimeFilter}
-        onChangeTimeFilter={setCzTimeFilter}
-        crowdWindow={czCrowdWindow}
-        onChangeCrowdWindow={setCzCrowdWindow}
-        showLayersMenu={showCzLayersMenu}
-        onToggleLayersMenu={() => setShowCzLayersMenu((v) => !v)}
-        onCloseLayersMenu={() => setShowCzLayersMenu(false)}
-        isSearchingEmergency={isSearchingCzEmergency}
-        onSearchEmergencyFacilities={searchCzEmergencyFacilities}
-        onClearEmergencyFacilities={() => {
-          setCzEmergencyPins([]);
-          toast.info('Cleared emergency facility pins');
-        }}
-        emergencyCount={czEmergencyPins.length}
-        isPickingPin={isPickingCzPin}
-        onCancelPickPin={() => {
-          setIsPickingCzPin(false);
-          setCzComposerState((prev) => ({ ...prev, open: true }));
-        }}
-        onUseMyLocationForPin={() => {
-          if (myLocation && Number.isFinite(myLocation.latitude) && Number.isFinite(myLocation.longitude)) {
-            mapInstanceRef.current?.setView([myLocation.latitude, myLocation.longitude], 17);
-          } else {
-            requestLocationUpdate();
-          }
-        }}
-        onConfirmCenterPin={() => {
-          const center = mapInstanceRef.current?.getCenter();
-          setIsPickingCzPin(false);
-          setCzComposerState((prev) => ({
-            ...prev,
-            open: true,
-            step: 'details',
-            loc: center
-              ? { lat: center.lat, lng: center.lng }
-              : prev.loc,
-          }));
-        }}
-        composerState={czComposerState}
-        setComposerState={setCzComposerState}
-        onOpenComposer={(initialCategory?: CrowdZoneCategoryId) => {
-          const center = mapInstanceRef.current?.getCenter();
-          const defaultLoc =
-            myLocation && Number.isFinite(myLocation.latitude) && myLocation.latitude !== 0
-              ? { lat: myLocation.latitude, lng: myLocation.longitude }
-              : center
-              ? { lat: center.lat, lng: center.lng }
-              : { lat: 28.6139, lng: 77.209 };
-          const catObj = initialCategory
-            ? getCrowdZoneCategory(initialCategory)
-            : getCrowdZoneCategory('queue');
-          setCzComposerState({
-            open: true,
-            step: initialCategory ? 'details' : 'category',
-            category: catObj.id,
-            subcategory: catObj.subs[0],
-            loc: defaultLoc,
-          });
-        }}
-        onRequestMapPinPick={() => {
-          setCzComposerState((prev) => ({ ...prev, open: false }));
-          setIsPickingCzPin(true);
-        }}
-        onSubmitReport={(newReport) => {
-          const next = [newReport, ...czReports];
-          persistCzReports(next);
-          const cat = getCrowdZoneCategory(newReport.category);
-          setCzActiveLayers((prev) => {
-            const copy = new Set(prev);
-            copy.add(cat.layer);
-            return copy;
-          });
-          setCzComposerState((prev) => ({ ...prev, open: false }));
-          mapInstanceRef.current?.panTo([newReport.lat, newReport.lng]);
-          setSelectedCzReportId(newReport.id);
-          toast.success(`Reported: ${newReport.subcategory}`);
-        }}
-        selectedReportId={selectedCzReportId}
-        onSelectReport={setSelectedCzReportId}
-        onDeleteReport={handleDeleteCzReport}
-        onDeleteReportUpdate={handleDeleteCzReportUpdate}
-        onDeleteAllReports={handleDeleteAllCzReports}
-        onResetSeedReports={handleResetSeedCzReports}
-        onVoteReport={handleVoteCzReport}
-        onAddReportUpdate={handleAddCzReportUpdate}
-        onRouteToReport={(lat, lng, label) => {
-          startNavigation(lat, lng, label);
-        }}
-        onFocusReportOnMap={(lat, lng) => {
-          mapInstanceRef.current?.setView([lat, lng], Math.max(16, currentZoom));
-        }}
-        onShareReportToRoom={handleShareCzReportToRoom}
-        rooms={rooms}
-        currentUserId={user?.id || 'guest-user'}
-        currentUserName={user?.fullName || user?.username || 'Community Member'}
-        myCoords={
-          myLocation && Number.isFinite(myLocation.latitude) && myLocation.latitude !== 0
-            ? { lat: myLocation.latitude, lng: myLocation.longitude }
-            : null
-        }
-        geofencesCount={customGeofences.length}
-        geofenceAlertsCount={geofenceEvents.length}
-        isDrawingGeofence={geofenceDraft.active || isControlledTestMode}
-        onOpenGeofenceManager={() => setOpenGeofenceManagerSignal((n) => n + 1)}
-        onStartDrawGeofence={(shape) => {
-          const center = mapInstanceRef.current?.getCenter();
-          const defaultCenter =
-            center
-              ? { lat: center.lat, lng: center.lng }
-              : myLocation && Number.isFinite(myLocation.latitude) && myLocation.latitude !== 0
-              ? { lat: myLocation.latitude, lng: myLocation.longitude }
-              : { lat: 28.6139, lng: 77.209 };
-          setGeofenceDraft({
-            active: true,
-            shape,
-            name: `Zone ${customGeofences.length + 1}`,
-            color: '#00D6A0',
-            points: [],
-            center: shape === 'circle' ? defaultCenter : null,
-            radiusMeters: 250,
-            notifyOnEnter: true,
-            notifyOnExit: true,
-            watchedUserIds: [],
-          });
-          toast.info(
-            shape === 'polygon'
-              ? 'Tap on the map (or tap "+ Add Point") to draw at least 3 polygon corners'
-              : 'Tap on the map to place the circle center and adjust the radius slider'
-          );
-        }}
-        onDeleteAllGeofences={() => {
-          persistCustomGeofences([]);
-          toast.info('Cleared all custom geofence zones');
-        }}
-      />
 
       {/* Custom Map Geofence Drawing & Friend Enter/Leave Push Notification Overlay */}
       <CustomGeofenceOverlay

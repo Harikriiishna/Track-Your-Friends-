@@ -598,7 +598,7 @@ class ApiClient {
     return localRes;
   }
 
-  private async request<T>(endpoint: string, options: RequestInit = {}, _isRetry = false): Promise<T> {
+  public async request<T>(endpoint: string, options: RequestInit = {}, _isRetry = false): Promise<T> {
     const token = this.getToken();
     const targetUrl = resolveApiUrl(endpoint);
     const method = (options.method || 'GET').toUpperCase();
@@ -859,6 +859,21 @@ class ApiClient {
   // Room Member Management (Spec Section 7)
   public async kickRoomMember(roomId: string, targetUserId: string): Promise<{ success: boolean }> {
     return this.post<{ success: boolean }>(`/api/rooms/${roomId}/kick`, { targetUserId });
+  }
+
+  // Friend & Location Share Request Deletion
+  public async removeFriend(
+    friendUserId: string
+  ): Promise<{ success: boolean; removedCount?: number }> {
+    return this.delete<{ success: boolean; removedCount?: number }>(
+      `/api/friends/${encodeURIComponent(friendUserId)}`
+    );
+  }
+
+  public async deleteFriendRequest(requestId: string): Promise<{ success: boolean }> {
+    return this.delete<{ success: boolean }>(
+      `/api/locations/requests/${encodeURIComponent(requestId)}`
+    );
   }
 }
 

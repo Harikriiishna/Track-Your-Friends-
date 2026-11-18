@@ -32,6 +32,7 @@ import {
   Zap,
   Gauge,
 } from 'lucide-react';
+import { AppErrorsTrackerPanel } from '../Diagnostics/AppErrorsTrackerModal.tsx';
 
 export const ProfilePrivacyView: React.FC = () => {
   const { user, updatePrivacy, updateProfile, logout } = useAuth();
@@ -890,6 +891,9 @@ export const ProfilePrivacyView: React.FC = () => {
           </span>
         </div>
       </div>
+
+      {/* 4B. APP ERRORS TRACKING CONSOLE (KitsunePie/AppErrorsTracking) */}
+      <AppErrorsTrackerPanel isDark={themeConfig.isDark} />
 
       {/* 5. BLOCKED USERS, LOCATION HISTORY PURGE & ACCOUNT DELETION */}
       <div

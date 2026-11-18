@@ -24,6 +24,8 @@ import {
   loadRoomGeofences,
   evaluateRoomSavedPlaceGeofences,
 } from './utils/roomGeofences.ts';
+import { installAppErrorsTracking } from './utils/appErrorsTracker.ts';
+import { AppErrorsBoundary } from './components/Diagnostics/AppErrorsTrackerModal.tsx';
 
 // Eagerly kick off chunk downloads & expose preloaders so tab switching is 0ms instant
 const loadRoomsManager = () => import('./components/Rooms/RoomsManager.tsx');
@@ -35,6 +37,7 @@ const loadRemindersManager = () => import('./components/Reminders/RemindersManag
 const loadMeetingsManager = () => import('./components/Meetings/MeetingsManager.tsx');
 const loadProfilePrivacyView = () => import('./components/Profile/ProfilePrivacyView.tsx');
 const loadAdminDashboard = () => import('./components/Admin/AdminDashboard.tsx');
+const loadCrowdZoneModule = () => import('./components/CrowdZone/CrowdZoneModule.tsx');
 
 const RoomsManager = React.lazy(() => loadRoomsManager().then((m) => ({ default: m.RoomsManager })));
 const ChatView = React.lazy(() => loadChatView().then((m) => ({ default: m.ChatView })));
@@ -56,6 +59,9 @@ const ProfilePrivacyView = React.lazy(() =>
 );
 const AdminDashboard = React.lazy(() =>
   loadAdminDashboard().then((m) => ({ default: m.AdminDashboard }))
+);
+const CrowdZoneModule = React.lazy(() =>
+  loadCrowdZoneModule().then((m) => ({ default: m.CrowdZoneModule }))
 );
 
 function TabFallback() {
@@ -83,6 +89,7 @@ interface DevicePopupNotification {
 const VALID_TABS = [
   'home',
   'map',
+  'crowdzone',
   'friends',
   'chat',
   'rooms',
@@ -106,6 +113,7 @@ function MainApp() {
     userLocations,
     activeAlerts,
     sendMessage,
+    requestLocationUpdate,
   } = useRealtime();
   const { themeConfig, isLiteMode } = useTheme();
   const toast = useToast();
@@ -318,6 +326,9 @@ function MainApp() {
             break;
           case 'admin':
             void loadAdminDashboard();
+            break;
+          case 'crowdzone':
+            void loadCrowdZoneModule();
             break;
           default:
             break;
@@ -941,6 +952,22 @@ function MainApp() {
             />
           </div>
 
+          {/* TAB 2B: CROWDZONE INDEPENDENT MODULE */}
+          {shouldRenderTab('crowdzone') && (
+            <div className="tab-pane-container absolute inset-0 w-full h-full tab-pane-mobile-safe opacity-100 z-10 pointer-events-auto visible animate-tab-enter">
+              <Suspense fallback={<TabFallback />}>
+                <CrowdZoneModule
+                  user={user}
+                  myLocation={myLocation}
+                  userLocations={userLocations}
+                  activeAlerts={activeAlerts}
+                  apiFetch={(path, options) => api.request(path, options)}
+                  onRequestFreshGps={requestLocationUpdate}
+                />
+              </Suspense>
+            </div>
+          )}
+
           {/* TAB 3: FRIENDS & CONNECTIONS */}
           {shouldRenderTab('friends') && (
             <div className="tab-pane-container absolute inset-0 w-full h-full tab-pane-mobile-safe opacity-100 z-10 pointer-events-auto visible animate-tab-enter">
@@ -1131,14 +1158,20 @@ function MainApp() {
 }
 
 export function App() {
+  useEffect(() => {
+    installAppErrorsTracking();
+  }, []);
+
   return (
     <ThemeProvider>
       <ToastProvider>
-        <AuthProvider>
-          <RealtimeProvider>
-            <MainApp />
-          </RealtimeProvider>
-        </AuthProvider>
+        <AppErrorsBoundary>
+          <AuthProvider>
+            <RealtimeProvider>
+              <MainApp />
+            </RealtimeProvider>
+          </AuthProvider>
+        </AppErrorsBoundary>
       </ToastProvider>
     </ThemeProvider>
   );

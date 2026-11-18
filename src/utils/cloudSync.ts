@@ -71,6 +71,11 @@ export interface SyncableDatabaseState {
   auditLogs: any[];
   passwordResets: any[];
   locationHistory: any[];
+  crowdReports?: any[];
+  crowdPosts?: any[];
+  crowdSavedPlaces?: any[];
+  userSettings?: Record<string, any>;
+  moderationLogs?: any[];
   deletedIds?: string[];
 }
 
@@ -775,9 +780,27 @@ export function mergeDatabaseStates(
       toUserId: normalizeUid(r.toUserId) || r.toUserId,
     }));
 
+    const isPairUnfriended = (r: any): boolean => {
+      const fIds = [r.fromUserId, r.fromUsername, r.fromUserName]
+        .filter(Boolean)
+        .map((v) => String(v).toLowerCase());
+      const tIds = [r.toUserId, r.toUsername, r.toUserName]
+        .filter(Boolean)
+        .map((v) => String(v).toLowerCase());
+      for (const f of fIds) {
+        for (const t of tIds) {
+          if (deletedSet.has(`unfriend_${f}_${t}`) || deletedSet.has(`unfriend_${t}_${f}`)) {
+            return true;
+          }
+        }
+      }
+      return false;
+    };
+
     const pairMap = new Map<string, any>();
     for (const r of mergedReqs) {
       if (!r || !r.fromUserId || !r.toUserId) continue;
+      if (isPairUnfriended(r)) continue;
       const pairKey = [String(r.fromUserId).toLowerCase(), String(r.toUserId).toLowerCase()].sort().join('::');
       const prev = pairMap.get(pairKey);
       if (!prev) {
@@ -813,6 +836,83 @@ export function mergeDatabaseStates(
       (a, b) => new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime()
     );
     target.locationHistory = hist.slice(-200);
+  }
+
+  // 12. Merge CROWDZONE Community Reports
+  if (Array.isArray(incoming.crowdReports)) {
+    const mergedReports = mergeArrayById(
+      target.crowdReports || [],
+      incoming.crowdReports || [],
+      'id',
+      deletedSet,
+      preferIncoming
+    );
+    mergedReports.sort(
+      (a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
+    );
+    target.crowdReports = mergedReports.slice(0, 120);
+  }
+
+  // 13. Merge CROWDZONE Community Posts
+  if (Array.isArray(incoming.crowdPosts)) {
+    const mergedPosts = mergeArrayById(
+      target.crowdPosts || [],
+      incoming.crowdPosts || [],
+      'id',
+      deletedSet,
+      preferIncoming
+    );
+    mergedPosts.sort(
+      (a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
+    );
+    target.crowdPosts = mergedPosts.slice(0, 120);
+  }
+
+  // 14. Merge CROWDZONE Saved Places
+  if (Array.isArray(incoming.crowdSavedPlaces)) {
+    const mergedSaved = mergeArrayById(
+      target.crowdSavedPlaces || [],
+      incoming.crowdSavedPlaces || [],
+      'id',
+      deletedSet,
+      preferIncoming
+    );
+    target.crowdSavedPlaces = mergedSaved.slice(0, 150);
+  }
+
+  // 15. Merge CROWDZONE User Settings
+  if (incoming.userSettings && typeof incoming.userSettings === 'object') {
+    if (!target.userSettings || typeof target.userSettings !== 'object') {
+      target.userSettings = {};
+    }
+    for (const [uid, settings] of Object.entries(incoming.userSettings)) {
+      if (!settings || typeof settings !== 'object') continue;
+      const existing = target.userSettings[uid];
+      if (!existing) {
+        target.userSettings[uid] = settings;
+      } else {
+        const prevTs = new Date(existing.updatedAt || 0).getTime();
+        const currTs = new Date((settings as any).updatedAt || 0).getTime();
+        if (preferIncoming || currTs >= prevTs) {
+          target.userSettings[uid] = { ...existing, ...settings };
+        }
+      }
+    }
+  }
+
+  // 16. Merge Moderation Logs
+  if (Array.isArray(incoming.moderationLogs)) {
+    const mergedModLogs = mergeArrayById(
+      target.moderationLogs || [],
+      incoming.moderationLogs || [],
+      'id',
+      deletedSet,
+      preferIncoming
+    );
+    mergedModLogs.sort(
+      (a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
+    );
+    target.moderationLogs = mergedModLogs.slice(0, 100);
   }
 }
 
@@ -991,6 +1091,8 @@ function buildCompactLivePayload(state: SyncableDatabaseState): string {
     savedPlaces: (state.savedPlaces || []).slice(-8),
     reminders: (state.reminders || []).slice(-8),
     meetings: (state.meetings || []).slice(-6),
+    crowdReports: (state.crowdReports || []).slice(0, 8),
+    crowdPosts: (state.crowdPosts || []).slice(0, 6),
   };
 
   let str = JSON.stringify(payloadObj);
@@ -1365,6 +1467,11 @@ async function performSinglePush(stateToPush: SyncableDatabaseState): Promise<vo
       rooms: sanitizedRooms,
       messages: (stateToPush.messages || []).slice(-250),
       locationHistory: (stateToPush.locationHistory || []).slice(-180),
+      crowdReports: (stateToPush.crowdReports || []).slice(0, 100),
+      crowdPosts: (stateToPush.crowdPosts || []).slice(0, 100),
+      crowdSavedPlaces: (stateToPush.crowdSavedPlaces || []).slice(0, 120),
+      userSettings: stateToPush.userSettings || {},
+      moderationLogs: (stateToPush.moderationLogs || []).slice(0, 80),
       auditLogs: (stateToPush.auditLogs || []).slice(-80),
       sessions: [],
       passwordResets: [],

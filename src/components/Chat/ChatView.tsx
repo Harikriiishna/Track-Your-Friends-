@@ -1117,27 +1117,29 @@ export const ChatView: React.FC<ChatViewProps> = ({
               <span className="hidden md:inline">Share Location</span>
             </button>
 
-            <button
-              onClick={async () => {
-                triggerHaptic('medium');
-                if (onClearChatBadge) {
-                  onClearChatBadge();
-                }
-                const storageKey = `${conversationKey}:${activeChannelId}`;
-                setChannelMessages((prev) => ({ ...prev, [storageKey]: [] }));
-                try {
-                  await clearChat(effectiveRoomId, effectiveRecipientId);
-                  toast.info('Chat messages & unread badges cleared');
-                } catch {
-                  toast.info('Unread chat badge cleared');
-                }
-              }}
-              className="px-2.5 py-1 rounded-xl bg-rose-500/20 hover:bg-rose-500 text-rose-300 hover:text-white text-xs font-bold flex items-center gap-1 transition-all shadow-sm cursor-pointer border border-rose-500/35 active:scale-95"
-              title="Clear chat messages and unread badges"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              <span>Clear{unreadChatCount > 0 ? ` (${unreadChatCount})` : ''}</span>
-            </button>
+            {(!isUniversalRoom || Boolean(activeDirectUser)) && (
+              <button
+                onClick={async () => {
+                  triggerHaptic('medium');
+                  if (onClearChatBadge) {
+                    onClearChatBadge();
+                  }
+                  const storageKey = `${conversationKey}:${activeChannelId}`;
+                  setChannelMessages((prev) => ({ ...prev, [storageKey]: [] }));
+                  try {
+                    await clearChat(effectiveRoomId, effectiveRecipientId);
+                    toast.info('Chat messages & unread badges cleared');
+                  } catch {
+                    toast.info('Unread chat badge cleared');
+                  }
+                }}
+                className="px-2.5 py-1 rounded-xl bg-rose-500/20 hover:bg-rose-500 text-rose-300 hover:text-white text-xs font-bold flex items-center gap-1 transition-all shadow-sm cursor-pointer border border-rose-500/35 active:scale-95"
+                title="Clear chat messages and unread badges"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Clear{unreadChatCount > 0 ? ` (${unreadChatCount})` : ''}</span>
+              </button>
+            )}
 
             <button
               onClick={() => setShowSearch(!showSearch)}
