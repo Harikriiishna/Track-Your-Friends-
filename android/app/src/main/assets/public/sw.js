@@ -87,7 +87,7 @@ define(['./workbox-7e5eb42b'], (function (workbox) { 'use strict';
     "revision": "692c420d2bbc264d9bd2d2c0ee96428b"
   }, {
     "url": "index.html",
-    "revision": "f831f194b990208c699cd2d0f6243514"
+    "revision": "2f9399fdac22baf1b1666cdfb6f0ab9d"
   }, {
     "url": "icon.svg",
     "revision": "f8eacca2a095f7fc72e6f403a09b7b2d"
@@ -113,46 +113,46 @@ define(['./workbox-7e5eb42b'], (function (workbox) { 'use strict';
     "url": "assets/nearbyPlaces-B05tIsqn.js",
     "revision": null
   }, {
-    "url": "assets/index-cF7sWIdE.css",
+    "url": "assets/index-Dz0twOHJ.css",
     "revision": null
   }, {
-    "url": "assets/index-DsFRZvC6.js",
+    "url": "assets/index-CLlv-PzS.js",
     "revision": null
   }, {
-    "url": "assets/ToastContext-StvSa_76.js",
+    "url": "assets/ToastContext-CIKfRmXY.js",
     "revision": null
   }, {
-    "url": "assets/SavedPlacesManager-D1l02D9d.js",
+    "url": "assets/SavedPlacesManager-IBVgTZBr.js",
     "revision": null
   }, {
-    "url": "assets/RoomsManager-DAFoV9yU.js",
+    "url": "assets/RoomsManager-yyKIBM8u.js",
     "revision": null
   }, {
-    "url": "assets/RemindersManager-ByNSMWjS.js",
+    "url": "assets/RemindersManager-BxWbcLTK.js",
     "revision": null
   }, {
-    "url": "assets/ProfilePrivacyView-5vAqSq3P.js",
+    "url": "assets/ProfilePrivacyView-Ck_Ck0sd.js",
     "revision": null
   }, {
-    "url": "assets/NotificationsCenter-DNIfJNtz.js",
+    "url": "assets/NotificationsCenter-CwkvTyd4.js",
     "revision": null
   }, {
-    "url": "assets/MeetingsManager-CEDUgr99.js",
+    "url": "assets/MeetingsManager-Bw_XS7Ov.js",
     "revision": null
   }, {
-    "url": "assets/FriendsView-DIxeWPTZ.js",
+    "url": "assets/FriendsView-Cng-BdIK.js",
     "revision": null
   }, {
-    "url": "assets/CrowdZoneModule-BrOKBgBa.js",
+    "url": "assets/CrowdZoneModule-BYOMAooC.js",
     "revision": null
   }, {
-    "url": "assets/ChatView-Bzu-VIB-.js",
+    "url": "assets/ChatView-BYoH117h.js",
     "revision": null
   }, {
-    "url": "assets/AudioWaveformVisualizer-1LGvatIv.js",
+    "url": "assets/AudioWaveformVisualizer-ClsfNxLD.js",
     "revision": null
   }, {
-    "url": "assets/AdminDashboard-uYx_PjtW.js",
+    "url": "assets/AdminDashboard-BUBoDwiB.js",
     "revision": null
   }, {
     "url": "apple-touch-icon.png",

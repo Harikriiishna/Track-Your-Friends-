@@ -1,4 +1,4 @@
-// Root settings.gradle supporting direct root-level `gradle :app:assembleDebug` execution
+// Root settings.gradle supporting direct root-level `gradle :app:assembleDebug` and `./gradlew assembleDebug assembleRelease` execution
 def capAndroidDir = new File(settingsDir, 'node_modules/@capacitor/android/capacitor')
 def webAssetsIndex = new File(settingsDir, 'android/app/src/main/assets/public/index.html')
 
@@ -20,13 +20,6 @@ if (!capAndroidDir.exists() || !webAssetsIndex.exists()) {
         fi
         mkdir -p android/capacitor-cordova-android-plugins/src/main/libs android/app/libs
         npx cap sync android
-        node scripts/prepare-android-apk.mjs || true
-        find android node_modules/@capacitor -name "*.gradle" -type f -exec sed -i 's/VERSION_21/VERSION_17/g' {} +
-        find android node_modules/@capacitor -name "*.gradle" -type f -exec sed -i 's/com\\.android\\.tools\\.build:gradle:8\\.13\\.0/com.android.tools.build:gradle:9.1.1/g' {} +
-        find android node_modules/@capacitor -name "*.gradle" -type f -exec sed -i 's/tasks\\.withType(Javadoc)\\.all/tasks.withType(Javadoc).configureEach/g' {} +
-        if [ -f "android/app/capacitor.build.gradle" ]; then
-          sed -i 's|apply from: "../capacitor-cordova-android-plugins/cordova.variables.gradle"|apply from: file("../capacitor-cordova-android-plugins/cordova.variables.gradle")|g' android/app/capacitor.build.gradle
-        fi
         '''
     ]
     def proc = new ProcessBuilder(bootstrapCmd)
@@ -39,6 +32,28 @@ if (!capAndroidDir.exists() || !webAssetsIndex.exists()) {
         throw new GradleException("Capacitor bootstrap failed with exit code ${exitCode}")
     }
 }
+
+// Always normalize Capacitor-generated Gradle files for JDK 17 & AGP 9.1.1 before configuring subprojects
+def normalizeCmd = [
+    'bash', '-c',
+    '''
+    set -e
+    mkdir -p android/capacitor-cordova-android-plugins/src/main/libs android/app/libs
+    node scripts/prepare-android-apk.mjs || true
+    find android node_modules/@capacitor -name "*.gradle" -type f -exec sed -i 's/VERSION_21/VERSION_17/g' {} + 2>/dev/null || true
+    find android node_modules/@capacitor -name "*.gradle" -type f -exec sed -i 's/com\\.android\\.tools\\.build:gradle:8\\.13\\.0/com.android.tools.build:gradle:9.1.1/g' {} + 2>/dev/null || true
+    find android node_modules/@capacitor -name "*.gradle" -type f -exec sed -i 's/tasks\\.withType(Javadoc)\\.all/tasks.withType(Javadoc).configureEach/g' {} + 2>/dev/null || true
+    if [ -f "android/app/capacitor.build.gradle" ]; then
+      sed -i 's|apply from: "../capacitor-cordova-android-plugins/cordova.variables.gradle"|apply from: file("../capacitor-cordova-android-plugins/cordova.variables.gradle")|g' android/app/capacitor.build.gradle || true
+    fi
+    '''
+]
+def normProc = new ProcessBuilder(normalizeCmd)
+    .directory(settingsDir)
+    .redirectErrorStream(true)
+    .start()
+normProc.inputStream.eachLine { line -> println line }
+normProc.waitFor()
 
 include ':app'
 project(':app').projectDir = new File(settingsDir, 'android/app')

@@ -1,7 +1,6 @@
 // Top-level build file where you can add configuration options common to all sub-projects/modules.
 
 buildscript {
-    
     repositories {
         google()
         mavenCentral()
@@ -9,9 +8,6 @@ buildscript {
     dependencies {
         classpath 'com.android.tools.build:gradle:9.1.1'
         classpath 'com.google.gms:google-services:4.4.4'
-
-        // NOTE: Do not place your application dependencies here; they belong
-        // in the individual module build.gradle files
     }
 }
 
@@ -34,10 +30,48 @@ subprojects {
                 }
             }
         }
+        if (project.name == 'app') {
+            project.tasks.matching { it.name == 'assembleDebug' }.configureEach {
+                doLast {
+                    def srcApk = new File(project.projectDir, 'build/outputs/apk/debug/app-debug.apk')
+                    def dstApk = new File(rootProject.projectDir.parentFile, 'app/build/outputs/apk/debug/app-debug.apk')
+                    if (srcApk.exists() && srcApk.canonicalPath != dstApk.canonicalPath) {
+                        dstApk.parentFile.mkdirs()
+                        java.nio.file.Files.copy(
+                            srcApk.toPath(),
+                            dstApk.toPath(),
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING
+                        )
+                    }
+                }
+            }
+            project.tasks.matching { it.name == 'assembleRelease' }.configureEach {
+                doLast {
+                    def srcSigned = new File(project.projectDir, 'build/outputs/apk/release/app-release.apk')
+                    def srcUnsigned = new File(project.projectDir, 'build/outputs/apk/release/app-release-unsigned.apk')
+                    def srcApk = srcSigned.exists() ? srcSigned : srcUnsigned
+                    if (srcApk.exists() && !srcSigned.exists()) {
+                        java.nio.file.Files.copy(
+                            srcApk.toPath(),
+                            srcSigned.toPath(),
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING
+                        )
+                    }
+                    def dstApk = new File(rootProject.projectDir.parentFile, 'app/build/outputs/apk/release/app-release.apk')
+                    if (srcApk.exists() && srcApk.canonicalPath != dstApk.canonicalPath) {
+                        dstApk.parentFile.mkdirs()
+                        java.nio.file.Files.copy(
+                            srcApk.toPath(),
+                            dstApk.toPath(),
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
 tasks.register('clean', Delete) {
     delete rootProject.layout.buildDirectory
 }
-
